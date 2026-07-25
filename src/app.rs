@@ -41,7 +41,7 @@ const TICK_MS: u32 = 500;
 /// It plays the first search hit, so this is the track you get rather than a
 /// guaranteed one — remasters and compilations often outrank an original.
 /// Fine for an acceptance test; it retires with the button in M5.
-const TEST_TERM: &str = "Aitana SUPERSTRELLA";
+const TEST_TERM: &str = "Aitana SUPERESTRELLA";
 
 /// Where we are in bringing the sidecar up. Each variant is a distinct
 /// `StatusPage`, because "it's just spinning" is the failure mode this whole

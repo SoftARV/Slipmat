@@ -293,6 +293,12 @@ the specific traps; do not re-introduce them.
 - **The sidecar must not look like a second app.** `app.setName('Tonearm')` plus
   `app.setDesktopName('dev.miguelrincon.Tonearm.desktop')`, or the shell invents
   a "tonearm-sidecar" entry with a generic icon.
+- **The sidecar must not publish its own MPRIS player.** Chromium registers one
+  the moment a page plays media, and grabs the hardware media keys with it —
+  giving two identical "Tonearm" entries in the shell and letting an invisible
+  browser win the race for Play/Pause. Disabled via
+  `--disable-features=MediaSessionService,HardwareMediaKeyHandling`. Neither
+  affects decoding. Tonearm owns MPRIS; the sidecar owns audio.
 - **Diagnose by layer, in order:** `cmd-queued` → never dispatched.
   No `cmd-recv` → renderer never ran it. `cmd-recv` but no `cmd-done` → the
   command is hanging. `cmd-done` with a full queue but a non-playing state →
