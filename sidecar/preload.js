@@ -234,6 +234,13 @@ const commands = {
     if (typeof music.queue?.remove !== 'function') {
       throw new Error('this MusicKit build cannot remove queue items')
     }
+    // Bounds-check here too. MusicKit answers an out-of-range index with a bare
+    // `[mk-007] INVALID_ARGUMENTS`, which says nothing about what was wrong;
+    // this at least names the numbers.
+    const len = music.queue.items?.length ?? 0
+    if (!Number.isInteger(index) || index < 0 || index >= len) {
+      throw new Error(`queue index ${index} out of range (queue holds ${len})`)
+    }
     music.queue.remove(index)
   },
   seek: ({ positionMs }) => music.seekToTime(positionMs / 1000),

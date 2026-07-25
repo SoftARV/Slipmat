@@ -213,9 +213,11 @@ pub enum AppMsg {
     SearchChanged(String),
     ReloadLibrary,
     ShowQueue,
-    /// Jump to a position in MusicKit's queue (not our list).
-    JumpTo(usize),
-    RemoveFromQueue(usize),
+    /// Act on a track in MusicKit's queue, by id. The position is resolved
+    /// against the live queue at send time — our row order can drift from
+    /// MusicKit's, and sending a stale position got INVALID_ARGUMENTS.
+    JumpTo(String),
+    RemoveFromQueue(String),
 }
 
 #[derive(Debug)]
@@ -410,8 +412,8 @@ impl Component for AppModel {
         let queue_view = QueueView::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
-                QueueViewOutput::Jump(index) => AppMsg::JumpTo(index),
-                QueueViewOutput::Remove(index) => AppMsg::RemoveFromQueue(index),
+                QueueViewOutput::Jump(id) => AppMsg::JumpTo(id),
+                QueueViewOutput::Remove(id) => AppMsg::RemoveFromQueue(id),
             });
 
         let model = AppModel {
@@ -479,8 +481,14 @@ impl Component for AppModel {
                 self.queue_view.widget().present(Some(root));
                 self.queue_view.emit(QueueViewInput::ScrollToPlaying);
             }
-            AppMsg::JumpTo(index) => self.send(Command::ChangeToIndex { index }),
-            AppMsg::RemoveFromQueue(index) => self.send(Command::RemoveFromQueue { index }),
+            AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
+                Some(index) => self.send(Command::ChangeToIndex { index }),
+                None => self.toast("That track is no longer in the queue"),
+            },
+            AppMsg::RemoveFromQueue(id) => match self.queue_index_of(&id) {
+                Some(index) => self.send(Command::RemoveFromQueue { index }),
+                None => self.toast("That track is no longer in the queue"),
+            },
             AppMsg::PlayFrom(index) => {
                 let visible: Vec<&Track> = self.visible_tracks().collect();
                 let (songs, start_id) = queue_from(&visible, index, &self.dead_ids);
@@ -751,6 +759,18 @@ impl AppModel {
             "MusicKit started the wrong track; correcting"
         );
         self.send(Command::ChangeToIndex { index });
+    }
+
+    /// Where a track sits in MusicKit's queue *right now*.
+    ///
+    /// Resolved at send time rather than carried from the row, because our row
+    /// order and MusicKit's queue can drift — and a stale position does not
+    /// fail loudly, it removes or plays the wrong track, or gets rejected with
+    /// INVALID_ARGUMENTS once it runs off the end.
+    fn queue_index_of(&self, id: &str) -> Option<usize> {
+        self.player.queue.iter().position(|item| {
+            item.catalog_id.as_deref() == Some(id) || item.id.as_deref() == Some(id)
+        })
     }
 
     fn showing_library(&self) -> bool {

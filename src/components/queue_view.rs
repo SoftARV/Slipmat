@@ -36,10 +36,6 @@ pub struct QueueEntry {
 #[derive(Debug)]
 pub struct QueueRow {
     entry: QueueEntry,
-    /// Kept current by relm4 as rows are added and removed, unlike a `usize`
-    /// captured at construction — which, after a removal, points at whatever
-    /// slid up into its place.
-    index: DynamicIndex,
     playing: bool,
 }
 
@@ -49,10 +45,13 @@ pub enum QueueRowInput {
     NowPlaying(Option<String>),
 }
 
+/// Both carry the track's **id**, not its row position. The row knows which
+/// track it is; only `app.rs` can say where that track currently sits in
+/// MusicKit's queue, and only at the moment the command is sent.
 #[derive(Debug)]
 pub enum QueueRowOutput {
-    Jump(usize),
-    Remove(usize),
+    Jump(String),
+    Remove(String),
 }
 
 #[relm4::factory(pub)]
@@ -105,21 +104,20 @@ impl FactoryComponent for QueueRow {
                 // as an edit; skip is the button for that.
                 #[watch]
                 set_sensitive: !self.playing,
-                connect_clicked[sender, index = self.index.clone()] => move |_| {
-                    sender.output(QueueRowOutput::Remove(index.current_index())).ok();
+                connect_clicked[sender, id = self.entry.id.clone()] => move |_| {
+                    sender.output(QueueRowOutput::Remove(id.clone())).ok();
                 },
             },
 
-            connect_activated[sender, index = self.index.clone()] => move |_| {
-                sender.output(QueueRowOutput::Jump(index.current_index())).ok();
+            connect_activated[sender, id = self.entry.id.clone()] => move |_| {
+                sender.output(QueueRowOutput::Jump(id.clone())).ok();
             },
         }
     }
 
-    fn init_model(entry: Self::Init, index: &DynamicIndex, _s: FactorySender<Self>) -> Self {
+    fn init_model(entry: Self::Init, _index: &DynamicIndex, _s: FactorySender<Self>) -> Self {
         Self {
             entry,
-            index: index.clone(),
             playing: false,
         }
     }
@@ -153,15 +151,16 @@ pub enum QueueViewInput {
     /// Bring the current track into view — done when the dialog opens, not on
     /// every update, or it would fight the user scrolling.
     ScrollToPlaying,
-    Jump(usize),
-    Remove(usize),
+    Jump(String),
+    Remove(String),
 }
 
 #[derive(Debug)]
 pub enum QueueViewOutput {
-    /// Index into **MusicKit's** queue.
-    Jump(usize),
-    Remove(usize),
+    /// The id of the track to act on. `app.rs` resolves it against MusicKit's
+    /// live queue.
+    Jump(String),
+    Remove(String),
 }
 
 #[relm4::component(pub)]
@@ -220,8 +219,8 @@ impl Component for QueueView {
         let rows = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
             .forward(sender.input_sender(), |out| match out {
-                QueueRowOutput::Jump(i) => QueueViewInput::Jump(i),
-                QueueRowOutput::Remove(i) => QueueViewInput::Remove(i),
+                QueueRowOutput::Jump(id) => QueueViewInput::Jump(id),
+                QueueRowOutput::Remove(id) => QueueViewInput::Remove(id),
             });
 
         let model = QueueView {
@@ -293,11 +292,11 @@ impl Component for QueueView {
                     }
                 });
             }
-            QueueViewInput::Jump(index) => {
-                let _ = sender.output(QueueViewOutput::Jump(index));
+            QueueViewInput::Jump(id) => {
+                let _ = sender.output(QueueViewOutput::Jump(id));
             }
-            QueueViewInput::Remove(index) => {
-                let _ = sender.output(QueueViewOutput::Remove(index));
+            QueueViewInput::Remove(id) => {
+                let _ = sender.output(QueueViewOutput::Remove(id));
             }
         }
         self.update_view(widgets, sender);
