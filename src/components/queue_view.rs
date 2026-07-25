@@ -243,7 +243,10 @@ impl Component for QueueView {
             set_width_request: 340,
 
             add_top_bar = &adw::HeaderBar {
-                set_show_end_title_buttons: false,
+                // The queue is the rightmost pane while it is open, so the
+                // window controls live here. The content header hides its own
+                // when this is showing, so they never appear twice.
+                set_show_end_title_buttons: true,
 
                 #[wrap(Some)]
                 set_title_widget = &adw::WindowTitle {
@@ -258,15 +261,30 @@ impl Component for QueueView {
             },
 
             #[wrap(Some)]
-            #[name = "scroller"]
-            set_content = &gtk::ScrolledWindow {
-                set_vexpand: true,
-
-                #[local_ref]
-                queue_list -> gtk::ListView {
-                    set_single_click_activate: true,
-                    add_css_class: "navigation-sidebar",
+            set_content = &gtk::Stack {
+                // An empty queue is a state, not an empty list. A blank panel
+                // reads as broken.
+                add_named[Some("empty")] = &adw::StatusPage {
+                    set_icon_name: Some("view-list-symbolic"),
+                    set_title: "Nothing queued",
+                    set_description: Some("Play something and it will show up here."),
                 },
+
+                #[name = "scroller"]
+                add_named[Some("queue")] = &gtk::ScrolledWindow {
+                    set_vexpand: true,
+
+                    #[local_ref]
+                    queue_list -> gtk::ListView {
+                        set_single_click_activate: true,
+                        add_css_class: "navigation-sidebar",
+                    },
+                },
+
+                // After the children — naming one before it is added warns and
+                // does nothing.
+                #[watch]
+                set_visible_child_name: if model.count == 0 { "empty" } else { "queue" },
             },
         }
     }

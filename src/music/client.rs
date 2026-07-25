@@ -222,11 +222,13 @@ impl Client {
     /// Catalog search. Needs only the developer token — no user token, no
     /// subscription — which makes it the cheapest way to prove the harvested
     /// token actually works before any playback is involved.
-    pub async fn search_songs(&self, term: &str, limit: u32) -> Result<Vec<Track>> {
+    /// `offset` walks further into the results. Apple caps `limit` at 25 per
+    /// request for search, so anything past the first 25 needs paging.
+    pub async fn search_songs(&self, term: &str, limit: u32, offset: usize) -> Result<Vec<Track>> {
         let query = urlencode(term);
         let res = self
             .get(&format!(
-                "/catalog/{}/search?types=songs&limit={limit}&term={query}",
+                "/catalog/{}/search?types=songs&limit={limit}&offset={offset}&term={query}",
                 self.storefront
             ))
             .send()

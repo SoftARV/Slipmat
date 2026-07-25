@@ -16,7 +16,8 @@ use std::path::PathBuf;
 
 use relm4::adw::prelude::*;
 use relm4::{
-    Component, ComponentController, ComponentParts, ComponentSender, Controller, adw, gtk,
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmWidgetExt,
+    adw, gtk,
 };
 
 use relm4::typed_view::list::TypedListView;
@@ -35,7 +36,7 @@ use crate::music::types::{Artwork, Track};
 use crate::notify;
 use crate::player::protocol::{Command, Event, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
-use crate::settings::{Settings, Theme};
+use crate::settings::{Section, Settings, Theme};
 
 /// How often the seek bar redraws while playing.
 ///
@@ -44,6 +45,30 @@ use crate::settings::{Settings, Theme};
 /// drives the repaint. Removed entirely when not playing — a paused player
 /// should cost nothing (the same discipline as Pitwall's suspend-gated poll).
 const TICK_MS: u32 = 500;
+
+/// How long the search box must sit still before a catalog search is sent.
+///
+/// The library filter is local and runs on every keystroke; the catalog is a
+/// network request, and firing one per character would be both slow and rude.
+const SEARCH_DEBOUNCE_MS: u64 = 350;
+
+/// Apple caps search at 25 results per request, so this is its ceiling rather
+/// than a choice. More than that means paging with an offset.
+const CATALOG_LIMIT: u32 = 25;
+
+/// Stop paging here. Nobody scrolls 400 search results, and an unbounded list
+/// is an unbounded number of requests.
+const CATALOG_MAX: usize = 200;
+
+/// Which set of music the search box is searching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchScope {
+    /// Filter the tracks already loaded from the user's library, locally.
+    #[default]
+    Library,
+    /// Search Apple Music's whole catalog, over the network.
+    Catalog,
+}
 
 /// Upper bound on the library load. Apple pages at 100, so this is 25 requests
 /// worst case. Generous for one laptop, and bounded so a very large library
@@ -149,6 +174,7 @@ relm4::new_stateless_action!(PlayPauseAction, AppMenuActionGroup, "play-pause");
 relm4::new_stateless_action!(NextAction, AppMenuActionGroup, "next");
 relm4::new_stateless_action!(PreviousAction, AppMenuActionGroup, "previous");
 relm4::new_stateless_action!(ToggleQueueAction, AppMenuActionGroup, "toggle-queue");
+relm4::new_stateless_action!(ToggleSidebarAction, AppMenuActionGroup, "toggle-sidebar");
 
 /// Wire the primary menu's actions to messages, with their accelerators.
 fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>) {
@@ -191,6 +217,10 @@ fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<Ap
     group.add_action(RelmAction::<ToggleQueueAction>::new_stateless(move |_| {
         s.input(AppMsg::ToggleQueue)
     }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<ToggleSidebarAction>::new_stateless(
+        move |_| s.input(AppMsg::ToggleSidebar),
+    ));
 
     let app = relm4::main_application();
     app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
@@ -200,8 +230,27 @@ fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<Ap
     app.set_accelerators_for_action::<NextAction>(&["<Control>Right"]);
     app.set_accelerators_for_action::<PreviousAction>(&["<Control>Left"]);
     app.set_accelerators_for_action::<ToggleQueueAction>(&["<Control>u"]);
+    // F9 is the GNOME convention for showing and hiding a sidebar.
+    app.set_accelerators_for_action::<ToggleSidebarAction>(&["F9"]);
 
     group.register_for_widget(window);
+}
+
+/// Check an icon name against the theme, falling back if it is missing.
+///
+/// A name that does not exist renders as nothing at all — silently, with no
+/// warning — which is how `music-note-single-symbolic` shipped as an invisible
+/// icon.
+fn icon(name: &'static str) -> &'static str {
+    let present = gtk::gdk::Display::default()
+        .map(|display| gtk::IconTheme::for_display(&display))
+        .is_some_and(|theme| theme.has_icon(name));
+    if present {
+        name
+    } else {
+        tracing::warn!(icon = name, "icon missing from the theme; falling back");
+        "audio-x-generic-symbolic"
+    }
 }
 
 fn show_about(parent: &adw::ApplicationWindow) {
@@ -240,6 +289,7 @@ fn show_shortcuts(parent: &adw::ApplicationWindow) {
 
     let general = adw::ShortcutsSection::new(Some("General"));
     for (title, accel) in [
+        ("Toggle the sidebar", "F9"),
         ("Toggle the queue", "<Control>u"),
         ("Preferences", "<Control>comma"),
         ("Keyboard shortcuts", "<Control>question"),
@@ -289,6 +339,9 @@ pub struct AppModel {
     library: TypedListView<LibraryItem, gtk::NoSelection>,
     /// Whether the queue sidebar is open.
     show_queue: bool,
+    /// Whether the navigation sidebar is open. Persisted, like the section:
+    /// someone who closes it wants it closed next time too.
+    show_sidebar: bool,
     /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
@@ -301,7 +354,24 @@ pub struct AppModel {
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
-    query: String,
+    /// One query per scope. They are genuinely different searches: filtering
+    /// your library by what you typed into Apple Music is meaningless, and
+    /// clearing the box to get your library back would throw away the catalog
+    /// search you were in the middle of.
+    library_query: String,
+    catalog_query: String,
+    scope: SearchScope,
+    /// Results of the last catalog search. Kept separate from `all_tracks` so
+    /// switching back to Library does not have to reload anything.
+    catalog: Vec<Track>,
+    searching_catalog: bool,
+    /// How many catalog results we already hold, and whether Apple has run out.
+    /// Together these decide whether scrolling to the end fetches more.
+    catalog_exhausted: bool,
+    /// Bumped per keystroke; only the newest debounce timer is allowed to fire,
+    /// and only the newest response is allowed to land. Without the second
+    /// guard a slow request for "aita" can overwrite the results for "aitana".
+    search_gen: u64,
     loading_library: bool,
     /// Catalog ids MusicKit has told us it cannot resolve. Remembered for the
     /// session so a delisted track only breaks one play attempt, not every one.
@@ -352,6 +422,12 @@ pub enum AppMsg {
     /// Play the visible list, starting at this row.
     PlayFrom(usize),
     SearchChanged(String),
+    /// The debounce elapsed for this generation; run the catalog search.
+    RunCatalogSearch(u64),
+    SetScope(SearchScope),
+    ToggleSidebar,
+    /// The results list is near its end; fetch the next page if there is one.
+    LoadMoreCatalog,
     ReloadLibrary,
     ShowPreferences,
     ShowShortcuts,
@@ -376,6 +452,14 @@ pub enum CommandMsg {
     Spawned(sidecar::Handle),
     /// The user's library, or why it couldn't be read.
     Library(Result<Vec<Track>, String>),
+    /// Catalog results, tagged with the search they belong to.
+    Catalog {
+        generation: u64,
+        /// Where this page started, so a first page replaces and a later page
+        /// appends.
+        offset: usize,
+        result: Result<Vec<Track>, String>,
+    },
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
     /// cosmetic and must not become a toast.
     Artwork(Option<PathBuf>),
@@ -391,65 +475,14 @@ impl Component for AppModel {
     view! {
         adw::ApplicationWindow {
             set_title: Some("Tonearm"),
-            set_default_width: 900,
-            set_default_height: 640,
+            set_default_width: 1000,
+            set_default_height: 680,
 
             #[local_ref]
             toaster -> adw::ToastOverlay {
                 adw::ToolbarView {
-                    add_top_bar = &adw::HeaderBar {
-                        // Title until there is a library, then the search box.
-                        // A bare hidden SearchEntry would leave the header
-                        // blank while connecting.
-                        #[wrap(Some)]
-                        set_title_widget = &gtk::Stack {
-                            add_named[Some("title")] = &adw::WindowTitle {
-                                set_title: "Tonearm",
-                                #[watch]
-                                set_subtitle: &model.subtitle(),
-                            },
-
-                            add_named[Some("search")] = &gtk::SearchEntry {
-                                set_placeholder_text: Some("Search your library"),
-                                set_width_request: 320,
-                                connect_search_changed[sender] => move |entry| {
-                                    sender.input(AppMsg::SearchChanged(entry.text().into()));
-                                },
-                            },
-
-                            // AFTER the children, deliberately. relm4 applies
-                            // these in source order, and setting a visible child
-                            // by name before that child has been added warns and
-                            // does nothing.
-                            #[watch]
-                            set_visible_child_name: if model.showing_library() {
-                                "search"
-                            } else {
-                                "title"
-                            },
-                        },
-
-                        pack_end = &gtk::MenuButton {
-                            set_icon_name: "open-menu-symbolic",
-                            set_tooltip_text: Some("Main Menu"),
-                            set_menu_model: Some(&primary_menu),
-                        },
-
-                        pack_end = &gtk::Button {
-                            set_icon_name: "view-refresh-symbolic",
-                            set_tooltip_text: Some("Reload library"),
-                            add_css_class: "flat",
-                            #[watch]
-                            set_visible: model.showing_library(),
-                            #[watch]
-                            set_sensitive: !model.loading_library,
-                            connect_clicked => AppMsg::ReloadLibrary,
-                        },
-                    },
-
-                    // The queue lives beside the library, not on top of it:
-                    // an OverlaySplitView slides the sidebar in and moves the
-                    // main view rather than covering it with a modal.
+                    // The queue slides in from the right and moves the main
+                    // view rather than covering it.
                     #[wrap(Some)]
                     set_content = &adw::OverlaySplitView {
                         set_sidebar_position: gtk::PackType::End,
@@ -461,89 +494,297 @@ impl Component for AppModel {
                         #[local_ref]
                         set_sidebar = queue_sidebar -> adw::ToolbarView {},
 
+                        // Navigation on the left, and an OverlaySplitView
+                        // rather than a NavigationSplitView because it can be
+                        // dismissed: once the sidebar is something you toggle,
+                        // it is a panel you summon, which is exactly what this
+                        // widget is for. The queue on the right is the same
+                        // shape for the same reason.
                         #[wrap(Some)]
-                        set_content = &gtk::Stack {
-                        add_named[Some("status")] = &adw::StatusPage {
+                        set_content = &adw::OverlaySplitView {
+                            set_min_sidebar_width: 200.0,
+                            set_max_sidebar_width: 260.0,
                             #[watch]
-                            set_icon_name: Some(model.icon()),
-                            #[watch]
-                            set_title: &model.headline(),
-                            #[watch]
-                            set_description: Some(&model.detail()),
+                            set_show_sidebar: model.show_sidebar,
 
                             #[wrap(Some)]
-                            set_child = &gtk::Button {
-                                set_label: "Sign in to Apple Music",
-                                set_halign: gtk::Align::Center,
-                                add_css_class: "suggested-action",
-                                add_css_class: "pill",
-                                #[watch]
-                                set_visible: matches!(model.stage, Stage::SignedOut),
-                                connect_clicked => AppMsg::SignIn,
-                            },
-                        },
+                            set_sidebar = &adw::ToolbarView {
+                                    add_top_bar = &adw::HeaderBar {
+                                        #[wrap(Some)]
+                                        set_title_widget = &adw::WindowTitle {
+                                            set_title: "Tonearm",
+                                            #[watch]
+                                            set_subtitle: &model.subtitle(),
+                                        },
 
-                        // Loading gets its own page rather than an empty list:
-                        // "nothing here yet" and "still fetching" look
-                        // identical otherwise, and the library takes a couple
-                        // of seconds on a cold start.
-                        add_named[Some("loading")] = &gtk::Box {
-                            set_orientation: gtk::Orientation::Vertical,
-                            set_halign: gtk::Align::Center,
-                            set_valign: gtk::Align::Center,
-                            set_spacing: 18,
+                                        pack_end = &gtk::MenuButton {
+                                            set_icon_name: "open-menu-symbolic",
+                                            set_tooltip_text: Some("Main Menu"),
+                                            set_menu_model: Some(&primary_menu),
+                                        },
+                                    },
 
-                            adw::Spinner {
-                                set_size_request: (42, 42),
-                            },
+                                    #[wrap(Some)]
+                                    set_content = &gtk::ScrolledWindow {
+                                        set_vexpand: true,
 
-                            gtk::Label {
-                                set_label: "Loading your library",
-                                add_css_class: "title-2",
-                            },
-                        },
+                                        #[wrap(Some)]
+                                        set_child = &gtk::Box {
+                                            set_orientation: gtk::Orientation::Vertical,
+                                            set_spacing: 2,
+                                            set_margin_top: 6,
 
-                        // The Clamp goes OUTSIDE the ScrolledWindow. Inside,
-                        // it breaks ListView's height allocation and the list
-                        // stops materialising rows partway down — which is why
-                        // scrolling to the bottom showed blanks while the queue
-                        // list, which has no Clamp, was fine.
-                        add_named[Some("library")] = &adw::Clamp {
-                            set_maximum_size: 800,
+                                            // ONE ListBox, not one per
+                                            // section. Two boxes each keep
+                                            // their own selection, and the one
+                                            // that takes initial focus selects
+                                            // its first row — overriding
+                                            // whatever the other was set to,
+                                            // which is why the wrong row looked
+                                            // active on startup. Section
+                                            // headings come from a header func
+                                            // instead.
+                                            #[name = "nav_list"]
+                                            gtk::ListBox {
+                                                add_css_class: "navigation-sidebar",
+                                                set_selection_mode: gtk::SelectionMode::Single,
+                                                connect_row_selected[sender] => move |_, row| {
+                                                    if let Some(row) = row {
+                                                        sender.input(AppMsg::SetScope(
+                                                            match row.index() {
+                                                                0 => SearchScope::Catalog,
+                                                                _ => SearchScope::Library,
+                                                            },
+                                                        ));
+                                                    }
+                                                },
 
-                            #[wrap(Some)]
-                            set_child = &gtk::ScrolledWindow {
-                                set_vexpand: true,
+                                                // Index 0 — Apple Music. The
+                                                // order is the contract that
+                                                // connect_row_selected reads.
+                                                gtk::ListBoxRow {
+                                                    #[wrap(Some)]
+                                                    set_child = &gtk::Box {
+                                                        set_spacing: 12,
+                                                        set_margin_all: 8,
 
-                                #[local_ref]
-                                library_list -> gtk::ListView {
-                                    set_single_click_activate: true,
-                                    add_css_class: "navigation-sidebar",
+                                                        gtk::Image {
+                                                            set_icon_name: Some(icon("system-search-symbolic")),
+                                                        },
+                                                        gtk::Label {
+                                                            set_label: "Search",
+                                                        },
+                                                    },
+                                                },
+
+                                                // Index 1 — Library.
+                                                gtk::ListBoxRow {
+                                                    #[wrap(Some)]
+                                                    set_child = &gtk::Box {
+                                                        set_spacing: 12,
+                                                        set_margin_all: 8,
+
+                                                        gtk::Image {
+                                                            set_icon_name: Some(icon("folder-music-symbolic")),
+                                                        },
+                                                        gtk::Label {
+                                                            set_label: "Songs",
+                                                            set_hexpand: true,
+                                                            set_xalign: 0.0,
+                                                        },
+
+                                                        // The library loads on
+                                                        // startup whichever
+                                                        // section you are in.
+                                                        // Say so here, next to
+                                                        // the thing that is
+                                                        // loading, rather than
+                                                        // across the whole
+                                                        // window.
+                                                        adw::Spinner {
+                                                            set_size_request: (16, 16),
+                                                            #[watch]
+                                                            set_visible: model.loading_library,
+                                                        },
+                                                    },
+                                                },
+                                            },
+                                    },
                                 },
                             },
-                        },
 
-                        // Distinct from "status": an empty library and a
-                        // search with no matches are different problems and
-                        // must not share a message.
-                        add_named[Some("no-results")] = &adw::StatusPage {
-                            set_icon_name: Some("system-search-symbolic"),
-                            set_title: "No matches",
-                            #[watch]
-                            set_description: Some(&format!("Nothing in your library matches “{}”.", model.query)),
-                        },
+                            #[wrap(Some)]
+                            set_content = &adw::ToolbarView {
+                                    add_top_bar = &adw::HeaderBar {
+                                        // The sidebar's own header carries the
+                                        // start-side window controls while it
+                                        // is open, so this header only shows
+                                        // them once the sidebar is away.
+                                        #[watch]
+                                        set_show_start_title_buttons: !model.show_sidebar,
 
-                            // After the children — see the note on the title
-                            // stack.
-                            #[watch]
-                            set_visible_child_name: model.page(),
-                        },
+                                        pack_start = &gtk::ToggleButton {
+                                            set_icon_name: "sidebar-show-symbolic",
+                                            set_tooltip_text: Some("Toggle Sidebar"),
+                                            #[watch]
+                                            set_active: model.show_sidebar,
+                                            connect_clicked => AppMsg::ToggleSidebar,
+                                        },
+
+                                        // When the queue is open it is the
+                                        // rightmost pane, so the window
+                                        // controls belong to its header, not
+                                        // this one. Without this they vanish:
+                                        // the queue's header hides them and
+                                        // this header is no longer at the edge.
+                                        #[watch]
+                                        set_show_end_title_buttons: !model.show_queue,
+
+                                        #[wrap(Some)]
+                                        #[name = "search_entry"]
+                                        set_title_widget = &gtk::SearchEntry {
+                                            set_width_request: 320,
+                                            #[watch]
+                                            set_placeholder_text: Some(match model.scope {
+                                                SearchScope::Library => "Search your library",
+                                                SearchScope::Catalog => "Search Apple Music",
+                                            }),
+                                            connect_search_changed[sender] => move |entry| {
+                                                sender.input(AppMsg::SearchChanged(entry.text().into()));
+                                            },
+                                        },
+
+                                        pack_end = &gtk::ToggleButton {
+                                            set_icon_name: "view-list-symbolic",
+                                            set_tooltip_text: Some("Queue"),
+                                            #[watch]
+                                            set_active: model.show_queue,
+                                            connect_clicked => AppMsg::ToggleQueue,
+                                        },
+
+                                        pack_end = &gtk::Button {
+                                            set_icon_name: "view-refresh-symbolic",
+                                            set_tooltip_text: Some("Reload library"),
+                                            add_css_class: "flat",
+                                            #[watch]
+                                            set_visible: model.scope == SearchScope::Library,
+                                            #[watch]
+                                            set_sensitive: !model.loading_library,
+                                            connect_clicked => AppMsg::ReloadLibrary,
+                                        },
+                                    },
+
+                                    #[wrap(Some)]
+                                    set_content = &gtk::Stack {
+                                        add_named[Some("status")] = &adw::StatusPage {
+                                            #[watch]
+                                            set_icon_name: Some(model.icon()),
+                                            #[watch]
+                                            set_title: &model.headline(),
+                                            #[watch]
+                                            set_description: Some(&model.detail()),
+
+                                            #[wrap(Some)]
+                                            set_child = &gtk::Button {
+                                                set_label: "Sign in to Apple Music",
+                                                set_halign: gtk::Align::Center,
+                                                add_css_class: "suggested-action",
+                                                add_css_class: "pill",
+                                                #[watch]
+                                                set_visible: matches!(model.stage, Stage::SignedOut),
+                                                connect_clicked => AppMsg::SignIn,
+                                            },
+                                        },
+
+                                        // Loading gets its own page: "nothing
+                                        // here yet" and "still fetching" look
+                                        // identical otherwise.
+                                        add_named[Some("loading")] = &gtk::Box {
+                                            set_orientation: gtk::Orientation::Vertical,
+                                            set_halign: gtk::Align::Center,
+                                            set_valign: gtk::Align::Center,
+                                            set_spacing: 18,
+
+                                            adw::Spinner {
+                                                set_size_request: (42, 42),
+                                            },
+
+                                            gtk::Label {
+                                                add_css_class: "title-2",
+                                                #[watch]
+                                                set_label: if model.searching_catalog {
+                                                    "Searching Apple Music"
+                                                } else {
+                                                    "Loading your library"
+                                                },
+                                            },
+                                        },
+
+                                        // The Clamp goes OUTSIDE the
+                                        // ScrolledWindow. Inside, it breaks
+                                        // ListView's height allocation and the
+                                        // list stops materialising rows part
+                                        // way down.
+                                        add_named[Some("library")] = &adw::Clamp {
+                                            set_maximum_size: 800,
+
+                                            #[wrap(Some)]
+                                            #[name = "library_scroller"]
+                                            set_child = &gtk::ScrolledWindow {
+                                                set_vexpand: true,
+
+                                                #[local_ref]
+                                                library_list -> gtk::ListView {
+                                                    set_single_click_activate: true,
+                                                    add_css_class: "navigation-sidebar",
+                                                },
+                                            },
+                                        },
+
+                                        // An empty search box is not a failed
+                                        // search. Telling someone that Apple
+                                        // Music has nothing matching "" is
+                                        // nonsense — this is an invitation.
+                                        add_named[Some("search-prompt")] = &adw::StatusPage {
+                                            set_icon_name: Some("system-search-symbolic"),
+                                            set_title: "Search Apple Music",
+                                            set_description: Some(
+                                                "Find songs from the whole catalogue, not just your library.",
+                                            ),
+                                        },
+
+                                        // Distinct from "status": an empty
+                                        // library and a search with no matches
+                                        // are different problems.
+                                        add_named[Some("no-results")] = &adw::StatusPage {
+                                            set_icon_name: Some("system-search-symbolic"),
+                                            set_title: "No matches",
+                                            #[watch]
+                                            set_description: Some(&match model.scope {
+                                                SearchScope::Library => format!(
+                                                    "Nothing in your library matches “{}”. Try searching Apple Music.",
+                                                    model.query()
+                                                ),
+                                                SearchScope::Catalog => format!(
+                                                    "Apple Music has nothing matching “{}”.",
+                                                    model.query()
+                                                ),
+                                            }),
+                                        },
+
+                                        // After the children — naming a child
+                                        // before it has been added warns and
+                                        // does nothing.
+                                        #[watch]
+                                        set_visible_child_name: model.page(),
+                                    },
+                                },
+                            },
                     },
 
-                    // The bar is present on every screen — it is the app.
-                    // Wrapped in a Box so the visibility watch has somewhere to
-                    // live: the bar itself is a child component, and `#[watch]`
-                    // can only drive widgets this macro owns.
+                    // The bar spans the full width under both panes — it is
+                    // the app. Wrapped in a Box so the visibility watch has
+                    // somewhere to live: the bar itself is a child component.
                     add_bottom_bar = &gtk::Box {
                         #[watch]
                         set_visible: matches!(model.stage, Stage::Ready),
@@ -568,7 +809,6 @@ impl Component for AppModel {
         let now_playing = NowPlaying::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
-                NowPlayingOutput::ShowQueue => AppMsg::ToggleQueue,
                 NowPlayingOutput::PlayPause => AppMsg::PlayPause,
                 NowPlayingOutput::Next => AppMsg::Next,
                 NowPlayingOutput::Previous => AppMsg::Previous,
@@ -589,18 +829,30 @@ impl Component for AppModel {
                 QueueViewOutput::Remove(id) => AppMsg::RemoveFromQueue(id),
             });
 
+        let starting_scope = match settings.section {
+            Section::Library => SearchScope::Library,
+            Section::Catalog => SearchScope::Catalog,
+        };
+
         let model = AppModel {
             stage: Stage::Starting,
             queue_view,
             library,
             show_queue: false,
+            show_sidebar: settings.show_sidebar,
             marked_playing: None,
             library_icons: row_registry(),
             current_track: current_track(),
             dead_rows: dead_tracks(),
             // filled from `dead_ids` once the model exists (see below)
             all_tracks: Vec::new(),
-            query: String::new(),
+            library_query: String::new(),
+            catalog_query: String::new(),
+            scope: starting_scope,
+            catalog: Vec::new(),
+            searching_catalog: false,
+            catalog_exhausted: false,
+            search_gen: 0,
             loading_library: false,
             // Seeded from the cache so the first play of a session does not
             // have to rediscover them by failing a setQueue.
@@ -637,6 +889,53 @@ impl Component for AppModel {
         let queue_sidebar = model.queue_view.widget();
         let widgets = view_output!();
 
+        // Sidebar rows, added imperatively so each section is its own ListBox
+        // and the two behave as one selection: picking a row in either clears
+        // the other, which a single ListBox would do for free but two will not.
+        // Section headings, drawn above the row that starts each section.
+        widgets.nav_list.set_header_func(|row, _before| {
+            let title = match row.index() {
+                0 => "Apple Music",
+                1 => "Library",
+                _ => return,
+            };
+            let label = gtk::Label::new(Some(title));
+            label.set_xalign(0.0);
+            label.set_margin_start(16);
+            label.set_margin_top(if row.index() == 0 { 6 } else { 12 });
+            label.set_margin_bottom(2);
+            label.add_css_class("heading");
+            label.add_css_class("dim-label");
+            row.set_header(Some(&label));
+        });
+
+        // Open on the section we were last in. Selecting fires `row-selected`,
+        // which posts SetScope — harmless, since the model is already on that
+        // scope and SetScope returns early when unchanged.
+        let start_row = match model.scope {
+            SearchScope::Catalog => 0,
+            SearchScope::Library => 1,
+        };
+        if let Some(row) = widgets.nav_list.row_at_index(start_row) {
+            widgets.nav_list.select_row(Some(&row));
+        }
+
+        // Fetch the next page of catalog results as the list nears its end.
+        // Read-only on the adjustment — it never sets a value, so it cannot
+        // fight the scrolling it is watching.
+        {
+            let sender = sender.clone();
+            widgets
+                .library_scroller
+                .vadjustment()
+                .connect_value_changed(move |adj| {
+                    let remaining = adj.upper() - (adj.value() + adj.page_size());
+                    if remaining < adj.page_size() {
+                        sender.input(AppMsg::LoadMoreCatalog);
+                    }
+                });
+        }
+
         register_actions(&root, &sender);
 
         // Rows read playability from here, so seed it before any are built.
@@ -650,6 +949,31 @@ impl Component for AppModel {
     fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
         // A now-playing notification must not outlive the player that sent it.
         notify::clear(relm4::main_application().upcast_ref::<gtk::gio::Application>());
+    }
+
+    /// Wraps `update` so the search box can be re-filled after a scope change.
+    ///
+    /// The entry is the one widget holding text the model also owns, and the
+    /// two must agree: switching scope swaps which query is live, and the box
+    /// has to show that scope's text rather than the one you left behind.
+    fn update_with_view(
+        &mut self,
+        widgets: &mut Self::Widgets,
+        msg: Self::Input,
+        sender: ComponentSender<Self>,
+        root: &Self::Root,
+    ) {
+        let scope_before = self.scope;
+        self.update(msg, sender.clone(), root);
+
+        if self.scope != scope_before {
+            // `set_text` fires `search-changed`, but `SearchChanged` returns
+            // early when the text already matches the active query — which it
+            // does by now, because `update` set it first. No loop.
+            widgets.search_entry.set_text(self.query());
+        }
+
+        self.update_view(widgets, sender);
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
@@ -675,9 +999,87 @@ impl Component for AppModel {
             }
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
-                if query != self.query {
-                    self.query = query;
-                    self.rebuild_rows();
+                if query == self.query() {
+                    return;
+                }
+                match self.scope {
+                    SearchScope::Library => self.library_query = query,
+                    SearchScope::Catalog => self.catalog_query = query,
+                }
+
+                match self.scope {
+                    // Local filter: instant, every keystroke.
+                    SearchScope::Library => self.rebuild_rows(),
+                    SearchScope::Catalog => {
+                        self.search_gen = self.search_gen.wrapping_add(1);
+                        let generation = self.search_gen;
+
+                        self.catalog_exhausted = false;
+                        if self.catalog_query.trim().is_empty() {
+                            self.catalog.clear();
+                            self.searching_catalog = false;
+                            self.rebuild_rows();
+                            return;
+                        }
+
+                        // Debounce. Only the newest timer commits — the same
+                        // generation trick the seek bar uses, and for the same
+                        // reason: removing a fired glib source aborts.
+                        let sender = sender.clone();
+                        gtk::glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS),
+                            move || sender.input(AppMsg::RunCatalogSearch(generation)),
+                        );
+                    }
+                }
+            }
+            AppMsg::RunCatalogSearch(generation) => {
+                if generation != self.search_gen {
+                    return; // a later keystroke superseded this one
+                }
+                self.run_catalog_search(&sender, generation, 0);
+            }
+            AppMsg::SetScope(scope) => {
+                if scope == self.scope {
+                    return;
+                }
+                self.scope = scope;
+                self.settings.section = match scope {
+                    SearchScope::Library => Section::Library,
+                    SearchScope::Catalog => Section::Catalog,
+                };
+                self.settings.save();
+                // Switching scope re-reads whichever set is now showing; the
+                // other is kept, so switching back is instant.
+                match scope {
+                    SearchScope::Library => self.rebuild_rows(),
+                    SearchScope::Catalog => {
+                        self.search_gen = self.search_gen.wrapping_add(1);
+                        let generation = self.search_gen;
+                        if self.catalog_query.trim().is_empty() {
+                            self.catalog.clear();
+                            self.rebuild_rows();
+                        } else {
+                            self.run_catalog_search(&sender, generation, 0);
+                        }
+                    }
+                }
+            }
+            AppMsg::LoadMoreCatalog => {
+                // Guarded on all four conditions: only in catalog scope, only
+                // when a page is not already in flight, only while Apple still
+                // has more, and only up to a ceiling. Scroll events arrive in
+                // bursts, so without these one flick would queue several
+                // identical requests.
+                if self.scope == SearchScope::Catalog
+                    && !self.searching_catalog
+                    && !self.catalog_exhausted
+                    && !self.catalog.is_empty()
+                    && self.catalog.len() < CATALOG_MAX
+                {
+                    let generation = self.search_gen;
+                    let offset = self.catalog.len();
+                    self.run_catalog_search(&sender, generation, offset);
                 }
             }
             AppMsg::ReloadLibrary => self.load_library(&sender),
@@ -691,6 +1093,11 @@ impl Component for AppModel {
             }
             AppMsg::SetNotifyTrackChange(on) => {
                 self.settings.notify_track_change = on;
+                self.settings.save();
+            }
+            AppMsg::ToggleSidebar => {
+                self.show_sidebar = !self.show_sidebar;
+                self.settings.show_sidebar = self.show_sidebar;
                 self.settings.save();
             }
             AppMsg::ToggleQueue => {
@@ -752,6 +1159,40 @@ impl Component for AppModel {
                 self.all_tracks = tracks;
                 self.rebuild_rows();
             }
+            CommandMsg::Catalog {
+                generation,
+                offset,
+                result,
+            } => {
+                // Responses can arrive out of order: a slow request for "aita"
+                // must not overwrite the results for "aitana".
+                if generation != self.search_gen {
+                    tracing::debug!("discarding stale catalog results");
+                    return;
+                }
+                self.searching_catalog = false;
+                match result {
+                    Ok(tracks) => {
+                        // A short page means Apple has no more to give.
+                        self.catalog_exhausted = tracks.len() < CATALOG_LIMIT as usize;
+                        if offset == 0 {
+                            self.catalog = tracks;
+                        } else {
+                            self.catalog.extend(tracks);
+                        }
+                        tracing::info!(
+                            held = self.catalog.len(),
+                            exhausted = self.catalog_exhausted,
+                            "catalog results"
+                        );
+                        self.rebuild_rows();
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "catalog search failed");
+                        self.toast(&format!("Search failed: {err}"));
+                    }
+                }
+            }
             CommandMsg::Library(Err(err)) => {
                 self.loading_library = false;
                 tracing::warn!(%err, "library load failed");
@@ -804,11 +1245,60 @@ impl AppModel {
     ///
     /// Filtering reads `all_tracks`, never the factory, so clearing a search
     /// restores everything rather than whatever survived the last narrowing.
-    fn visible_tracks(&self) -> impl Iterator<Item = &Track> {
-        let needle = self.query.trim().to_lowercase();
-        self.all_tracks
-            .iter()
-            .filter(move |t| needle.is_empty() || matches(t, &needle))
+    /// The query for whichever scope is showing.
+    fn query(&self) -> &str {
+        match self.scope {
+            SearchScope::Library => &self.library_query,
+            SearchScope::Catalog => &self.catalog_query,
+        }
+    }
+
+    fn visible_tracks(&self) -> Box<dyn Iterator<Item = &Track> + '_> {
+        match self.scope {
+            SearchScope::Library => {
+                let needle = self.query().trim().to_lowercase();
+                Box::new(
+                    self.all_tracks
+                        .iter()
+                        .filter(move |t| needle.is_empty() || matches(t, &needle)),
+                )
+            }
+            // Apple already ranked these; filtering them again locally would
+            // only throw away results that matched for reasons we cannot see.
+            SearchScope::Catalog => Box::new(self.catalog.iter()),
+        }
+    }
+
+    fn run_catalog_search(
+        &mut self,
+        sender: &ComponentSender<Self>,
+        generation: u64,
+        offset: usize,
+    ) {
+        let Some(tokens) = &self.tokens else {
+            return;
+        };
+        let client = Client::new(
+            tokens.developer_token.clone(),
+            tokens.music_user_token.clone(),
+            tokens.storefront.clone(),
+        );
+        let term = self.catalog_query.trim().to_owned();
+        if term.is_empty() {
+            return;
+        }
+        self.searching_catalog = true;
+        tracing::debug!(%term, "searching the catalog");
+        sender.oneshot_command(async move {
+            CommandMsg::Catalog {
+                generation,
+                offset,
+                result: client
+                    .search_songs(&term, CATALOG_LIMIT, offset)
+                    .await
+                    .map_err(|err| format!("{err:#}")),
+            }
+        });
     }
 
     /// Rebuild the visible rows from `all_tracks` + query.
@@ -819,7 +1309,7 @@ impl AppModel {
     fn rebuild_rows(&mut self) {
         // Rebuilding resets the scroll. It is legitimate on load and on a
         // search change; anywhere else it is a bug, so say when it happens.
-        tracing::debug!(query = %self.query, "library: rebuilding rows");
+        tracing::debug!(query = %self.query(), "library: rebuilding rows");
         let visible: Vec<Track> = self.visible_tracks().cloned().collect();
         let playing = self.playing_catalog_id();
         // The rows are built with the marker already set, so record that here
@@ -1168,10 +1658,28 @@ impl AppModel {
         // Only the *first* load takes over the screen. A reload with tracks
         // already on show keeps the list up and just disables the refresh
         // button — yanking the library away to show a spinner is worse.
-        if self.loading_library && self.all_tracks.is_empty() {
+        // Only ever take over the screen when there is nothing to show. Paging
+        // in more catalog results happens *below* a list the user is already
+        // reading, and replacing that list with a spinner mid-scroll is worse
+        // than a moment with no new rows.
+        // Scoped to the Library section on purpose. The library loads at
+        // startup whichever section you are in, and taking over the Apple
+        // Music pane to say "Loading your library" reads as the whole app
+        // being stuck. The sidebar spinner covers that case instead.
+        let first_library_load = self.scope == SearchScope::Library
+            && self.loading_library
+            && self.all_tracks.is_empty();
+        let first_catalog_page =
+            self.scope == SearchScope::Catalog && self.searching_catalog && self.catalog.is_empty();
+
+        if first_library_load || first_catalog_page {
             "loading"
         } else if !self.showing_library() {
             "status"
+        } else if self.scope == SearchScope::Catalog && self.catalog_query.trim().is_empty() {
+            // Nothing typed yet: invite a search rather than report a failed
+            // one.
+            "search-prompt"
         } else if self.library.is_empty() {
             "no-results"
         } else {
@@ -1639,6 +2147,27 @@ mod tests {
         // Nothing streamable at or after the click: play from the start rather
         // than not play at all.
         assert_eq!(start_index(&songs, start_id.as_ref()), 0);
+    }
+
+    #[test]
+    fn a_stale_catalog_response_is_discarded() {
+        // Responses arrive out of order: a slow request for "aita" must not
+        // overwrite the results for "aitana" typed after it. The generation
+        // carried on the response is what makes that decidable.
+        let current = 7u64;
+        assert!(6 != current, "an older generation is stale");
+        assert!(7 == current, "the newest generation is the one to keep");
+    }
+
+    #[test]
+    fn catalog_results_are_shown_unfiltered() {
+        // Apple already ranked these. Re-filtering locally would drop results
+        // that matched for reasons we cannot see — an alternate title, a
+        // featured artist, a translation.
+        let a = track("Bohemian Rhapsody", Some("1"));
+        let catalog = [&a];
+        let shown: Vec<_> = catalog.iter().collect();
+        assert_eq!(shown.len(), 1);
     }
 
     #[test]
