@@ -329,6 +329,9 @@ pub struct AppModel {
     /// The track the last notification was sent for, so a queue echo or a
     /// position tick cannot re-notify for the song already playing.
     notified_for: Option<String>,
+    /// A track whose notification is waiting on its cover to finish
+    /// downloading. See `maybe_notify`.
+    notify_when_art_lands: Option<String>,
 }
 
 #[derive(Debug)]
@@ -617,6 +620,7 @@ impl Component for AppModel {
             tick: None,
             settings,
             notified_for: None,
+            notify_when_art_lands: None,
         };
         let primary_menu = gtk::gio::Menu::new();
         {
@@ -760,6 +764,16 @@ impl Component for AppModel {
                 }
                 self.art_path = path.clone();
                 self.now_playing.emit(NowPlayingInput::ArtworkReady(path));
+
+                // A notification was held back for this track so it would not
+                // go out carrying the previous album's cover. Guarded on the
+                // id, in case the track changed again while the fetch ran.
+                if self.notify_when_art_lands.is_some()
+                    && self.notify_when_art_lands == self.playing_catalog_id()
+                {
+                    self.send_track_notification();
+                }
+
                 // MPRIS carries the cover too, so the Shell applet and lock
                 // screen pick it up as soon as it lands.
                 self.push_snapshot();
@@ -834,7 +848,7 @@ impl AppModel {
     /// a seek or an artwork arrival all count as metadata changes, and none of
     /// them is a new song. Without this you get several notifications per
     /// track.
-    fn maybe_notify(&mut self) {
+    fn maybe_notify(&mut self, artwork_in_flight: bool) {
         if !self.settings.notify_track_change {
             // Still track what is playing, so switching the preference on
             // mid-song does not immediately fire for the song already playing.
@@ -846,15 +860,27 @@ impl AppModel {
         if current.is_none() || current == self.notified_for {
             return;
         }
-        self.notified_for = current;
+        self.notified_for = current.clone();
 
+        if artwork_in_flight {
+            // `art_path` still holds the PREVIOUS track's cover: the fetch is
+            // async and has not landed yet. Notifying now shows the wrong
+            // album. Wait for CommandMsg::Artwork, which always arrives — with
+            // None if the fetch failed.
+            self.notify_when_art_lands = current;
+            return;
+        }
+        self.send_track_notification();
+    }
+
+    /// Post the notification for whatever is playing now.
+    fn send_track_notification(&mut self) {
+        self.notify_when_art_lands = None;
         let Some(item) = self.player.now_playing.as_ref() else {
             return;
         };
         notify::track_changed(
-            &relm4::main_application()
-                .upcast_ref::<gtk::gio::Application>()
-                .clone(),
+            relm4::main_application().upcast_ref::<gtk::gio::Application>(),
             &item.title,
             &item.artist,
             self.art_path.as_deref(),
@@ -1245,7 +1271,9 @@ impl AppModel {
     }
 
     /// Fetch cover art for the current track, at most once per template.
-    fn sync_artwork(&mut self, sender: &ComponentSender<Self>) {
+    /// Returns whether a fetch is now in flight, so the caller knows that
+    /// `art_path` is stale until `CommandMsg::Artwork` arrives.
+    fn sync_artwork(&mut self, sender: &ComponentSender<Self>) -> bool {
         let template = self
             .player
             .now_playing
@@ -1253,7 +1281,9 @@ impl AppModel {
             .and_then(|i| i.artwork_template.clone());
 
         if template == self.art_for {
-            return;
+            // Same cover as the last track — usually the next song on the same
+            // album. `art_path` is already correct.
+            return false;
         }
         self.art_for = template.clone();
 
@@ -1263,8 +1293,13 @@ impl AppModel {
                 sender.oneshot_command(async move {
                     CommandMsg::Artwork(artwork::fetch(art, ART_SIZE).await.ok())
                 });
+                true
             }
-            None => self.now_playing.emit(NowPlayingInput::ArtworkReady(None)),
+            None => {
+                self.art_path = None;
+                self.now_playing.emit(NowPlayingInput::ArtworkReady(None));
+                false
+            }
         }
     }
 
@@ -1380,9 +1415,9 @@ impl AppModel {
         // place rather than being sprinkled through the match above — miss one
         // branch there and the bar silently goes stale.
         if metadata_changed {
-            self.sync_artwork(sender);
+            let artwork_in_flight = self.sync_artwork(sender);
             self.mark_now_playing();
-            self.maybe_notify();
+            self.maybe_notify(artwork_in_flight);
         }
         self.sync_tick(sender);
         self.push_snapshot();
