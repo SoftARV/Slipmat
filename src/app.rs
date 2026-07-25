@@ -15,16 +15,16 @@
 use std::path::PathBuf;
 
 use relm4::adw::prelude::*;
-use relm4::factory::FactoryVecDeque;
 use relm4::{
-    Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmWidgetExt,
-    adw, gtk,
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, adw, gtk,
 };
+
+use relm4::typed_view::list::TypedListView;
 
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
 use crate::components::queue_view::{QueueEntry, QueueView, QueueViewInput, QueueViewOutput};
-use crate::components::track_row::{TrackRow, TrackRowInit, TrackRowInput, TrackRowOutput};
+use crate::components::track_row::LibraryItem;
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
@@ -162,8 +162,11 @@ pub struct AppModel {
     toaster: adw::ToastOverlay,
     now_playing: Controller<NowPlaying>,
     queue_view: Controller<QueueView>,
-    /// The rows on screen — the filtered view.
-    library: FactoryVecDeque<TrackRow>,
+    /// The rows on screen — the filtered view. A `ListView`, so its cost is
+    /// the number of rows visible rather than the size of the library.
+    library: TypedListView<LibraryItem, gtk::NoSelection>,
+    /// Whether the queue sidebar is open.
+    show_queue: bool,
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
@@ -212,7 +215,9 @@ pub enum AppMsg {
     PlayFrom(usize),
     SearchChanged(String),
     ReloadLibrary,
-    ShowQueue,
+    ToggleQueue,
+    /// A library row was activated; the position is resolved immediately.
+    LibraryActivated(u32),
     /// Act on a track in MusicKit's queue, by id. The position is resolved
     /// against the live queue at send time — our row order can drift from
     /// MusicKit's, and sending a stale position got INVALID_ARGUMENTS.
@@ -293,8 +298,22 @@ impl Component for AppModel {
                         },
                     },
 
+                    // The queue lives beside the library, not on top of it:
+                    // an OverlaySplitView slides the sidebar in and moves the
+                    // main view rather than covering it with a modal.
                     #[wrap(Some)]
-                    set_content = &gtk::Stack {
+                    set_content = &adw::OverlaySplitView {
+                        set_sidebar_position: gtk::PackType::End,
+                        set_max_sidebar_width: 380.0,
+                        #[watch]
+                        set_show_sidebar: model.show_queue,
+
+                        #[wrap(Some)]
+                        #[local_ref]
+                        set_sidebar = queue_sidebar -> adw::ToolbarView {},
+
+                        #[wrap(Some)]
+                        set_content = &gtk::Stack {
                         add_named[Some("status")] = &adw::StatusPage {
                             #[watch]
                             set_icon_name: Some(model.icon()),
@@ -343,11 +362,9 @@ impl Component for AppModel {
                                 set_maximum_size: 800,
 
                                 #[local_ref]
-                                library_list -> gtk::ListBox {
-                                    set_selection_mode: gtk::SelectionMode::None,
-                                    set_valign: gtk::Align::Start,
-                                    set_margin_all: 12,
-                                    add_css_class: "boxed-list",
+                                library_list -> gtk::ListView {
+                                    set_single_click_activate: true,
+                                    add_css_class: "navigation-sidebar",
                                 },
                             },
                         },
@@ -362,9 +379,11 @@ impl Component for AppModel {
                             set_description: Some(&format!("Nothing in your library matches “{}”.", model.query)),
                         },
 
-                        // After the children — see the note on the title stack.
-                        #[watch]
-                        set_visible_child_name: model.page(),
+                            // After the children — see the note on the title
+                            // stack.
+                            #[watch]
+                            set_visible_child_name: model.page(),
+                        },
                     },
 
                     // The bar is present on every screen — it is the app.
@@ -395,7 +414,7 @@ impl Component for AppModel {
         let now_playing = NowPlaying::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
-                NowPlayingOutput::ShowQueue => AppMsg::ShowQueue,
+                NowPlayingOutput::ShowQueue => AppMsg::ToggleQueue,
                 NowPlayingOutput::PlayPause => AppMsg::PlayPause,
                 NowPlayingOutput::Next => AppMsg::Next,
                 NowPlayingOutput::Previous => AppMsg::Previous,
@@ -403,11 +422,11 @@ impl Component for AppModel {
                 NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
             });
 
-        let library = FactoryVecDeque::builder()
-            .launch(gtk::ListBox::default())
-            .forward(sender.input_sender(), |out| match out {
-                TrackRowOutput::Activated(index) => AppMsg::PlayFrom(index),
-            });
+        let library: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
+        let activate = sender.clone();
+        library.view.connect_activate(move |_, position| {
+            activate.input(AppMsg::LibraryActivated(position));
+        });
 
         let queue_view = QueueView::builder()
             .launch(())
@@ -420,6 +439,7 @@ impl Component for AppModel {
             stage: Stage::Starting,
             queue_view,
             library,
+            show_queue: false,
             all_tracks: Vec::new(),
             query: String::new(),
             loading_library: false,
@@ -440,7 +460,8 @@ impl Component for AppModel {
         };
         let toaster = &model.toaster;
         let now_playing_bar = model.now_playing.widget();
-        let library_list = model.library.widget();
+        let library_list = &model.library.view;
+        let queue_sidebar = model.queue_view.widget();
         let widgets = view_output!();
 
         start_sidecar(&sender);
@@ -448,7 +469,7 @@ impl Component for AppModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
             AppMsg::PlayPause => self.send(Command::PlayPause),
@@ -477,9 +498,17 @@ impl Component for AppModel {
                 }
             }
             AppMsg::ReloadLibrary => self.load_library(&sender),
-            AppMsg::ShowQueue => {
-                self.queue_view.widget().present(Some(root));
-                self.queue_view.emit(QueueViewInput::ScrollToPlaying);
+            AppMsg::ToggleQueue => {
+                self.show_queue = !self.show_queue;
+                if self.show_queue {
+                    self.queue_view.emit(QueueViewInput::ScrollToPlaying);
+                }
+            }
+            AppMsg::LibraryActivated(position) => {
+                // The store is the visible list, so this position is the row
+                // index `queue_from` expects. Resolved here and now, never
+                // stored.
+                sender.input(AppMsg::PlayFrom(position as usize));
             }
             AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
                 Some(index) => self.send(Command::ChangeToIndex { index }),
@@ -584,21 +613,41 @@ impl AppModel {
     /// rows hold no state worth preserving (no popovers, no expanders).
     fn rebuild_rows(&mut self) {
         let visible: Vec<Track> = self.visible_tracks().cloned().collect();
-        let mut rows = self.library.guard();
-        rows.clear();
-        for (index, track) in visible.into_iter().enumerate() {
-            rows.push_back(TrackRowInit { track, index });
-        }
+        let playing = self.playing_catalog_id();
+        self.library.clear();
+        self.library
+            .extend_from_iter(visible.into_iter().map(|track| {
+                let item = LibraryItem::new(track);
+                if item.track.catalog_id.is_some() && item.track.catalog_id == playing {
+                    item.playing.set_value(true);
+                }
+                item
+            }));
     }
 
     /// Tell the rows which one is playing, so the list shows a play marker.
-    fn mark_now_playing(&self) {
-        let current = self
-            .player
+    /// The catalog id of the track MusicKit is on, if any.
+    fn playing_catalog_id(&self) -> Option<String> {
+        self.player
             .now_playing
             .as_ref()
-            .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()));
-        self.library.broadcast(TrackRowInput::NowPlaying(current));
+            .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()))
+    }
+
+    /// Move the play marker in the library list.
+    ///
+    /// The flag lives in a `BoolBinding`, so setting it repaints the bound row
+    /// without rebuilding the list — nothing scrolls, and rows that are not on
+    /// screen cost nothing.
+    fn mark_now_playing(&self) {
+        let current = self.playing_catalog_id();
+        for item in self.library.iter() {
+            let item = item.borrow();
+            let should = current.is_some() && item.track.catalog_id == current;
+            if item.playing.value() != should {
+                item.playing.set_value(should);
+            }
+        }
     }
 
     fn load_library(&mut self, sender: &ComponentSender<Self>) {
@@ -706,10 +755,8 @@ impl AppModel {
         // row, which scrolls the list back to the top — jarring at the best of
         // times, and this fires on the first play of a session, right as the
         // user is looking at the row they just clicked.
-        self.library
-            .broadcast(TrackRowInput::MarkDead(std::rc::Rc::new(
-                self.dead_ids.clone(),
-            )));
+        // Cheap now: the store holds data, and only the visible rows re-bind.
+        self.rebuild_rows();
     }
 
     /// Check that MusicKit actually landed on the track we asked for, and

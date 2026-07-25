@@ -1,23 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Miguel Rincon
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What's playing next — MusicKit's queue, shown natively.
+//! What's playing next — MusicKit's queue, as a sidebar.
 //!
-//! Two rules here, both learned the hard way in M5 and both re-learned in the
-//! first version of this file:
+//! Two rules, both learned the hard way and both re-learned inside this file:
 //!
 //! 1. **Address MusicKit's queue, never a position we derived.** Its queue and
-//!    our library list are not the same list.
-//! 2. **Identify a track by its id, not its index.** An index is only valid
-//!    until the queue changes, and the queue changes under you — removing an
-//!    item shifts everything below it. The row that is playing is the row whose
-//!    *id* matches, and the row you click is whatever it has *become*, which is
-//!    what `DynamicIndex` is for.
+//!    our rows are not the same list.
+//! 2. **Identify a track by its id, not its index.** Rows emit an id; `app.rs`
+//!    resolves it against the live queue at send time. The one exception is
+//!    activation, where GTK hands us a position that we turn straight back into
+//!    an id before anything else can run.
+//!
+//! Like the library, this is a `ListView` and not a `ListBox`: a 500-track
+//! queue is 500 live widgets otherwise, on screen at the same time as the
+//! library's 541.
 
 use relm4::adw::prelude::*;
-use relm4::factory::{FactoryComponent, FactoryVecDeque};
-use relm4::prelude::DynamicIndex;
-use relm4::{Component, ComponentParts, ComponentSender, FactorySender, RelmWidgetExt, adw, gtk};
+use relm4::prelude::*;
+use relm4::typed_view::list::{RelmListItem, TypedListView};
+use relm4::{Component, ComponentParts, ComponentSender, adw, gtk, view};
 
 use crate::music::types::format_duration;
 
@@ -31,113 +33,150 @@ pub struct QueueEntry {
     pub duration_ms: u64,
 }
 
-// --- rows -------------------------------------------------------------------
-
-#[derive(Debug)]
-pub struct QueueRow {
+#[derive(Debug, Clone)]
+pub struct QueueItem {
     entry: QueueEntry,
     playing: bool,
+    /// Cloned into every item so a row's remove button has somewhere to send.
+    /// `setup` is a static function with no sender, and the button must know
+    /// *which* track it belongs to — which is only known at bind time.
+    sender: relm4::Sender<QueueViewInput>,
 }
 
-#[derive(Debug, Clone)]
-pub enum QueueRowInput {
-    /// The id of the track MusicKit is currently on.
-    NowPlaying(Option<String>),
+pub struct QueueItemWidgets {
+    icon: gtk::Image,
+    title: gtk::Label,
+    artist: gtk::Label,
+    duration: gtk::Label,
+    remove: gtk::Button,
+    /// The current click handler, disconnected on unbind. Widgets are recycled,
+    /// so without this the handlers stack up and one click removes several
+    /// unrelated tracks.
+    handler: Option<gtk::glib::SignalHandlerId>,
 }
 
-/// Both carry the track's **id**, not its row position. The row knows which
-/// track it is; only `app.rs` can say where that track currently sits in
-/// MusicKit's queue, and only at the moment the command is sent.
-#[derive(Debug)]
-pub enum QueueRowOutput {
-    Jump(String),
-    Remove(String),
-}
+impl RelmListItem for QueueItem {
+    type Root = gtk::Box;
+    type Widgets = QueueItemWidgets;
 
-#[relm4::factory(pub)]
-impl FactoryComponent for QueueRow {
-    type Init = QueueEntry;
-    type Input = QueueRowInput;
-    type Output = QueueRowOutput;
-    type CommandOutput = ();
-    type ParentWidget = gtk::ListBox;
+    fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        view! {
+            root = gtk::Box {
+                set_orientation: gtk::Orientation::Horizontal,
+                set_spacing: 10,
+                set_margin_all: 6,
 
-    view! {
-        adw::ActionRow {
-            // Plain text, not markup — "Blood, Sweat & 3 Years" must render.
-            set_use_markup: false,
-            set_title: &self.entry.title,
-            set_subtitle: &self.entry.artist,
-            set_activatable: true,
-
-            add_prefix = &gtk::Image {
-                set_pixel_size: 16,
-                #[watch]
-                set_icon_name: Some(if self.playing {
-                    "media-playback-start-symbolic"
-                } else {
-                    "audio-x-generic-symbolic"
-                }),
-                #[watch]
-                set_css_classes: if self.playing { &["accent"] } else { &["dim-label"] },
-            },
-
-            add_suffix = &gtk::Label {
-                set_label: &format_duration(self.entry.duration_ms),
-                add_css_class: "numeric",
-                add_css_class: "dim-label",
-            },
-
-            add_suffix = &gtk::Button {
-                set_icon_name: "list-remove-symbolic",
-                set_tooltip_text: Some("Remove from queue"),
-                set_valign: gtk::Align::Center,
-                add_css_class: "flat",
-                add_css_class: "circular",
-                // Do NOT take focus on click. Clicking focuses the button, and
-                // removing the row then destroys the focused widget — GTK moves
-                // focus to the first focusable row and the ScrolledWindow
-                // scrolls to reveal it, which is why removing a track jumped
-                // the list to the top. Still reachable by Tab.
-                set_focus_on_click: false,
-                // Removing the track you are listening to is a stop dressed up
-                // as an edit; skip is the button for that.
-                #[watch]
-                set_sensitive: !self.playing,
-                connect_clicked[sender, id = self.entry.id.clone()] => move |_| {
-                    sender.output(QueueRowOutput::Remove(id.clone())).ok();
+                #[name = "icon"]
+                gtk::Image {
+                    set_pixel_size: 16,
+                    set_valign: gtk::Align::Center,
                 },
-            },
 
-            connect_activated[sender, id = self.entry.id.clone()] => move |_| {
-                sender.output(QueueRowOutput::Jump(id.clone())).ok();
-            },
-        }
-    }
+                gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_valign: gtk::Align::Center,
+                    set_hexpand: true,
 
-    fn init_model(entry: Self::Init, _index: &DynamicIndex, _s: FactorySender<Self>) -> Self {
-        Self {
-            entry,
-            playing: false,
-        }
-    }
+                    #[name = "title"]
+                    gtk::Label {
+                        set_xalign: 0.0,
+                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                        set_use_markup: false,
+                    },
 
-    fn update(&mut self, msg: Self::Input, _sender: FactorySender<Self>) {
-        match msg {
-            QueueRowInput::NowPlaying(id) => {
-                self.playing = id.is_some_and(|id| id == self.entry.id);
+                    #[name = "artist"]
+                    gtk::Label {
+                        set_xalign: 0.0,
+                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                        set_use_markup: false,
+                        add_css_class: "caption",
+                        add_css_class: "dim-label",
+                    },
+                },
+
+                #[name = "duration"]
+                gtk::Label {
+                    set_valign: gtk::Align::Center,
+                    add_css_class: "numeric",
+                    add_css_class: "dim-label",
+                },
+
+                #[name = "remove"]
+                gtk::Button {
+                    set_icon_name: "list-remove-symbolic",
+                    set_tooltip_text: Some("Remove from queue"),
+                    set_valign: gtk::Align::Center,
+                    add_css_class: "flat",
+                    add_css_class: "circular",
+                    // Must not take focus: removing the row then destroys the
+                    // focused widget, and GTK scrolls to wherever focus lands —
+                    // which is what sent the list back to the top.
+                    set_focus_on_click: false,
+                },
             }
         }
+
+        (
+            root,
+            QueueItemWidgets {
+                icon,
+                title,
+                artist,
+                duration,
+                remove,
+                handler: None,
+            },
+        )
+    }
+
+    fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
+        // Set everything: this widget was showing another track a moment ago,
+        // and whatever is left unset keeps that track's value.
+        widgets.title.set_label(&self.entry.title);
+        widgets.artist.set_label(&self.entry.artist);
+        widgets
+            .duration
+            .set_label(&format_duration(self.entry.duration_ms));
+
+        widgets.icon.set_icon_name(Some(if self.playing {
+            "media-playback-start-symbolic"
+        } else {
+            "audio-x-generic-symbolic"
+        }));
+        widgets.icon.set_css_classes(if self.playing {
+            &["accent"]
+        } else {
+            &["dim-label"]
+        });
+
+        // Removing the track you are listening to is a stop dressed up as an
+        // edit; skip is the button for that.
+        widgets.remove.set_sensitive(!self.playing);
+
+        if let Some(old) = widgets.handler.take() {
+            widgets.remove.disconnect(old);
+        }
+        let sender = self.sender.clone();
+        let id = self.entry.id.clone();
+        widgets.handler = Some(widgets.remove.connect_clicked(move |_| {
+            sender.emit(QueueViewInput::Remove(id.clone()));
+        }));
+    }
+
+    fn unbind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
+        // The widget is about to be handed to a different track; a stale
+        // handler would remove this one instead.
+        if let Some(old) = widgets.handler.take() {
+            widgets.remove.disconnect(old);
+        }
     }
 }
 
-// --- the dialog -------------------------------------------------------------
+// --- the sidebar ------------------------------------------------------------
 
 pub struct QueueView {
-    rows: FactoryVecDeque<QueueRow>,
+    list: TypedListView<QueueItem, gtk::NoSelection>,
     count: usize,
-    /// Ids of what is on screen, so a change can be applied as an edit rather
-    /// than a rebuild.
     shown: Vec<String>,
     playing: Option<String>,
 }
@@ -148,10 +187,12 @@ pub enum QueueViewInput {
         entries: Vec<QueueEntry>,
         playing: Option<String>,
     },
-    /// Bring the current track into view — done when the dialog opens, not on
-    /// every update, or it would fight the user scrolling.
+    /// Bring the current track into view — on open, not on every update, or it
+    /// would fight the user scrolling.
     ScrollToPlaying,
-    Jump(String),
+    /// A row was activated. Carries a position into the visible model, which is
+    /// resolved to an id immediately.
+    Activated(u32),
     Remove(String),
 }
 
@@ -171,41 +212,33 @@ impl Component for QueueView {
     type CommandOutput = ();
 
     view! {
-        adw::Dialog {
-            set_title: "Queue",
-            set_content_width: 480,
-            set_content_height: 620,
+        adw::ToolbarView {
+            set_width_request: 340,
 
-            #[wrap(Some)]
-            set_child = &adw::ToolbarView {
-                add_top_bar = &adw::HeaderBar {
-                    #[wrap(Some)]
-                    set_title_widget = &adw::WindowTitle {
-                        set_title: "Queue",
-                        #[watch]
-                        set_subtitle: &match model.count {
-                            0 => String::new(),
-                            1 => "1 track".to_owned(),
-                            n => format!("{n} tracks"),
-                        },
-                    },
-                },
+            add_top_bar = &adw::HeaderBar {
+                set_show_end_title_buttons: false,
 
                 #[wrap(Some)]
-                #[name = "scroller"]
-                set_content = &gtk::ScrolledWindow {
-                    set_vexpand: true,
-
-                    #[wrap(Some)]
-                    set_child = &adw::Clamp {
-                        #[local_ref]
-                        queue_list -> gtk::ListBox {
-                            set_selection_mode: gtk::SelectionMode::None,
-                            set_valign: gtk::Align::Start,
-                            set_margin_all: 12,
-                            add_css_class: "boxed-list",
-                        },
+                set_title_widget = &adw::WindowTitle {
+                    set_title: "Queue",
+                    #[watch]
+                    set_subtitle: &match model.count {
+                        0 => String::new(),
+                        1 => "1 track".to_owned(),
+                        n => format!("{n} tracks"),
                     },
+                },
+            },
+
+            #[wrap(Some)]
+            #[name = "scroller"]
+            set_content = &gtk::ScrolledWindow {
+                set_vexpand: true,
+
+                #[local_ref]
+                queue_list -> gtk::ListView {
+                    set_single_click_activate: true,
+                    add_css_class: "navigation-sidebar",
                 },
             },
         }
@@ -216,20 +249,20 @@ impl Component for QueueView {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let rows = FactoryVecDeque::builder()
-            .launch(gtk::ListBox::default())
-            .forward(sender.input_sender(), |out| match out {
-                QueueRowOutput::Jump(id) => QueueViewInput::Jump(id),
-                QueueRowOutput::Remove(id) => QueueViewInput::Remove(id),
-            });
+        let list: TypedListView<QueueItem, gtk::NoSelection> = TypedListView::new();
+
+        let activate = sender.clone();
+        list.view.connect_activate(move |_, position| {
+            activate.input(QueueViewInput::Activated(position));
+        });
 
         let model = QueueView {
-            rows,
+            list,
             count: 0,
             shown: Vec::new(),
             playing: None,
         };
-        let queue_list = model.rows.widget();
+        let queue_list = &model.list.view;
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
@@ -243,57 +276,33 @@ impl Component for QueueView {
     ) {
         match msg {
             QueueViewInput::Sync { entries, playing } => {
-                // Where the user is looking, captured before anything changes.
                 let scrolled_to = widgets.scroller.vadjustment().value();
+                let changed = self.apply(entries, playing, sender.input_sender().clone());
 
-                if self.apply(entries) != Applied::Unchanged && scrolled_to > 0.0 {
-                    // Restore after ANY change, not just a rebuild. Removing a
-                    // row moved the scroll too — via focus, not via rebuilding
-                    // — and guessing which mutations disturb it has already
-                    // been wrong once. Re-asserting the offset the user was at
-                    // is a no-op when nothing moved it.
-                    //
-                    // Deferred, because rows have no height until they have
-                    // been allocated and the adjustment's `upper` is stale
-                    // until then.
+                // Re-assert where the user was. A rebuild drops the scroll, and
+                // guessing which mutations disturb it has been wrong before;
+                // re-applying the same offset is a no-op when nothing moved it.
+                if changed && scrolled_to > 0.0 {
                     let adj = widgets.scroller.vadjustment();
                     gtk::glib::idle_add_local_once(move || {
                         let max = (adj.upper() - adj.page_size()).max(0.0);
                         adj.set_value(scrolled_to.min(max));
                     });
                 }
-
-                if playing != self.playing {
-                    self.playing = playing.clone();
-                    self.rows.broadcast(QueueRowInput::NowPlaying(playing));
-                }
             }
             QueueViewInput::ScrollToPlaying => {
-                let Some(index) = self.playing_index() else {
-                    return;
-                };
-                // Deferred: when the dialog is first presented the rows have
-                // not been allocated yet, so their positions are all zero.
-                let list = widgets.queue_list.clone();
-                let scroller = widgets.scroller.clone();
-                gtk::glib::idle_add_local_once(move || {
-                    if let Some(row) = list.row_at_index(index as i32) {
-                        // `allocation()` and `translate_coordinates()` are
-                        // both deprecated since GTK 4.12; `compute_bounds` is
-                        // the supported way to ask where a child sits.
-                        let y = row
-                            .compute_bounds(&list)
-                            .map(|bounds| f64::from(bounds.y()))
-                            .unwrap_or(0.0);
-                        let adj = scroller.vadjustment();
-                        // A third of a page above, so the track has context
-                        // rather than sitting jammed against the top edge.
-                        adj.set_value((y - adj.page_size() / 3.0).max(0.0));
-                    }
-                });
+                if let Some(index) = self.playing_index() {
+                    widgets
+                        .queue_list
+                        .scroll_to(index as u32, gtk::ListScrollFlags::NONE, None);
+                }
             }
-            QueueViewInput::Jump(id) => {
-                let _ = sender.output(QueueViewOutput::Jump(id));
+            QueueViewInput::Activated(position) => {
+                // Straight from position to id, before anything can change.
+                if let Some(item) = self.list.get_visible(position) {
+                    let id = item.borrow().entry.id.clone();
+                    let _ = sender.output(QueueViewOutput::Jump(id));
+                }
             }
             QueueViewInput::Remove(id) => {
                 let _ = sender.output(QueueViewOutput::Remove(id));
@@ -309,29 +318,35 @@ impl QueueView {
         self.shown.iter().position(|id| id == playing)
     }
 
-    /// Bring the rows in line with `entries`, editing rather than rebuilding
-    /// wherever possible.
+    /// Bring the rows in line with `entries`. Returns whether anything changed.
     ///
-    /// A rebuild resets the scroll position, which is unacceptable for the
-    /// commonest change by far — removing one track, while looking at the queue.
-    /// So a single removal is applied as a single removal.
-    fn apply(&mut self, entries: Vec<QueueEntry>) -> Applied {
+    /// Rebuilding the store is far cheaper than it was: it holds data, not
+    /// widgets, and `ListView` only materialises the handful of rows on screen.
+    /// A single removal is still applied as a single removal, because that is
+    /// the one case where the scroll position visibly matters.
+    fn apply(
+        &mut self,
+        entries: Vec<QueueEntry>,
+        playing: Option<String>,
+        sender: relm4::Sender<QueueViewInput>,
+    ) -> bool {
         let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
-        if ids == self.shown {
-            return Applied::Unchanged;
-        }
+        let same_tracks = ids == self.shown;
+        let same_playing = playing == self.playing;
 
-        if let Some(removed) = single_removal(&self.shown, &ids) {
+        if same_tracks && same_playing {
+            return false;
+        }
+        self.playing = playing;
+
+        if same_playing && let Some(removed) = single_removal(&self.shown, &ids) {
             tracing::debug!(index = removed, "queue: removing one row in place");
             self.shown = ids;
             self.count = entries.len();
-            self.rows.guard().remove(removed);
-            return Applied::Edited;
+            self.list.remove(removed as u32);
+            return true;
         }
 
-        // Worth a line: if removals keep landing here rather than on the fast
-        // path, the queue MusicKit reports after an edit is not simply the old
-        // one minus an item, and the fast path needs widening.
         tracing::debug!(
             was = self.shown.len(),
             now = ids.len(),
@@ -339,23 +354,16 @@ impl QueueView {
         );
         self.shown = ids;
         self.count = entries.len();
-        let mut rows = self.rows.guard();
-        rows.clear();
-        for entry in entries {
-            rows.push_back(entry);
-        }
-        Applied::Rebuilt
+        let playing = self.playing.clone();
+        self.list.clear();
+        self.list
+            .extend_from_iter(entries.into_iter().map(|entry| QueueItem {
+                playing: Some(&entry.id) == playing.as_ref(),
+                entry,
+                sender: sender.clone(),
+            }));
+        true
     }
-}
-
-/// What `apply` did, so the caller knows whether the scroll needs restoring.
-#[derive(Debug, PartialEq, Eq)]
-enum Applied {
-    Unchanged,
-    /// Rows edited in place; scroll position survives.
-    Edited,
-    /// Every row recreated; scroll position is gone.
-    Rebuilt,
 }
 
 /// If `new` is `old` with exactly one element taken out, return its position.
@@ -372,8 +380,6 @@ fn single_removal(old: &[String], new: &[String]) -> Option<usize> {
         .zip(new.iter())
         .position(|(a, b)| a != b)
         .unwrap_or(new.len());
-    // Everything after the removed element must line up, or this is not a
-    // simple removal.
     (old[at + 1..] == new[at..]).then_some(at)
 }
 
@@ -407,7 +413,6 @@ mod tests {
 
     #[test]
     fn a_reorder_is_not_a_removal() {
-        // Same length, so this must not be mistaken for an edit.
         assert_eq!(
             single_removal(&ids(&["a", "b", "c"]), &ids(&["c", "b", "a"])),
             None
@@ -416,8 +421,6 @@ mod tests {
 
     #[test]
     fn a_different_queue_of_length_minus_one_is_not_a_removal() {
-        // Correct length, wrong contents — applying this as a removal would
-        // leave the rows out of step with the real queue.
         assert_eq!(
             single_removal(&ids(&["a", "b", "c"]), &ids(&["x", "y"])),
             None
