@@ -167,6 +167,9 @@ pub struct AppModel {
     library: TypedListView<LibraryItem, gtk::NoSelection>,
     /// Whether the queue sidebar is open.
     show_queue: bool,
+    /// Which library row currently carries the play marker, so only the two
+    /// affected rows are touched when it moves.
+    marked_playing: Option<String>,
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
@@ -354,12 +357,17 @@ impl Component for AppModel {
                             },
                         },
 
-                        add_named[Some("library")] = &gtk::ScrolledWindow {
-                            set_vexpand: true,
+                        // The Clamp goes OUTSIDE the ScrolledWindow. Inside,
+                        // it breaks ListView's height allocation and the list
+                        // stops materialising rows partway down — which is why
+                        // scrolling to the bottom showed blanks while the queue
+                        // list, which has no Clamp, was fine.
+                        add_named[Some("library")] = &adw::Clamp {
+                            set_maximum_size: 800,
 
                             #[wrap(Some)]
-                            set_child = &adw::Clamp {
-                                set_maximum_size: 800,
+                            set_child = &gtk::ScrolledWindow {
+                                set_vexpand: true,
 
                                 #[local_ref]
                                 library_list -> gtk::ListView {
@@ -440,6 +448,7 @@ impl Component for AppModel {
             queue_view,
             library,
             show_queue: false,
+            marked_playing: None,
             all_tracks: Vec::new(),
             query: String::new(),
             loading_library: false,
@@ -614,13 +623,14 @@ impl AppModel {
     fn rebuild_rows(&mut self) {
         let visible: Vec<Track> = self.visible_tracks().cloned().collect();
         let playing = self.playing_catalog_id();
+        // The rows are built with the marker already set, so record that here
+        // or `mark_now_playing` will think it still needs applying.
+        self.marked_playing = playing.clone();
         self.library.clear();
         self.library
             .extend_from_iter(visible.into_iter().map(|track| {
-                let item = LibraryItem::new(track);
-                if item.track.catalog_id.is_some() && item.track.catalog_id == playing {
-                    item.playing.set_value(true);
-                }
+                let mut item = LibraryItem::new(track);
+                item.playing = item.track.catalog_id.is_some() && item.track.catalog_id == playing;
                 item
             }));
     }
@@ -636,18 +646,41 @@ impl AppModel {
 
     /// Move the play marker in the library list.
     ///
-    /// The flag lives in a `BoolBinding`, so setting it repaints the bound row
-    /// without rebuilding the list — nothing scrolls, and rows that are not on
-    /// screen cost nothing.
-    fn mark_now_playing(&self) {
+    /// Only the two affected rows are touched — the one losing the marker and
+    /// the one gaining it — by replacing them in the store, which is what makes
+    /// `ListView` re-bind those rows. Mutating the item in place does nothing:
+    /// the store emits no change, so the widget is never told to update. That
+    /// is why the marker did not appear at all in the first virtualised
+    /// version.
+    fn mark_now_playing(&mut self) {
         let current = self.playing_catalog_id();
-        for item in self.library.iter() {
-            let item = item.borrow();
-            let should = current.is_some() && item.track.catalog_id == current;
-            if item.playing.value() != should {
-                item.playing.set_value(should);
-            }
+        if current == self.marked_playing {
+            return;
         }
+        if let Some(old) = self.marked_playing.take() {
+            self.set_row_playing(&old, false);
+        }
+        if let Some(new) = &current {
+            self.set_row_playing(new, true);
+        }
+        self.marked_playing = current;
+    }
+
+    fn set_row_playing(&mut self, catalog_id: &str, playing: bool) {
+        let Some(position) = self
+            .library
+            .find(|item| item.track.catalog_id.as_deref() == Some(catalog_id))
+        else {
+            return;
+        };
+        let Some(existing) = self.library.get(position) else {
+            return;
+        };
+        let mut item = existing.borrow().clone();
+        drop(existing);
+        item.playing = playing;
+        self.library.remove(position);
+        self.library.insert(position, item);
     }
 
     fn load_library(&mut self, sender: &ComponentSender<Self>) {

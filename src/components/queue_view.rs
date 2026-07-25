@@ -276,19 +276,12 @@ impl Component for QueueView {
     ) {
         match msg {
             QueueViewInput::Sync { entries, playing } => {
-                let scrolled_to = widgets.scroller.vadjustment().value();
-                let changed = self.apply(entries, playing, sender.input_sender().clone());
-
-                // Re-assert where the user was. A rebuild drops the scroll, and
-                // guessing which mutations disturb it has been wrong before;
-                // re-applying the same offset is a no-op when nothing moved it.
-                if changed && scrolled_to > 0.0 {
-                    let adj = widgets.scroller.vadjustment();
-                    gtk::glib::idle_add_local_once(move || {
-                        let max = (adj.upper() - adj.page_size()).max(0.0);
-                        adj.set_value(scrolled_to.min(max));
-                    });
-                }
+                // No scroll juggling here any more. That was needed when every
+                // row was a real widget and a rebuild destroyed them all;
+                // `ListView` keeps its position across a store edit on its own,
+                // and re-asserting an offset against an `upper` that is still
+                // being recomputed is what made the list jump about.
+                self.apply(entries, playing, sender.input_sender().clone());
             }
             QueueViewInput::ScrollToPlaying => {
                 if let Some(index) = self.playing_index() {
@@ -318,7 +311,7 @@ impl QueueView {
         self.shown.iter().position(|id| id == playing)
     }
 
-    /// Bring the rows in line with `entries`. Returns whether anything changed.
+    /// Bring the rows in line with `entries`.
     ///
     /// Rebuilding the store is far cheaper than it was: it holds data, not
     /// widgets, and `ListView` only materialises the handful of rows on screen.
@@ -329,13 +322,13 @@ impl QueueView {
         entries: Vec<QueueEntry>,
         playing: Option<String>,
         sender: relm4::Sender<QueueViewInput>,
-    ) -> bool {
+    ) {
         let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
         let same_tracks = ids == self.shown;
         let same_playing = playing == self.playing;
 
         if same_tracks && same_playing {
-            return false;
+            return;
         }
         self.playing = playing;
 
@@ -344,7 +337,7 @@ impl QueueView {
             self.shown = ids;
             self.count = entries.len();
             self.list.remove(removed as u32);
-            return true;
+            return;
         }
 
         tracing::debug!(
@@ -362,7 +355,6 @@ impl QueueView {
                 entry,
                 sender: sender.clone(),
             }));
-        true
     }
 }
 
