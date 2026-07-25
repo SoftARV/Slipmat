@@ -333,6 +333,12 @@ impl AppModel {
                 ));
             }
             Event::HookWarning { detail } => tracing::warn!(%detail, "hook warning"),
+            Event::CmdRecv { cmd } => tracing::info!(%cmd, "sidecar received command"),
+            Event::CmdDone {
+                cmd,
+                state,
+                queue_len,
+            } => tracing::info!(%cmd, state, queue_len, "sidecar finished command"),
             Event::Tokens(tokens) => {
                 // `has_user_token` is the one that matters after sign-in: a
                 // developer token alone gets you catalog search but not

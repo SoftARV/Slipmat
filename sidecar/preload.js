@@ -228,11 +228,24 @@ const commands = {
 }
 
 ipcRenderer.on('tonearm:command', async (_e, msg) => {
+  // Report arrival BEFORE doing anything. If Rust sends a command and no
+  // `cmd-recv` comes back, the renderer never ran the handler at all — which
+  // is a completely different problem from the command failing, and the two
+  // are indistinguishable without this.
+  emit('cmd-recv', { cmd: msg.cmd })
+
   const fn = commands[msg.cmd]
   if (!fn) return emit('error', { code: 'unknown-command', detail: msg.cmd })
   try {
     await fn(msg)
-    if (msg.id) emit('ack', { id: msg.id })
+    // Always report completion, not just when an id was supplied: a command
+    // that resolves without producing any MusicKit event is the signature of
+    // playback being blocked rather than failing.
+    emit('cmd-done', {
+      cmd: msg.cmd,
+      state: pick(() => music.playbackState) ?? -1,
+      queueLen: pick(() => music.queue && music.queue.items && music.queue.items.length) ?? -1,
+    })
   } catch (err) {
     emit('error', { code: 'command-failed', detail: `${msg.cmd}: ${err && err.message}` })
   }

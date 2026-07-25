@@ -150,6 +150,24 @@ pub enum Event {
     #[serde(rename = "ack")]
     Ack { id: u64 },
 
+    /// The renderer received a command. Its absence after a dispatch means the
+    /// renderer never ran the handler — a frozen page, not a failed command.
+    #[serde(rename = "cmd-recv")]
+    CmdRecv { cmd: String },
+
+    /// The command resolved. `state` and `queue_len` are MusicKit's own view
+    /// immediately afterwards: a `setQueue` that completes with a populated
+    /// queue but a non-playing state means playback is being *blocked*, not
+    /// failing.
+    #[serde(rename = "cmd-done", rename_all = "camelCase")]
+    CmdDone {
+        cmd: String,
+        #[serde(default)]
+        state: i32,
+        #[serde(default)]
+        queue_len: i32,
+    },
+
     #[serde(rename = "error")]
     Error { code: String, detail: String },
 }

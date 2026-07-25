@@ -19,11 +19,16 @@
 // *** NOTHING may write to stdout except send(). A stray console.log corrupts
 // *** the channel and the Rust side will drop the connection. Use log().
 
-const { app, components, BrowserWindow, shell } = require('electron')
+const { app, components, BrowserWindow, powerSaveBlocker, shell } = require('electron')
 const path = require('node:path')
 const readline = require('node:readline')
 
-const DEBUG = process.argv.includes('--debug')
+// `--debug`, or TONEARM_SHOW_SIDECAR=1 from the Rust side. Both keep the
+// window on screen. This is the fastest way to tell a frozen renderer from a
+// broken command: if playback works with the window visible and not without,
+// the problem is Chromium freezing a page it thinks nobody is looking at.
+const DEBUG =
+  process.argv.includes('--debug') || process.env.TONEARM_SHOW_SIDECAR === '1'
 const APPLE_MUSIC = 'https://music.apple.com/'
 const READY_TIMEOUT_MS = 60_000
 const PROBE_INTERVAL_MS = 500
@@ -56,6 +61,7 @@ let win = null
 /** Queued commands that arrived before the hook was ready. */
 let pending = []
 let hookReady = false
+let suspensionBlocker = null
 
 // ---------------------------------------------------------------------------
 // Protocol
@@ -176,6 +182,12 @@ async function createWindow() {
 /// Do NOT "fix" this back to win.hide() — that reintroduces the freeze, and the
 /// symptom is a player that goes silent with no error anywhere.
 function conceal() {
+  // Tell the OS this process must not be suspended. On its own this does not
+  // stop Chromium's per-page freezing, but without it a laptop on battery can
+  // suspend the whole sidecar mid-track.
+  if (suspensionBlocker === null) {
+    suspensionBlocker = powerSaveBlocker.start('prevent-app-suspension')
+  }
   win.setOpacity(0)
   win.setIgnoreMouseEvents(true)
   win.setSkipTaskbar(true)
@@ -266,6 +278,10 @@ function dispatch(msg) {
     pending.push(msg)
     return
   }
+  // `visible` is the diagnostic that matters when a command produces no
+  // sound and no error: a window Chromium considers hidden has a frozen
+  // renderer that will never run the handler.
+  log('dispatch', msg.cmd, 'visible=', win.isVisible(), 'crashed=', win.webContents.isCrashed())
   win.webContents.send('tonearm:command', msg)
 }
 
