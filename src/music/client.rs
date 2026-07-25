@@ -23,7 +23,13 @@ const WEB_ORIGIN: &str = "https://music.apple.com";
 const WEB_REFERER: &str = "https://music.apple.com/";
 /// Apple's hard cap for a library page. Asking for more is silently clamped.
 const LIBRARY_PAGE: usize = 100;
+/// How many library pages to fetch at once. The pages are independent, so
+/// fetching them serially spent most of the load waiting on round trips.
+const LIBRARY_CONCURRENCY: usize = 6;
 
+/// Clone is cheap: `reqwest::Client` is an `Arc` internally, and the tokens are
+/// small strings. Cloning per concurrent page keeps the connection pool shared.
+#[derive(Clone)]
 pub struct Client {
     http: HttpClient,
     developer_token: String,
@@ -137,21 +143,51 @@ impl Client {
     /// until the cursor runs out. `max` bounds it so a very large library
     /// cannot spin forever on a first run — the count is reported so the UI can
     /// say the list is partial rather than quietly truncating it.
+    /// Fetches in **batches of concurrent pages** rather than one at a time.
+    ///
+    /// The pages are independent, so serial fetching spent the whole load
+    /// waiting on round trips — six sequential requests for a 539-track
+    /// library. Each round now issues `LIBRARY_CONCURRENCY` requests at once and
+    /// stops as soon as a round comes back short, which is the same termination
+    /// condition with far fewer waits.
     pub async fn all_library_songs(&self, max: usize) -> Result<Vec<Track>> {
         let mut all: Vec<Track> = Vec::new();
         let mut offset = 0usize;
 
-        loop {
-            let page = self.library_songs_page(offset).await?;
-            let fetched = page.len();
-            all.extend(page);
+        while all.len() < max {
+            let offsets: Vec<usize> = (0..LIBRARY_CONCURRENCY)
+                .map(|i| offset + i * LIBRARY_PAGE)
+                .collect();
 
-            // A short page means the end; Apple omits `next` there too, but
-            // length is the simpler signal and does not depend on the cursor.
-            if fetched < LIBRARY_PAGE || all.len() >= max {
+            let mut tasks = tokio::task::JoinSet::new();
+            for (slot, at) in offsets.iter().copied().enumerate() {
+                let client = self.clone();
+                tasks.spawn(async move { (slot, client.library_songs_page(at).await) });
+            }
+
+            // Collect by slot so the library keeps Apple's ordering regardless
+            // of which request finishes first.
+            let mut pages: Vec<Option<Vec<Track>>> = vec![None; LIBRARY_CONCURRENCY];
+            while let Some(joined) = tasks.join_next().await {
+                let (slot, page) = joined.context("library page task panicked")?;
+                pages[slot] = Some(page?);
+            }
+
+            let mut round = 0usize;
+            let mut short = false;
+            for page in pages.into_iter().flatten() {
+                round += page.len();
+                if page.len() < LIBRARY_PAGE {
+                    short = true;
+                }
+                all.extend(page);
+            }
+
+            // A short page anywhere in the round means we have reached the end.
+            if short || round == 0 {
                 break;
             }
-            offset += fetched;
+            offset += round;
         }
 
         all.truncate(max);

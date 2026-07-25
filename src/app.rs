@@ -53,6 +53,35 @@ fn matches(track: &Track, needle: &str) -> bool {
         || track.album.to_lowercase().contains(needle)
 }
 
+/// Pull the catalog ids out of MusicKit's `NOT_FOUND` error.
+///
+/// `setQueue` is all-or-nothing: if a single id cannot be resolved it rejects
+/// the whole queue, so one delisted track makes an entire library unplayable.
+/// The error names the offenders:
+///
+/// ```text
+/// [mk-007] NOT_FOUND; One or more items could not be resolved: 1550626760, 1526511025
+/// ```
+///
+/// Rather than pre-validating every id against the catalog — hundreds of ids
+/// per play, on every play — we let MusicKit tell us, remember them, and retry
+/// without them. Self-healing and free in the common case.
+///
+/// This parses an error *string*, which is exactly the kind of thing rule 4
+/// warns about, so it is deliberately loose: find the marker, then take digit
+/// runs. If Apple rewords the message we get zero ids and fall back to
+/// reporting the error, which is where we started — no worse.
+fn unresolvable_ids(detail: &str) -> Vec<String> {
+    const MARKER: &str = "could not be resolved";
+    let Some(tail) = detail.split_once(MARKER).map(|(_, t)| t) else {
+        return Vec::new();
+    };
+    tail.split(|c: char| !c.is_ascii_digit())
+        .filter(|s| s.len() >= 6) // catalog ids are long; skip stray numbers
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Build a MusicKit queue from the visible rows, and translate a row index into
 /// a queue position.
 ///
@@ -116,6 +145,12 @@ pub struct AppModel {
     all_tracks: Vec<Track>,
     query: String,
     loading_library: bool,
+    /// Catalog ids MusicKit has told us it cannot resolve. Remembered for the
+    /// session so a delisted track only breaks one play attempt, not every one.
+    dead_ids: std::collections::HashSet<String>,
+    /// The last queue we tried, so a `NOT_FOUND` can be retried without the
+    /// offenders instead of making the user click again.
+    last_queue: Option<(Vec<String>, usize)>,
     mpris: Mpris,
     /// Volume is the one piece of player state the sidecar never echoes back,
     /// so we hold it here to keep the bar and MPRIS agreeing.
@@ -185,13 +220,6 @@ impl Component for AppModel {
                         // blank while connecting.
                         #[wrap(Some)]
                         set_title_widget = &gtk::Stack {
-                            #[watch]
-                            set_visible_child_name: if model.showing_library() {
-                                "search"
-                            } else {
-                                "title"
-                            },
-
                             add_named[Some("title")] = &adw::WindowTitle {
                                 set_title: "Tonearm",
                                 #[watch]
@@ -204,6 +232,17 @@ impl Component for AppModel {
                                 connect_search_changed[sender] => move |entry| {
                                     sender.input(AppMsg::SearchChanged(entry.text().into()));
                                 },
+                            },
+
+                            // AFTER the children, deliberately. relm4 applies
+                            // these in source order, and setting a visible child
+                            // by name before that child has been added warns and
+                            // does nothing.
+                            #[watch]
+                            set_visible_child_name: if model.showing_library() {
+                                "search"
+                            } else {
+                                "title"
                             },
                         },
 
@@ -221,9 +260,6 @@ impl Component for AppModel {
 
                     #[wrap(Some)]
                     set_content = &gtk::Stack {
-                        #[watch]
-                        set_visible_child_name: model.page(),
-
                         add_named[Some("status")] = &adw::StatusPage {
                             #[watch]
                             set_icon_name: Some(model.icon()),
@@ -270,6 +306,10 @@ impl Component for AppModel {
                             #[watch]
                             set_description: Some(&format!("Nothing in your library matches “{}”.", model.query)),
                         },
+
+                        // After the children — see the note on the title stack.
+                        #[watch]
+                        set_visible_child_name: model.page(),
                     },
 
                     // The bar is present on every screen — it is the app.
@@ -319,6 +359,8 @@ impl Component for AppModel {
             all_tracks: Vec::new(),
             query: String::new(),
             loading_library: false,
+            dead_ids: std::collections::HashSet::new(),
+            last_queue: None,
             player: PlayerState::new(),
             tokens: None,
             sidecar: None,
@@ -372,12 +414,26 @@ impl Component for AppModel {
             AppMsg::ReloadLibrary => self.load_library(&sender),
             AppMsg::PlayFrom(index) => {
                 let visible: Vec<&Track> = self.visible_tracks().collect();
-                let (songs, start) = queue_from(&visible, index);
+                let (mut songs, mut start) = queue_from(&visible, index);
+                // Drop ids already known to be unresolvable, keeping the start
+                // position pointing at the same track.
+                if !self.dead_ids.is_empty() {
+                    let before = songs.len();
+                    let dropped_before_start = songs[..start]
+                        .iter()
+                        .filter(|id| self.dead_ids.contains(*id))
+                        .count();
+                    songs.retain(|id| !self.dead_ids.contains(id));
+                    start = start.saturating_sub(dropped_before_start);
+                    tracing::debug!(dropped = before - songs.len(), "excluded known-dead ids");
+                }
                 if songs.is_empty() {
                     self.toast("Nothing here can be streamed");
                     return;
                 }
+                start = start.min(songs.len().saturating_sub(1));
                 tracing::info!(queue = songs.len(), start, "enqueuing from library");
+                self.last_queue = Some((songs.clone(), start));
                 self.send(Command::SetQueue {
                     songs,
                     start_position: start,
@@ -502,6 +558,81 @@ impl AppModel {
                     .map_err(|err| format!("{err:#}")),
             )
         });
+    }
+
+    /// Handle MusicKit's all-or-nothing `NOT_FOUND` by dropping the ids it
+    /// named and trying again.
+    ///
+    /// Returns true when it took ownership of the error, so the caller doesn't
+    /// also toast a message the user can do nothing about.
+    fn retry_without_dead_tracks(&mut self, detail: &str) -> bool {
+        let dead = unresolvable_ids(detail);
+        if dead.is_empty() {
+            return false;
+        }
+        let Some((songs, start)) = self.last_queue.take() else {
+            return false;
+        };
+
+        let newly_dead = dead
+            .iter()
+            .filter(|id| !self.dead_ids.contains(*id))
+            .count();
+        self.dead_ids.extend(dead);
+
+        // Nothing new: the retry already happened and failed again. Stop, or we
+        // loop forever on an error we cannot parse our way out of.
+        if newly_dead == 0 {
+            tracing::warn!("queue still unresolvable after dropping known-dead ids");
+            return false;
+        }
+
+        let dropped_before_start = songs[..start.min(songs.len())]
+            .iter()
+            .filter(|id| self.dead_ids.contains(*id))
+            .count();
+        let retry: Vec<String> = songs
+            .into_iter()
+            .filter(|id| !self.dead_ids.contains(id))
+            .collect();
+
+        if retry.is_empty() {
+            self.toast("None of these tracks are available to stream");
+            return true;
+        }
+
+        let start = start
+            .saturating_sub(dropped_before_start)
+            .min(retry.len() - 1);
+        tracing::info!(
+            dropped = newly_dead,
+            queue = retry.len(),
+            "retrying queue without unresolvable tracks"
+        );
+        self.mark_dead_tracks_unplayable();
+        self.last_queue = Some((retry.clone(), start));
+        self.send(Command::SetQueue {
+            songs: retry,
+            start_position: start,
+        });
+        true
+    }
+
+    /// Reflect newly-discovered dead ids in the list, so the affected rows dim
+    /// instead of looking playable and doing nothing.
+    fn mark_dead_tracks_unplayable(&mut self) {
+        let mut changed = false;
+        for track in &mut self.all_tracks {
+            if let Some(id) = &track.catalog_id
+                && self.dead_ids.contains(id)
+            {
+                track.catalog_id = None;
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild_rows();
+        }
     }
 
     fn showing_library(&self) -> bool {
@@ -706,7 +837,9 @@ impl AppModel {
             }
             Event::Error { code, detail } => {
                 tracing::warn!(%code, %detail, "sidecar error");
-                self.toast(detail);
+                if !self.retry_without_dead_tracks(detail) {
+                    self.toast(detail);
+                }
             }
             _ => {}
         }
@@ -903,6 +1036,32 @@ mod tests {
             start < songs.len(),
             "start {start} out of range for {songs:?}"
         );
+    }
+
+    #[test]
+    fn unresolvable_ids_are_parsed_out_of_musickits_error() {
+        // setQueue is all-or-nothing: one delisted track kills the whole queue.
+        // The error names the offenders, which is how we recover.
+        let detail = "setQueue: [mk-007] NOT_FOUND; One or more items could not \
+be resolved: 1550626760, 1526511025, 1550626763";
+        let ids = unresolvable_ids(detail);
+        assert_eq!(ids, vec!["1550626760", "1526511025", "1550626763"]);
+    }
+
+    #[test]
+    fn a_reworded_error_yields_nothing_rather_than_garbage() {
+        // Rule 4: this parses a string Apple controls. If the wording changes we
+        // must degrade to reporting the error, not invent ids.
+        assert!(unresolvable_ids("[mk-007] NOT_FOUND; something else entirely").is_empty());
+        assert!(unresolvable_ids("").is_empty());
+    }
+
+    #[test]
+    fn short_numbers_in_the_error_are_not_mistaken_for_ids() {
+        // "mk-007" precedes the marker, but a stray small number after it must
+        // not be treated as a catalog id either.
+        let ids = unresolvable_ids("could not be resolved: 42, 1550626760");
+        assert_eq!(ids, vec!["1550626760"]);
     }
 
     #[test]
