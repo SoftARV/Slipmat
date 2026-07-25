@@ -333,7 +333,9 @@ impl AppModel {
                 ));
             }
             Event::HookWarning { detail } => tracing::warn!(%detail, "hook warning"),
-            Event::CmdRecv { cmd } => tracing::info!(%cmd, "sidecar received command"),
+            // Per-command tracing is debug, not info: it was invaluable while
+            // the command path was broken and is pure noise now that it works.
+            Event::CmdRecv { cmd } => tracing::debug!(%cmd, "sidecar received command"),
             Event::CmdQueued { cmd, depth } => {
                 tracing::warn!(%cmd, depth, "command queued — hook not attached")
             }
@@ -341,7 +343,7 @@ impl AppModel {
                 cmd,
                 state,
                 queue_len,
-            } => tracing::info!(%cmd, state, queue_len, "sidecar finished command"),
+            } => tracing::debug!(%cmd, state, queue_len, "sidecar finished command"),
             Event::Tokens(tokens) => {
                 // `has_user_token` is the one that matters after sign-in: a
                 // developer token alone gets you catalog search but not

@@ -243,10 +243,27 @@ impl PlaybackState {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Queue {
-    #[serde(default)]
-    pub position: usize,
+    /// MusicKit's queue position, and it is **signed**: it reports `-1` when a
+    /// queue is loaded but nothing has become current yet. Deserialising this
+    /// as `usize` made serde reject the whole event, so the first `queue` after
+    /// every `setQueue` was silently dropped. Use `index()`, not this field.
+    #[serde(default = "no_position")]
+    pub position: i64,
     #[serde(default)]
     pub items: Vec<Item>,
+}
+
+fn no_position() -> i64 {
+    -1
+}
+
+impl Queue {
+    /// The current index, or `None` when nothing is current yet.
+    pub fn index(&self) -> Option<usize> {
+        usize::try_from(self.position)
+            .ok()
+            .filter(|i| *i < self.items.len())
+    }
 }
 
 /// One track as MusicKit sees it. Mapped into `music::types::Track` at the
@@ -320,6 +337,39 @@ mod tests {
         };
         assert_eq!(item.title, "Roundabout");
         assert_eq!(item.duration_ms, 513_000);
+    }
+
+    #[test]
+    fn a_queue_position_of_minus_one_parses() {
+        // MusicKit reports -1 between setQueue and the first item becoming
+        // current. Deserialising position as usize rejected the entire event,
+        // so the queue silently never updated.
+        let raw = r#"{"event":"queue","position":-1,"items":[
+            {"id":"1049009209","title":"Roundabout"}]}"#;
+        let ev: Event = serde_json::from_str(raw).expect("must not fail to parse");
+        let Event::Queue(queue) = ev else {
+            panic!("expected Queue")
+        };
+        assert_eq!(queue.items.len(), 1);
+        assert_eq!(queue.index(), None, "-1 means nothing is current yet");
+    }
+
+    #[test]
+    fn a_real_queue_position_resolves() {
+        let queue = Queue {
+            position: 1,
+            items: vec![Item::default(), Item::default()],
+        };
+        assert_eq!(queue.index(), Some(1));
+    }
+
+    #[test]
+    fn a_position_past_the_end_is_not_current() {
+        let queue = Queue {
+            position: 5,
+            items: vec![Item::default()],
+        };
+        assert_eq!(queue.index(), None, "must not index out of bounds");
     }
 
     #[test]

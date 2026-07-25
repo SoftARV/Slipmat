@@ -258,6 +258,36 @@ invent, and no other local process can drive your player. Chromium logs to
 stderr; **stdout carries protocol only** — anything that prints to stdout in the
 sidecar corrupts the channel.
 
+### Sidecar rules learned the hard way
+
+M1 took five rounds to get audio out, and every failure was silent. These are
+the specific traps; do not re-introduce them.
+
+- **The API token is origin-locked.** Send `Origin: https://music.apple.com` and
+  a matching `Referer` on every `api.music.apple.com` request. Without them
+  everything 401s no matter how valid the tokens are. A browser sets these
+  automatically, so this bites *only* a native client.
+- **Never invalidate the hook on `did-start-loading`.** It fires for SPA route
+  changes and subresource loads, so it latches `hookReady` to false within
+  seconds and every later command parks in `pending` forever. Use
+  `did-start-navigation` filtered to main-frame, cross-document navigations —
+  that is what actually replaces a preload context.
+- **Never queue a command silently.** Parking one emits `cmd-queued`. A queued
+  command and a dropped one are indistinguishable otherwise, and that ambiguity
+  cost three debugging rounds.
+- **`refreshTokens` bypasses `dispatch()`.** It is sent by `main.js` straight to
+  the renderer, so it proves the renderer is alive and proves *nothing* about
+  the Rust→sidecar path. Do not read it as evidence that commands are arriving.
+- **MusicKit's queue position is signed.** It reports `-1` between `setQueue`
+  and the first item becoming current. Use `Queue::index()`.
+- **Timers in `main.js` must be module-level and cleared before re-arming.** The
+  probe re-arms on every navigation; `const` locals shadowed the handles and
+  leaked a nudger per navigation.
+- **Diagnose by layer, in order:** `cmd-queued` → never dispatched.
+  No `cmd-recv` → renderer never ran it. `cmd-recv` but no `cmd-done` → the
+  command is hanging. `cmd-done` with a full queue but a non-playing state →
+  playback is blocked, not failing.
+
 ```
 src/
   main.rs            # RelmApp bootstrap, tracing, icon; locate + spawn the sidecar

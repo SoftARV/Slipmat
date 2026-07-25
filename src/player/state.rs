@@ -87,7 +87,10 @@ impl PlayerState {
 
     fn apply_queue(&mut self, queue: &Queue) {
         self.queue = queue.items.clone();
-        self.queue_position = queue.position;
+        // `None` (MusicKit's -1) means a queue is loaded but nothing is current
+        // yet. Treat that as position 0 for display, but keep `has_previous`
+        // honest via the same value — you cannot go back from "not started".
+        self.queue_position = queue.index().unwrap_or(0);
     }
 
     /// Position interpolated to *now*, clamped to the track length.
@@ -209,6 +212,14 @@ mod tests {
         }));
         assert!(s.has_next());
         assert!(!s.has_previous(), "nothing before the first track");
+
+        // The -1 case: queue loaded, nothing current yet.
+        s.apply(&Event::Queue(Queue {
+            position: -1,
+            items: vec![item("a", 1), item("b", 1)],
+        }));
+        assert_eq!(s.queue_position, 0);
+        assert!(!s.has_previous(), "cannot go back from 'not started'");
 
         s.apply(&Event::Queue(Queue {
             position: 1,

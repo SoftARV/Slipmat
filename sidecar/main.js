@@ -32,6 +32,9 @@ const DEBUG =
 const APPLE_MUSIC = 'https://music.apple.com/'
 const READY_TIMEOUT_MS = 60_000
 const PROBE_INTERVAL_MS = 500
+/// How many times to re-ask for tokens after wiring. The developer token can
+/// land just after MusicKit; ten seconds is plenty and then it stops.
+const TOKEN_NUDGES = 10
 
 // These four switches are what make a permanently-hidden window actually work.
 // All must be set before app.whenReady(). Do not remove any of them without
@@ -62,6 +65,8 @@ let win = null
 let pending = []
 let hookReady = false
 let suspensionBlocker = null
+let probeTimer = null
+let tokenTimer = null
 
 // ---------------------------------------------------------------------------
 // Protocol
@@ -238,21 +243,29 @@ function reveal() {
 /// and then stops — so readiness cannot be detected from in there.
 /// executeJavaScript still runs, so we drive it from out here.
 function probeForMusicKit() {
+  // Probes and token nudges are module-level and always cleared first.
+  // They used to be per-call locals, so every re-probe (one per main-frame
+  // navigation) leaked another probe AND another 10-shot token nudger — which
+  // is why refreshTokens arrived several times a second, forever, instead of
+  // ten times at startup.
+  clearInterval(probeTimer)
+  clearInterval(tokenTimer)
+
   const deadline = Date.now() + READY_TIMEOUT_MS
   let wired = false
 
-  const timer = setInterval(async () => {
-    if (wired || !win || win.isDestroyed()) return clearInterval(timer)
+  probeTimer = setInterval(async () => {
+    if (wired || !win || win.isDestroyed()) return clearInterval(probeTimer)
 
     // Deadline is checked BEFORE the await on purpose. If the renderer is
     // frozen, executeJavaScript never settles — and a deadline check placed
     // after the await would then be unreachable, which is exactly how the
     // freeze first presented: no hook-ready, no hook-failed, no error at all.
     if (Date.now() > deadline) {
-      clearInterval(timer)
+      clearInterval(probeTimer)
       return send({
         event: 'hook-failed',
-        detail: 'MusicKit never appeared (renderer may be frozen)',
+        detail: 'MusicKit never appeared on music.apple.com',
       })
     }
 
@@ -267,13 +280,17 @@ function probeForMusicKit() {
 
     if (ready) {
       wired = true
-      clearInterval(timer)
+      clearInterval(probeTimer)
       win.webContents.send('tonearm:wire')
-      // The developer token can appear slightly after MusicKit. Nudge a few
-      // times from out here, because the renderer's own timers are frozen.
+      // The developer token can appear slightly after MusicKit, so nudge a few
+      // times. `tokenTimer` is module-level and cleared at the top of this
+      // function — a `const` here shadowed it, so the nudger was unstoppable
+      // and every re-probe added another one.
       let nudges = 0
-      const tokenTimer = setInterval(() => {
-        if (++nudges > 10 || !win || win.isDestroyed()) return clearInterval(tokenTimer)
+      tokenTimer = setInterval(() => {
+        if (++nudges > TOKEN_NUDGES || !win || win.isDestroyed()) {
+          return clearInterval(tokenTimer)
+        }
         win.webContents.send('tonearm:command', { cmd: 'refreshTokens' })
       }, 1000)
     }
