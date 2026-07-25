@@ -1,18 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Miguel Rincon
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! One track in the library list.
+//! One row in a results list — a song, an album or an artist.
 //!
 //! A `RelmListItem` over `gtk::ListView`, **not** a factory over
 //! `gtk::ListBox`. A `ListBox` builds a real widget per row, so a 541-track
-//! library meant 541 live `AdwActionRow`s — each with its own labels, icon and
-//! button — and the whole app felt heavy. `ListView` recycles: it keeps roughly
-//! as many widgets as fit on screen and rebinds them as you scroll, so the cost
-//! stops depending on the size of the library.
+//! library meant 541 live rows. `ListView` recycles: it keeps about as many
+//! widgets as fit on screen and rebinds them as you scroll.
 //!
 //! The consequence to keep in mind: widgets are **reused**. `bind` must set
-//! every property it cares about, because the widget it is handed was showing a
-//! different track a moment ago.
+//! every property it cares about, because the widget it is handed was showing
+//! something else a moment ago, and anything left unset keeps the old value.
 
 use relm4::adw::prelude::*;
 use relm4::prelude::*;
@@ -20,14 +18,114 @@ use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
+use crate::music::types::{Album, Artist, Track, format_duration};
 
-/// The widgets a library row publishes while it is on screen.
+/// What a row stands for. Songs play; albums and artists open a page.
+#[derive(Debug, Clone)]
+pub enum Entry {
+    Song(Track),
+    Album(Album),
+    Artist(Artist),
+}
+
+impl Entry {
+    /// The id used to match a row against what is playing. Only songs have one.
+    pub fn catalog_id(&self) -> Option<&str> {
+        match self {
+            Entry::Song(track) => track.catalog_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        match self {
+            Entry::Song(t) => &t.title,
+            Entry::Album(a) => &a.name,
+            Entry::Artist(a) => &a.name,
+        }
+    }
+
+    /// The second line. Collapses rather than rendering a dangling separator
+    /// when a field is missing, which real catalogue entries often are.
+    pub fn subtitle(&self) -> String {
+        match self {
+            Entry::Song(t) => match (t.artist.is_empty(), t.album.is_empty()) {
+                (false, false) => format!("{} — {}", t.artist, t.album),
+                (false, true) => t.artist.clone(),
+                (true, false) => t.album.clone(),
+                (true, true) => String::new(),
+            },
+            Entry::Album(a) => match (a.artist.is_empty(), a.year.is_empty()) {
+                (false, false) => format!("{} · {}", a.artist, a.year),
+                (false, true) => a.artist.clone(),
+                (true, false) => a.year.clone(),
+                (true, true) => String::new(),
+            },
+            Entry::Artist(a) => a.genres.clone(),
+        }
+    }
+
+    fn icon(&self) -> &'static str {
+        match self {
+            Entry::Song(_) => "audio-x-generic-symbolic",
+            Entry::Album(_) => "media-optical-symbolic",
+            Entry::Artist(_) => "avatar-default-symbolic",
+        }
+    }
+
+    /// Albums and artists lead somewhere; songs are the destination.
+    fn opens_a_page(&self) -> bool {
+        !matches!(self, Entry::Song(_))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LibraryItem {
+    pub entry: Entry,
+    /// Who is playing, shared with every other row. Read at `bind`, never
+    /// stored per-item: a per-item flag has to be changed in the model, and any
+    /// model edit costs the scroll position (see `CurrentTrack`).
+    pub current: CurrentTrack,
+    /// Ids MusicKit has refused. Consulted at bind, so a track discovered to be
+    /// dead mid-session dims without the list being rebuilt.
+    pub dead: DeadTracks,
+    pub registry: RowRegistry<LibraryRowWidgets>,
+}
+
+/// The widgets a row publishes while it is on screen.
 #[derive(Debug, Clone)]
 pub struct LibraryRowWidgets {
     pub icon: gtk::Image,
     pub root: gtk::Box,
 }
-use crate::music::types::Track;
+
+impl LibraryItem {
+    pub fn new(
+        entry: Entry,
+        registry: RowRegistry<LibraryRowWidgets>,
+        current: CurrentTrack,
+        dead: DeadTracks,
+    ) -> Self {
+        Self {
+            entry,
+            registry,
+            current,
+            dead,
+        }
+    }
+
+    /// Streamable, and not on the refused list. Only songs can be unplayable —
+    /// an album row always opens.
+    pub fn playable(&self) -> bool {
+        match &self.entry {
+            Entry::Song(track) => match &track.catalog_id {
+                Some(id) => !self.dead.borrow().contains(id),
+                None => false,
+            },
+            _ => true,
+        }
+    }
+}
 
 /// Paint a row. Shared between the bind path and the live-update path so the
 /// two cannot drift into showing different things for the same state.
@@ -56,58 +154,12 @@ pub fn row_icon(playing: bool, playable: bool) -> (&'static str, &'static [&'sta
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct LibraryItem {
-    pub track: Track,
-    /// Who is playing, shared with every other row. Read at `bind`, never
-    /// stored per-item: a per-item flag has to be changed in the model, and any
-    /// model edit costs the scroll position (see `CurrentTrack`).
-    pub current: CurrentTrack,
-    pub subtitle: String,
-    /// Where this row publishes its icon while it is on screen, so the marker
-    /// can be moved without touching the model. See `RowRegistry`.
-    pub registry: RowRegistry<LibraryRowWidgets>,
-    /// Ids MusicKit has refused. Consulted at bind, so a track discovered to be
-    /// dead mid-session dims without the list being rebuilt.
-    pub dead: DeadTracks,
-}
-
-impl LibraryItem {
-    /// Streamable *and* not on the refused list.
-    pub fn playable(&self) -> bool {
-        match &self.track.catalog_id {
-            Some(id) => !self.dead.borrow().contains(id),
-            None => false,
-        }
-    }
-
-    pub fn new(
-        track: Track,
-        registry: RowRegistry<LibraryRowWidgets>,
-        current: CurrentTrack,
-        dead: DeadTracks,
-    ) -> Self {
-        let subtitle = match (track.artist.is_empty(), track.album.is_empty()) {
-            (false, false) => format!("{} — {}", track.artist, track.album),
-            (false, true) => track.artist.clone(),
-            (true, false) => track.album.clone(),
-            (true, true) => String::new(),
-        };
-        Self {
-            subtitle,
-            current,
-            track,
-            registry,
-            dead,
-        }
-    }
-}
-
 pub struct LibraryItemWidgets {
     icon: gtk::Image,
     title: gtk::Label,
     subtitle: gtk::Label,
-    duration: gtk::Label,
+    trailing: gtk::Label,
+    chevron: gtk::Image,
 }
 
 impl RelmListItem for LibraryItem {
@@ -137,8 +189,8 @@ impl RelmListItem for LibraryItem {
                     gtk::Label {
                         set_xalign: 0.0,
                         set_ellipsize: gtk::pango::EllipsizeMode::End,
-                        // Track names are plain text. Left as markup, anything
-                        // containing `&` fails to render entirely.
+                        // Names are plain text. Left as markup, anything with
+                        // an `&` fails to render at all.
                         set_use_markup: false,
                     },
 
@@ -152,10 +204,17 @@ impl RelmListItem for LibraryItem {
                     },
                 },
 
-                #[name = "duration"]
+                #[name = "trailing"]
                 gtk::Label {
                     set_valign: gtk::Align::Center,
                     add_css_class: "numeric",
+                    add_css_class: "dim-label",
+                },
+
+                #[name = "chevron"]
+                gtk::Image {
+                    set_icon_name: Some("go-next-symbolic"),
+                    set_valign: gtk::Align::Center,
                     add_css_class: "dim-label",
                 },
             }
@@ -167,38 +226,56 @@ impl RelmListItem for LibraryItem {
                 icon,
                 title,
                 subtitle,
-                duration,
+                trailing,
+                chevron,
             },
         )
     }
 
     fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
-        // Everything is set unconditionally: this widget was showing another
-        // track a moment ago, and anything left unset keeps that track's value.
-        widgets.title.set_label(&self.track.title);
-        widgets.subtitle.set_label(&self.subtitle);
-        widgets.duration.set_label(&self.track.duration_label());
+        widgets.title.set_label(self.entry.title());
+        widgets.subtitle.set_label(&self.entry.subtitle());
 
-        let playable = self.playable();
-        let playing = self.track.catalog_id.is_some()
-            && self.current.borrow().as_deref() == self.track.catalog_id.as_deref();
-        apply_row_state(&widgets.icon, root, playing, playable);
+        // A chevron says "this opens something". Songs do not.
+        let opens = self.entry.opens_a_page();
+        widgets.chevron.set_visible(opens);
+        widgets.trailing.set_visible(!opens);
 
-        // Publish this row's widgets while it is on screen.
-        if let Some(id) = &self.track.catalog_id {
-            self.registry.borrow_mut().insert(
-                id.clone(),
-                LibraryRowWidgets {
-                    icon: widgets.icon.clone(),
-                    root: root.clone(),
-                },
-            );
+        match &self.entry {
+            Entry::Song(track) => {
+                widgets
+                    .trailing
+                    .set_label(&format_duration(track.duration_ms));
+
+                let playable = self.playable();
+                let playing = track.catalog_id.is_some()
+                    && self.current.borrow().as_deref() == track.catalog_id.as_deref();
+                apply_row_state(&widgets.icon, root, playing, playable);
+
+                if let Some(id) = &track.catalog_id {
+                    self.registry.borrow_mut().insert(
+                        id.clone(),
+                        LibraryRowWidgets {
+                            icon: widgets.icon.clone(),
+                            root: root.clone(),
+                        },
+                    );
+                }
+            }
+            other => {
+                // Albums and artists are never dimmed and never carry the play
+                // marker, so they bypass the shared state entirely.
+                widgets.icon.set_icon_name(Some(other.icon()));
+                widgets.icon.set_css_classes(&["dim-label"]);
+                root.set_sensitive(true);
+                root.set_tooltip_text(None);
+            }
         }
     }
 
     fn unbind(&mut self, _widgets: &mut Self::Widgets, _root: &mut Self::Root) {
-        // The widget is about to be handed to another track.
-        if let Some(id) = &self.track.catalog_id {
+        // The widget is about to be handed to another row.
+        if let Some(id) = self.entry.catalog_id() {
             self.registry.borrow_mut().remove(id);
         }
     }
@@ -207,11 +284,10 @@ impl RelmListItem for LibraryItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{current_track, dead_tracks, row_registry};
     use crate::music::types::TrackId;
 
-    fn track(artist: &str, album: &str) -> Track {
-        Track {
+    fn song(artist: &str, album: &str) -> Entry {
+        Entry::Song(Track {
             id: TrackId("i.test".into()),
             catalog_id: Some("1".into()),
             title: "Title".into(),
@@ -220,50 +296,48 @@ mod tests {
             duration_ms: 200_000,
             track_number: 1,
             artwork: None,
-        }
+        })
+    }
+
+    fn album(artist: &str, year: &str) -> Entry {
+        Entry::Album(Album {
+            id: "1".into(),
+            name: "Fragile".into(),
+            artist: artist.into(),
+            artwork: None,
+            year: year.into(),
+            track_count: 9,
+        })
     }
 
     #[test]
-    fn subtitle_collapses_rather_than_showing_a_dangling_dash() {
+    fn a_song_subtitle_collapses_rather_than_dangling() {
         assert_eq!(
-            LibraryItem::new(
-                track("Aitana", "Superestrella"),
-                row_registry(),
-                current_track(),
-                dead_tracks()
-            )
-            .subtitle,
+            song("Aitana", "Superestrella").subtitle(),
             "Aitana — Superestrella"
         );
-        assert_eq!(
-            LibraryItem::new(
-                track("Aitana", ""),
-                row_registry(),
-                current_track(),
-                dead_tracks()
-            )
-            .subtitle,
-            "Aitana"
-        );
-        assert_eq!(
-            LibraryItem::new(
-                track("", "Album"),
-                row_registry(),
-                current_track(),
-                dead_tracks()
-            )
-            .subtitle,
-            "Album"
-        );
-        assert_eq!(
-            LibraryItem::new(
-                track("", ""),
-                row_registry(),
-                current_track(),
-                dead_tracks()
-            )
-            .subtitle,
-            ""
-        );
+        assert_eq!(song("Aitana", "").subtitle(), "Aitana");
+        assert_eq!(song("", "Album").subtitle(), "Album");
+        assert_eq!(song("", "").subtitle(), "");
+    }
+
+    #[test]
+    fn an_album_subtitle_collapses_too() {
+        assert_eq!(album("Yes", "1971").subtitle(), "Yes · 1971");
+        assert_eq!(album("Yes", "").subtitle(), "Yes");
+        assert_eq!(album("", "1971").subtitle(), "1971");
+        assert_eq!(album("", "").subtitle(), "");
+    }
+
+    #[test]
+    fn only_songs_are_a_destination() {
+        assert!(!song("a", "b").opens_a_page());
+        assert!(album("a", "b").opens_a_page());
+    }
+
+    #[test]
+    fn only_songs_have_a_catalog_id_to_match_against() {
+        assert_eq!(song("a", "b").catalog_id(), Some("1"));
+        assert_eq!(album("a", "b").catalog_id(), None);
     }
 }

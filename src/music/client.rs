@@ -15,7 +15,20 @@ use anyhow::{Context, Result};
 use reqwest::{Client as HttpClient, StatusCode};
 use serde::Deserialize;
 
-use super::types::{Resource, Response, SongAttributes, Track};
+use super::types::{
+    Album, AlbumAttributes, AlbumResource, Artist, ArtistAttributes, ArtistResource, Resource,
+    Response, SongAttributes, Track,
+};
+
+/// What a catalog search turned up. Apple returns each kind in its own array;
+/// this keeps them apart rather than flattening, because the UI shows them as
+/// different things.
+#[derive(Debug, Default)]
+pub struct SearchResults {
+    pub songs: Vec<Track>,
+    pub albums: Vec<Album>,
+    pub artists: Vec<Artist>,
+}
 
 const API_BASE: &str = "https://api.music.apple.com/v1";
 /// The origin the harvested developer token is minted for — see `get()`.
@@ -224,11 +237,11 @@ impl Client {
     /// token actually works before any playback is involved.
     /// `offset` walks further into the results. Apple caps `limit` at 25 per
     /// request for search, so anything past the first 25 needs paging.
-    pub async fn search_songs(&self, term: &str, limit: u32, offset: usize) -> Result<Vec<Track>> {
+    pub async fn search(&self, term: &str, limit: u32, offset: usize) -> Result<SearchResults> {
         let query = urlencode(term);
         let res = self
             .get(&format!(
-                "/catalog/{}/search?types=songs&limit={limit}&offset={offset}&term={query}",
+                "/catalog/{}/search?types=songs,albums,artists&limit={limit}&offset={offset}&term={query}",
                 self.storefront
             ))
             .send()
@@ -250,23 +263,106 @@ impl Client {
         // results -> songs -> data, and `songs` is absent (not empty) when
         // nothing matched.
         let parsed: SearchResponse = res.json().await.context("decoding search results")?;
-        Ok(parsed
-            .results
-            .songs
-            .map(|s| s.data.into_iter().map(Track::from).collect())
-            .unwrap_or_default())
+        Ok(SearchResults {
+            songs: parsed
+                .results
+                .songs
+                .map(|s| s.data.into_iter().map(Track::from).collect())
+                .unwrap_or_default(),
+            albums: parsed
+                .results
+                .albums
+                .map(|a| a.data.into_iter().map(Album::from).collect())
+                .unwrap_or_default(),
+            artists: parsed
+                .results
+                .artists
+                .map(|a| a.data.into_iter().map(Artist::from).collect())
+                .unwrap_or_default(),
+        })
+    }
+
+    /// An album and its tracks, in one request.
+    ///
+    /// `include=tracks` saves a round trip: the relationship comes back inside
+    /// the album resource rather than needing a second call.
+    pub async fn album(&self, id: &str) -> Result<(Album, Vec<Track>)> {
+        let res = self
+            .get(&format!(
+                "/catalog/{}/albums/{id}?include=tracks",
+                self.storefront
+            ))
+            .send()
+            .await
+            .map_err(Self::transport_error)
+            .context("requesting album")?;
+
+        if !res.status().is_success() {
+            return Err(self.explain(res).await);
+        }
+
+        let parsed: Response<AlbumResource> = res.json().await.context("decoding album")?;
+        let resource = parsed.data.into_iter().next().context("album not found")?;
+        let tracks = resource
+            .relationships
+            .as_ref()
+            .and_then(|r| r.tracks.as_ref())
+            .map(|t| t.data.iter().cloned().map(Track::from).collect())
+            .unwrap_or_default();
+
+        Ok((Album::from(resource.into_album()), tracks))
+    }
+
+    /// An artist's albums, newest first as Apple orders them.
+    pub async fn artist_albums(&self, id: &str) -> Result<(Artist, Vec<Album>)> {
+        let res = self
+            .get(&format!(
+                "/catalog/{}/artists/{id}?include=albums",
+                self.storefront
+            ))
+            .send()
+            .await
+            .map_err(Self::transport_error)
+            .context("requesting artist")?;
+
+        if !res.status().is_success() {
+            return Err(self.explain(res).await);
+        }
+
+        let parsed: Response<ArtistResource> = res.json().await.context("decoding artist")?;
+        let resource = parsed.data.into_iter().next().context("artist not found")?;
+        let albums = resource
+            .relationships
+            .as_ref()
+            .and_then(|r| r.albums.as_ref())
+            .map(|a| a.data.iter().cloned().map(Album::from).collect())
+            .unwrap_or_default();
+
+        Ok((Artist::from(resource.into_artist()), albums))
+    }
+
+    fn transport_error(err: reqwest::Error) -> ApiError {
+        if err.is_connect() {
+            ApiError::Offline
+        } else {
+            ApiError::Other(StatusCode::BAD_GATEWAY)
+        }
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
     #[serde(default)]
-    results: SearchResults,
+    results: SearchWire,
 }
 
+/// Apple omits a key entirely when a kind matched nothing, rather than sending
+/// an empty array — so every field here is optional.
 #[derive(Debug, Default, Deserialize)]
-struct SearchResults {
+struct SearchWire {
     songs: Option<Response<Resource<SongAttributes>>>,
+    albums: Option<Response<Resource<AlbumAttributes>>>,
+    artists: Option<Response<Resource<ArtistAttributes>>>,
 }
 
 /// Percent-encode a search term. The full `url` crate is a lot of dependency

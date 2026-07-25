@@ -443,9 +443,10 @@ Playback engine first. One vertical slice, one PR each.
   click-to-play enqueuing the whole visible list. Verified against a real
   library: 539 tracks over 6 pages, 4 correctly detected as unplayable.
   Playlists and albums are still to come.
-- 🚧 **M6 — Catalog.** Search across the whole Apple Music catalog, with a
-  Library/Apple Music toggle in the header. Album and artist pages are still
-  to come — they need an `adw::NavigationView` the app does not have yet.
+- ✅ **M6 — Catalog.** Search across the whole Apple Music catalog from the
+  sidebar, paginated as you scroll. Results mix artists and albums above the
+  songs; either pushes a detail page (`adw::NavigationView`) you can play from
+  and drill through — artist → album → track.
 - ✅ **M7 — Polish.** Preferences (theme, notifications), keyboard shortcuts,
   About, the app icon, `.desktop`, `make install`, and opt-in track-change
   notifications.
@@ -455,6 +456,26 @@ Discord presence, podcasts, radio, multi-account, an equaliser, scrobbling,
 cross-platform. Downloads and anything decrypting are not "later", they are
 rule 1. When a change drifts, **name the cost and the direction** so it's a
 conscious choice — then build it if it genuinely helps on this one machine.
+
+### Lists, and where they live
+
+There are now three kinds of list, and they share their state deliberately:
+
+| List | Registry | Model |
+| --- | --- | --- |
+| Results (library or catalog) | `AppModel::library_icons` | `TypedListView`, **virtualised** |
+| Queue sidebar | `QueueView`'s own | `TypedListView`, virtualised |
+| Album / artist page | the page's own | `TypedListView`, **not** virtualised |
+
+`CurrentTrack` and `DeadTracks` are shared by all of them; the widget registry
+is **per list**. It is keyed by catalog id, so one shared registry would have
+the same song on a page and in the results behind it overwrite each other's
+entry — the marker would land on whichever bound last. `set_row_playing` asks
+every registry instead.
+
+A pushed page is not virtualised on purpose: its list sits in a `Box` under the
+header so the header scrolls with the content, which means GTK asks the list for
+its full height. An album is a dozen tracks. That is the right trade.
 
 ## Known issues
 
