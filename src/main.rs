@@ -3,6 +3,7 @@
 
 mod app;
 mod components;
+mod mpris;
 mod music;
 mod player;
 

@@ -80,6 +80,20 @@ if (process.platform === 'linux') {
   app.setDesktopName('dev.miguelrincon.Tonearm.desktop')
 }
 
+// Chromium publishes its OWN MPRIS player as soon as a page plays media, and
+// grabs the hardware media keys with it. Tonearm exports MPRIS itself (see
+// src/mpris.rs), so leaving these on gives the shell two identical "Tonearm"
+// players — the visible symptom — and lets an invisible Chromium win the race
+// for Play/Pause on the keyboard.
+//
+// MediaSessionService is the MPRIS bridge; HardwareMediaKeyHandling is the key
+// grab. Neither has anything to do with decoding audio, so disabling them costs
+// nothing and leaves exactly one player on the bus: ours.
+app.commandLine.appendSwitch(
+  'disable-features',
+  'MediaSessionService,HardwareMediaKeyHandling',
+)
+
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-background-timer-throttling')

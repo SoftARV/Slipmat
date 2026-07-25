@@ -293,6 +293,12 @@ the specific traps; do not re-introduce them.
 - **The sidecar must not look like a second app.** `app.setName('Tonearm')` plus
   `app.setDesktopName('dev.miguelrincon.Tonearm.desktop')`, or the shell invents
   a "tonearm-sidecar" entry with a generic icon.
+- **The sidecar must not publish its own MPRIS player.** Chromium registers one
+  the moment a page plays media, and grabs the hardware media keys with it —
+  giving two identical "Tonearm" entries in the shell and letting an invisible
+  browser win the race for Play/Pause. Disabled via
+  `--disable-features=MediaSessionService,HardwareMediaKeyHandling`. Neither
+  affects decoding. Tonearm owns MPRIS; the sidecar owns audio.
 - **Diagnose by layer, in order:** `cmd-queued` → never dispatched.
   No `cmd-recv` → renderer never ran it. `cmd-recv` but no `cmd-done` → the
   command is hanging. `cmd-done` with a full queue but a non-playing state →
@@ -418,8 +424,9 @@ Playback engine first. One vertical slice, one PR each.
   login, tokens harvested. Verified: Widevine → MusicKit → PipeWire, window
   never mapped.
 - ✅ **M2 — Transport.** The Now Playing bar, sidecar-owned queue, supervision.
-- **M3 — MPRIS.** The bar above. *Done when:* the Shell applet and lock screen
-  show artwork and controls work both ways.
+- ✅ **M3 — MPRIS.** `org.mpris.MediaPlayer2.Tonearm`, bidirectional, artwork as
+  a `file://` URL. Verified over `busctl`: properties read, and `PlayPause` /
+  `Next` from the bus reach the sidecar.
 - **M4 — Queue view.** Native list, reorder, jump via `changeToMediaAtIndex`.
 - **M5 — Library.** Playlists / albums / songs, client-side instant search.
 - **M6 — Catalog.** Search, album and artist pages.
