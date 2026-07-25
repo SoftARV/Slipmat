@@ -30,6 +30,21 @@ const readline = require('node:readline')
 const DEBUG =
   process.argv.includes('--debug') || process.env.TONEARM_SHOW_SIDECAR === '1'
 const APPLE_MUSIC = 'https://music.apple.com/'
+/// How the window stays out of the way. Set TONEARM_SIDECAR_WINDOW to pick:
+///
+///   concealed  (default) mapped but 1x1, transparent and click-through.
+///              Chromium keeps the renderer alive because the window is on
+///              screen — at the cost of a speck in the window overview.
+///   hidden     never mapped at all. Completely invisible, nothing in the
+///              overview or the dash. Only safe if Chromium does not freeze
+///              the renderer of an unmapped window; if playback stops working
+///              or the hook never attaches, that is exactly what happened.
+///
+/// The freeze this guards against was observed in a headless test environment
+/// and never confirmed on a real desktop session, so `hidden` may well be fine.
+/// Test it before changing the default.
+const WINDOW_MODE = process.env.TONEARM_SIDECAR_WINDOW || 'concealed'
+
 const READY_TIMEOUT_MS = 60_000
 const PROBE_INTERVAL_MS = 500
 /// How many times to re-ask for tokens after wiring. The developer token can
@@ -55,6 +70,16 @@ const TOKEN_NUDGES = 10
 //     alone does NOT cover this. Observed symptom: the MusicKit readiness poll
 //     emitted exactly one tick and then went silent for 90s — no hook-ready and
 //     no hook-failed, because the loop that would report either had frozen.
+// Identity. Without these the sidecar shows up in the dash and window list as
+// a separate app called "tonearm-sidecar" (from package.json's name), with a
+// generic icon. Pointing it at Tonearm's own desktop entry makes the shell
+// treat any window it does show as part of Tonearm rather than a stray second
+// app. Must be set before app.whenReady().
+app.setName('Tonearm')
+if (process.platform === 'linux') {
+  app.setDesktopName('dev.miguelrincon.Tonearm.desktop')
+}
+
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
@@ -95,6 +120,9 @@ async function createWindow() {
     show: DEBUG,
     width: 1100,
     height: 760,
+    // Constructor-time, not just setSkipTaskbar() — some shells only honour it
+    // at map time, and by then the window has already been listed.
+    skipTaskbar: true,
     // No menu bar, no chrome — on the rare occasion this is visible it is
     // Apple's login and nothing else.
     autoHideMenuBar: true,
@@ -218,11 +246,20 @@ function conceal() {
   if (suspensionBlocker === null) {
     suspensionBlocker = powerSaveBlocker.start('prevent-app-suspension')
   }
+
+  if (WINDOW_MODE === 'hidden') {
+    // Truly invisible: nothing in the overview, nothing in the dash.
+    win.hide()
+    log('window mode: hidden (not mapped)')
+    return
+  }
+
   win.setOpacity(0)
   win.setIgnoreMouseEvents(true)
   win.setSkipTaskbar(true)
   win.setSize(1, 1)
   win.showInactive()
+  log('window mode: concealed (mapped, 1x1, transparent)')
 }
 
 /// The inverse, for Apple's sign-in — the one time the user sees this window.
