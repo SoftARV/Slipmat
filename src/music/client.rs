@@ -13,6 +13,7 @@
 
 use anyhow::{Context, Result};
 use reqwest::{Client as HttpClient, StatusCode};
+use serde::Deserialize;
 
 use super::types::{Resource, Response, SongAttributes, Track};
 
@@ -102,11 +103,96 @@ impl Client {
             res.json().await.context("decoding library songs")?;
         Ok(parsed.data.into_iter().map(Track::from).collect())
     }
+
+    /// Catalog search. Needs only the developer token — no user token, no
+    /// subscription — which makes it the cheapest way to prove the harvested
+    /// token actually works before any playback is involved.
+    pub async fn search_songs(&self, term: &str, limit: u32) -> Result<Vec<Track>> {
+        let query = urlencode(term);
+        let res = self
+            .get(&format!(
+                "/catalog/{}/search?types=songs&limit={limit}&term={query}",
+                self.storefront
+            ))
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_connect() {
+                    ApiError::Offline
+                } else {
+                    ApiError::Other(StatusCode::BAD_GATEWAY)
+                }
+            })
+            .context("searching the catalog")?;
+
+        if !res.status().is_success() {
+            return Err(Self::diagnose(res.status()).into());
+        }
+
+        // Search nests its payload differently to every other endpoint:
+        // results -> songs -> data, and `songs` is absent (not empty) when
+        // nothing matched.
+        let parsed: SearchResponse = res.json().await.context("decoding search results")?;
+        Ok(parsed
+            .results
+            .songs
+            .map(|s| s.data.into_iter().map(Track::from).collect())
+            .unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchResponse {
+    #[serde(default)]
+    results: SearchResults,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SearchResults {
+    songs: Option<Response<Resource<SongAttributes>>>,
+}
+
+/// Percent-encode a search term. The full `url` crate is a lot of dependency
+/// for one query parameter; this covers everything not unreserved per RFC 3986.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_results_are_nested_differently_to_every_other_endpoint() {
+        let raw = r#"{"results":{"songs":{"data":[
+            {"id":"1440857781","attributes":{"name":"Roundabout","artistName":"Yes"}}]}}}"#;
+        let parsed: SearchResponse = serde_json::from_str(raw).unwrap();
+        let songs = parsed.results.songs.expect("songs present");
+        assert_eq!(songs.data[0].id, "1440857781");
+    }
+
+    #[test]
+    fn a_search_that_matches_nothing_omits_the_key_entirely() {
+        // Apple drops `songs` rather than returning an empty array — treating
+        // that as an error would make every no-results search look broken.
+        let parsed: SearchResponse = serde_json::from_str(r#"{"results":{}}"#).unwrap();
+        assert!(parsed.results.songs.is_none());
+    }
+
+    #[test]
+    fn search_terms_are_percent_encoded() {
+        assert_eq!(urlencode("Sigur Rós & co"), "Sigur%20R%C3%B3s%20%26%20co");
+        assert_eq!(urlencode("plain-term_1.0~x"), "plain-term_1.0~x");
+    }
 
     #[test]
     fn statuses_map_to_errors_that_name_the_fix() {

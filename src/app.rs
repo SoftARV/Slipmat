@@ -16,8 +16,14 @@
 use relm4::adw::prelude::*;
 use relm4::{Component, ComponentParts, ComponentSender, adw, gtk};
 
+use crate::music::client::Client;
+use crate::music::types::Track;
 use crate::player::protocol::{Command, Event, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
+
+/// What `PlayTestTrack` searches for. Override with `TONEARM_TEST_TERM` to try
+/// something else without a rebuild.
+const TEST_TERM: &str = "Yes Roundabout";
 
 /// Where we are in bringing the sidecar up. Each variant is a distinct
 /// `StatusPage`, because "it's just spinning" is the failure mode this whole
@@ -56,6 +62,11 @@ pub enum AppMsg {
     PlayPause,
     Next,
     Previous,
+    /// M1's acceptance test, as a button: search the catalog with the harvested
+    /// developer token, then enqueue the first hit. Proves the token, the API
+    /// client and the DRM path in one click. Retire it when M5 lands a real
+    /// library — until then it is the only way to get audio out of the app.
+    PlayTestTrack,
 }
 
 #[derive(Debug)]
@@ -64,6 +75,8 @@ pub enum CommandMsg {
     Sidecar(Incoming),
     /// The child started; here is the handle for talking to it.
     Spawned(sidecar::Handle),
+    /// Catalog search came back with something to enqueue (or an error).
+    TestTrack(Result<Vec<Track>, String>),
 }
 
 #[relm4::component(pub)]
@@ -113,6 +126,17 @@ impl Component for AppModel {
                                 #[watch]
                                 set_visible: matches!(model.stage, Stage::SignedOut),
                                 connect_clicked => AppMsg::SignIn,
+                            },
+
+                            // M1's acceptance test. Goes away when M5 lands a
+                            // real library to click on.
+                            gtk::Button {
+                                set_label: "Play a test track",
+                                add_css_class: "pill",
+                                #[watch]
+                                set_visible: matches!(model.stage, Stage::Ready)
+                                    && model.player.queue.is_empty(),
+                                connect_clicked => AppMsg::PlayTestTrack,
                             },
 
                             gtk::Button {
@@ -174,12 +198,38 @@ impl Component for AppModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, _sender: ComponentSender<Self>, _root: &Self::Root) {
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
             AppMsg::PlayPause => self.send(Command::PlayPause),
             AppMsg::Next => self.send(Command::Next),
             AppMsg::Previous => self.send(Command::Previous),
+            AppMsg::PlayTestTrack => {
+                let Some(tokens) = &self.tokens else {
+                    self.toast("No tokens yet — wait for the sidecar to connect");
+                    return;
+                };
+                // The client is built per request rather than cached: the
+                // developer token is re-harvested and can be replaced mid-session
+                // (rule 7), and a stale client would 401 in a way that looks
+                // like a sign-in problem.
+                let client = Client::new(
+                    tokens.developer_token.clone(),
+                    tokens.music_user_token.clone(),
+                    tokens.storefront.clone(),
+                );
+                let term =
+                    std::env::var("TONEARM_TEST_TERM").unwrap_or_else(|_| TEST_TERM.to_owned());
+                tracing::info!(%term, "searching the catalog for a test track");
+                sender.oneshot_command(async move {
+                    CommandMsg::TestTrack(
+                        client
+                            .search_songs(&term, 1)
+                            .await
+                            .map_err(|err| format!("{err:#}")),
+                    )
+                });
+            }
         }
     }
 
@@ -195,6 +245,25 @@ impl Component for AppModel {
                 // The process is up; Chromium's component updater is now
                 // fetching the CDM (instant after the first run).
                 self.stage = Stage::InstallingWidevine;
+            }
+            CommandMsg::TestTrack(Ok(tracks)) => match tracks.first() {
+                Some(track) => {
+                    tracing::info!(
+                        id = %track.id, title = %track.title, artist = %track.artist,
+                        "enqueuing test track"
+                    );
+                    // One setQueue with the whole list — the gapless rule
+                    // (rule 3), even for a list of one.
+                    self.send(Command::SetQueue {
+                        songs: tracks.iter().map(|t| t.id.0.clone()).collect(),
+                        start_position: 0,
+                    });
+                }
+                None => self.toast("Search returned no songs"),
+            },
+            CommandMsg::TestTrack(Err(err)) => {
+                tracing::warn!(%err, "catalog search failed");
+                self.toast(&format!("Search failed: {err}"));
             }
             CommandMsg::Sidecar(Incoming::Event(event)) => self.on_event(event),
             CommandMsg::Sidecar(Incoming::Unparsed(line)) => {
@@ -241,11 +310,15 @@ impl AppModel {
             // CDM is in place. Now we're waiting on music.apple.com to load
             // and the hook to attach.
             Event::WidevineReady => self.stage = Stage::Connecting,
+            Event::HookBoot { ready_state, href } => {
+                tracing::info!(%ready_state, %href, "preload booted")
+            }
             Event::HookReady {
                 authorized,
                 version,
+                trigger,
             } => {
-                tracing::info!(%version, authorized, "musickit hook attached");
+                tracing::info!(%version, authorized, %trigger, "musickit hook attached");
                 self.stage = if *authorized {
                     Stage::Ready
                 } else {
@@ -261,13 +334,22 @@ impl AppModel {
             }
             Event::HookWarning { detail } => tracing::warn!(%detail, "hook warning"),
             Event::Tokens(tokens) => {
-                tracing::info!(storefront = %tokens.storefront, "tokens harvested");
+                // `has_user_token` is the one that matters after sign-in: a
+                // developer token alone gets you catalog search but not
+                // playback, and the difference is otherwise invisible.
+                tracing::info!(
+                    storefront = %tokens.storefront,
+                    authorized = tokens.authorized,
+                    has_user_token = tokens.music_user_token.is_some(),
+                    "tokens harvested"
+                );
                 if tokens.authorized {
                     self.stage = Stage::Ready;
                 }
                 self.tokens = Some(tokens.clone());
             }
             Event::Authorization { authorized } => {
+                tracing::info!(authorized, "authorization changed");
                 self.stage = if *authorized {
                     Stage::Ready
                 } else {
@@ -276,6 +358,19 @@ impl AppModel {
                 if *authorized {
                     self.send(Command::Hide);
                 }
+            }
+            // These three are what tell you whether audio is actually
+            // happening. Without them a silent player looks identical to one
+            // that was never asked to play anything — which is exactly the
+            // hole the first run fell into.
+            Event::PlaybackState { state } => tracing::info!(?state, "playback state"),
+            Event::NowPlaying { item, queue } => tracing::info!(
+                title = item.as_ref().map(|i| i.title.as_str()).unwrap_or("<none>"),
+                queue_len = queue.items.len(),
+                "now playing changed"
+            ),
+            Event::Queue(queue) => {
+                tracing::debug!(len = queue.items.len(), position = queue.position, "queue")
             }
             Event::Error { code, detail } => {
                 tracing::warn!(%code, %detail, "sidecar error");

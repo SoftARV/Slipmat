@@ -21,6 +21,14 @@ let tokenTimer = null
 
 const emit = (event, payload) => ipcRenderer.send('tonearm:event', { event, ...payload })
 
+// Proof-of-life, sent before anything can go wrong. If Rust sees no
+// `hook-boot` at all, the preload is not running and no amount of debugging
+// inside it will help — check webPreferences.preload and sandbox instead.
+emit('hook-boot', {
+  readyState: (typeof document !== 'undefined' && document.readyState) || 'no-document',
+  href: (typeof location !== 'undefined' && location.href) || 'unknown',
+})
+
 /** Try a list of accessors and return the first that yields something. */
 function pick(...getters) {
   for (const get of getters) {
@@ -42,19 +50,14 @@ function getInstance() {
   return pick(() => window.MusicKit && window.MusicKit.getInstance())
 }
 
-function waitForMusicKit() {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + READY_TIMEOUT_MS
-    const tick = () => {
-      const inst = getInstance()
-      if (inst) return resolve(inst)
-      if (Date.now() > deadline) {
-        return reject(new Error('MusicKit.getInstance() never appeared'))
-      }
-      setTimeout(tick, READY_POLL_MS)
-    }
-    tick()
-  })
+/// Is MusicKit up? Called BY THE MAIN PROCESS via executeJavaScript, because a
+/// timer in here cannot be trusted to run (see the wiring note below).
+window.__tonearmReady = () => {
+  try {
+    return !!(window.MusicKit && window.MusicKit.getInstance())
+  } catch {
+    return false
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,29 +231,71 @@ ipcRenderer.on('tonearm:command', async (_e, msg) => {
 // Boot
 // ---------------------------------------------------------------------------
 
-window.addEventListener('DOMContentLoaded', async () => {
-  try {
-    music = await waitForMusicKit()
-  } catch (err) {
-    // The loud failure demanded by rule 4. Rust turns this into a toast that
-    // names the fix; it must never look like "still loading".
-    return emit('hook-failed', { detail: String(err && err.message) })
-  }
+// Wiring is triggered by the MAIN process, not by a timer in here.
+//
+// A window created with show:false has its renderer frozen by Chromium:
+// setTimeout fires once or twice and then stops for good. Neither
+// webPreferences.backgroundThrottling nor the --disable-renderer-backgrounding
+// family prevents it. The old self-polling loop emitted exactly one tick and
+// then went silent for 90 seconds — no hook-ready and no hook-failed, because
+// the loop that would have reported either had itself frozen.
+//
+// So main.js polls window.__tonearmReady() over executeJavaScript, which runs
+// regardless of renderer timer state, and sends `tonearm:wire` when MusicKit is
+// up. Everything after that point is event-driven, and Chromium does not freeze
+// a page that is playing audio — so once playback starts the renderer stays
+// awake on its own.
+function wire(trigger) {
+  if (music) return true // already wired; a duplicate trigger is harmless
+  music = getInstance()
+  if (!music) return false
 
   wireEvents()
 
-  const t = pushTokens()
-  // The developer token can land a beat after MusicKit itself. Retry briefly
-  // rather than declaring failure.
-  if (!t) {
-    let tries = 0
-    tokenTimer = setInterval(() => {
-      if (pushTokens() || ++tries > 40) clearInterval(tokenTimer)
-    }, 500)
-  }
+  // The developer token can land a beat after MusicKit itself. main.js also
+  // re-sends `refreshTokens` on a main-process timer, because a renderer timer
+  // cannot be relied on here.
+  pushTokens()
 
   emit('hook-ready', {
+    trigger,
     authorized: !!pick(() => music.isAuthorized),
     version: pick(() => window.MusicKit.version) || 'unknown',
   })
+  return true
+}
+
+// Two independent triggers, because neither is reliable alone:
+//
+//   1. The renderer self-poll below. Works when the page is live, and is what
+//      succeeds on a normal desktop session.
+//   2. main.js probing window.__tonearmReady() over executeJavaScript, which
+//      keeps working in situations where the renderer's own timers stall.
+//
+// Whichever wins calls wire(); the `if (music) return` guard makes the loser a
+// no-op. Belt and braces on purpose — this handshake failing silently is the
+// worst failure mode the sidecar has.
+ipcRenderer.on('tonearm:wire', () => {
+  if (!wire('main-probe') && !music) {
+    emit('hook-failed', { detail: 'MusicKit vanished between probe and wire' })
+  }
 })
+
+function selfPoll() {
+  const deadline = Date.now() + READY_TIMEOUT_MS
+  const tick = () => {
+    if (wire('self-poll')) return
+    if (Date.now() > deadline) return // main.js owns the timeout report
+    setTimeout(tick, READY_POLL_MS)
+  }
+  tick()
+}
+
+// Guard on readyState: the preload usually runs before the document parses, but
+// on a warm cache it can already be past `loading`, and then DOMContentLoaded
+// never fires again.
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', selfPoll, { once: true })
+} else {
+  selfPoll()
+}

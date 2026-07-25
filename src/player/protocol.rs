@@ -95,9 +95,27 @@ pub enum Event {
     #[serde(rename = "widevine-ready")]
     WidevineReady,
 
+    /// The preload script executed. Proof-of-life: if this never arrives, the
+    /// preload is not running at all and debugging inside it is wasted effort.
+    #[serde(rename = "hook-boot")]
+    HookBoot {
+        #[serde(default)]
+        ready_state: String,
+        #[serde(default)]
+        href: String,
+    },
+
     /// The hook attached to `MusicKit.getInstance()`.
     #[serde(rename = "hook-ready")]
-    HookReady { authorized: bool, version: String },
+    HookReady {
+        authorized: bool,
+        version: String,
+        /// Which of the two wiring triggers won — `self-poll` or `main-probe`.
+        /// Worth logging: if it is always `main-probe`, the renderer's timers
+        /// are stalling and that will matter for playback too.
+        #[serde(default)]
+        trigger: String,
+    },
 
     /// Apple changed the page out from under us (rule 4). Loud, never silent.
     #[serde(rename = "hook-failed")]

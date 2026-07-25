@@ -25,6 +25,32 @@ const readline = require('node:readline')
 
 const DEBUG = process.argv.includes('--debug')
 const APPLE_MUSIC = 'https://music.apple.com/'
+const READY_TIMEOUT_MS = 60_000
+const PROBE_INTERVAL_MS = 500
+
+// These four switches are what make a permanently-hidden window actually work.
+// All must be set before app.whenReady(). Do not remove any of them without
+// re-running the standalone sidecar test — each one was added to fix an
+// observed, silent failure.
+//
+//   autoplay-policy
+//     Chromium refuses to start audio until a page has "user activation" — a
+//     real click inside it. Our window is hidden and driven entirely over IPC,
+//     so it NEVER receives one, and MusicKit's play() resolves without
+//     producing sound.
+//
+//   disable-renderer-backgrounding / disable-background-timer-throttling /
+//   disable-backgrounding-occluded-windows
+//     A window created with show:false counts as hidden AND occluded, so
+//     Chromium freezes its renderer: setTimeout stops firing within a second or
+//     two and the page stops making progress. webPreferences.backgroundThrottling
+//     alone does NOT cover this. Observed symptom: the MusicKit readiness poll
+//     emitted exactly one tick and then went silent for 90s — no hook-ready and
+//     no hook-failed, because the loop that would report either had frozen.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 
 let win = null
 /** Queued commands that arrived before the hook was ready. */
@@ -111,15 +137,110 @@ async function createWindow() {
     cb(permission === 'media')
   })
 
+  // Signing in navigates the page, which tears down the old preload context
+  // and builds a new one. Until that new hook reports in, `music` is null over
+  // there — so commands must go back to the pending queue rather than being
+  // forwarded into a context that will throw. Without this, every command sent
+  // between sign-in and the new hook-ready is silently lost.
+  win.webContents.on('did-start-loading', () => {
+    hookReady = false
+  })
+
   win.on('close', (e) => {
     // Closing the login window must not kill playback; Rust owns our lifetime.
+    // Back to concealed rather than hidden, so the renderer keeps running.
     e.preventDefault()
-    win.hide()
+    conceal()
     send({ event: 'window-hidden' })
   })
 
   await win.loadURL(APPLE_MUSIC)
   log('loaded', APPLE_MUSIC)
+  if (!DEBUG) conceal()
+  probeForMusicKit()
+}
+
+/// Make the window invisible to the user but *mapped* as far as Chromium is
+/// concerned.
+///
+/// This is the load-bearing trick of the whole sidecar. A window that is never
+/// shown has its renderer frozen: page timers stop, and even
+/// executeJavaScript() from the main process never resolves. Nothing you can
+/// pass in webPreferences or on the command line prevents it — the page has to
+/// actually be on screen.
+///
+/// So it *is* on screen: fully transparent, click-through, off the taskbar, one
+/// pixel. The user never sees it and can never interact with it, but the
+/// compositor has it mapped, so the renderer stays alive and decodes audio.
+///
+/// Do NOT "fix" this back to win.hide() — that reintroduces the freeze, and the
+/// symptom is a player that goes silent with no error anywhere.
+function conceal() {
+  win.setOpacity(0)
+  win.setIgnoreMouseEvents(true)
+  win.setSkipTaskbar(true)
+  win.setSize(1, 1)
+  win.showInactive()
+}
+
+/// The inverse, for Apple's sign-in — the one time the user sees this window.
+function reveal() {
+  win.setOpacity(1)
+  win.setIgnoreMouseEvents(false)
+  win.setSkipTaskbar(false)
+  win.setSize(1100, 760)
+  win.center()
+  win.show()
+  win.focus()
+}
+
+/// Poll the renderer until MusicKit exists, then tell the preload to wire up.
+///
+/// This runs in the MAIN process on purpose. A show:false window has its
+/// renderer frozen by Chromium — a setTimeout loop inside the page fires once
+/// and then stops — so readiness cannot be detected from in there.
+/// executeJavaScript still runs, so we drive it from out here.
+function probeForMusicKit() {
+  const deadline = Date.now() + READY_TIMEOUT_MS
+  let wired = false
+
+  const timer = setInterval(async () => {
+    if (wired || !win || win.isDestroyed()) return clearInterval(timer)
+
+    // Deadline is checked BEFORE the await on purpose. If the renderer is
+    // frozen, executeJavaScript never settles — and a deadline check placed
+    // after the await would then be unreachable, which is exactly how the
+    // freeze first presented: no hook-ready, no hook-failed, no error at all.
+    if (Date.now() > deadline) {
+      clearInterval(timer)
+      return send({
+        event: 'hook-failed',
+        detail: 'MusicKit never appeared (renderer may be frozen)',
+      })
+    }
+
+    let ready = false
+    try {
+      ready = await win.webContents.executeJavaScript(
+        'window.__tonearmReady ? window.__tonearmReady() : false',
+      )
+    } catch (err) {
+      log('probe failed:', err && err.message)
+    }
+
+    if (ready) {
+      wired = true
+      clearInterval(timer)
+      win.webContents.send('tonearm:wire')
+      // The developer token can appear slightly after MusicKit. Nudge a few
+      // times from out here, because the renderer's own timers are frozen.
+      let nudges = 0
+      const tokenTimer = setInterval(() => {
+        if (++nudges > 10 || !win || win.isDestroyed()) return clearInterval(tokenTimer)
+        win.webContents.send('tonearm:command', { cmd: 'refreshTokens' })
+      }, 1000)
+    }
+  }, PROBE_INTERVAL_MS)
 }
 
 // ---------------------------------------------------------------------------
@@ -130,13 +251,11 @@ function dispatch(msg) {
   // Handled here, not in the page.
   switch (msg.cmd) {
     case 'showLogin':
-      if (win) {
-        win.show()
-        win.focus()
-      }
+      if (win) reveal()
       return
     case 'hide':
-      if (win) win.hide()
+      // conceal(), never win.hide() — see the note on conceal().
+      if (win) conceal()
       return
     case 'quit':
       app.exit(0)
