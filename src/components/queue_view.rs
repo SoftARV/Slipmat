@@ -238,7 +238,23 @@ impl Component for QueueView {
     ) {
         match msg {
             QueueViewInput::Sync { entries, playing } => {
-                self.apply(entries);
+                // Where the user is looking, captured before anything changes.
+                let scrolled_to = widgets.scroller.vadjustment().value();
+
+                if self.apply(entries) == Applied::Rebuilt && scrolled_to > 0.0 {
+                    // A rebuild recreates every row and drops the scroll to
+                    // zero. The fast path avoids that, but it cannot cover
+                    // every shape of change MusicKit sends, so put the user
+                    // back where they were rather than assuming it never
+                    // happens. Deferred: the new rows have no height until
+                    // they have been allocated, so `upper` is still stale here.
+                    let adj = widgets.scroller.vadjustment();
+                    gtk::glib::idle_add_local_once(move || {
+                        let max = (adj.upper() - adj.page_size()).max(0.0);
+                        adj.set_value(scrolled_to.min(max));
+                    });
+                }
+
                 if playing != self.playing {
                     self.playing = playing.clone();
                     self.rows.broadcast(QueueRowInput::NowPlaying(playing));
@@ -291,19 +307,28 @@ impl QueueView {
     /// A rebuild resets the scroll position, which is unacceptable for the
     /// commonest change by far — removing one track, while looking at the queue.
     /// So a single removal is applied as a single removal.
-    fn apply(&mut self, entries: Vec<QueueEntry>) {
+    fn apply(&mut self, entries: Vec<QueueEntry>) -> Applied {
         let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
         if ids == self.shown {
-            return;
+            return Applied::Unchanged;
         }
 
         if let Some(removed) = single_removal(&self.shown, &ids) {
+            tracing::debug!(index = removed, "queue: removing one row in place");
             self.shown = ids;
             self.count = entries.len();
             self.rows.guard().remove(removed);
-            return;
+            return Applied::Edited;
         }
 
+        // Worth a line: if removals keep landing here rather than on the fast
+        // path, the queue MusicKit reports after an edit is not simply the old
+        // one minus an item, and the fast path needs widening.
+        tracing::debug!(
+            was = self.shown.len(),
+            now = ids.len(),
+            "queue: rebuilding rows"
+        );
         self.shown = ids;
         self.count = entries.len();
         let mut rows = self.rows.guard();
@@ -311,7 +336,18 @@ impl QueueView {
         for entry in entries {
             rows.push_back(entry);
         }
+        Applied::Rebuilt
     }
+}
+
+/// What `apply` did, so the caller knows whether the scroll needs restoring.
+#[derive(Debug, PartialEq, Eq)]
+enum Applied {
+    Unchanged,
+    /// Rows edited in place; scroll position survives.
+    Edited,
+    /// Every row recreated; scroll position is gone.
+    Rebuilt,
 }
 
 /// If `new` is `old` with exactly one element taken out, return its position.
