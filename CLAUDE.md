@@ -444,8 +444,9 @@ Playback engine first. One vertical slice, one PR each.
   library: 539 tracks over 6 pages, 4 correctly detected as unplayable.
   Playlists and albums are still to come.
 - **M6 — Catalog.** Search, album and artist pages.
-- **M7 — Polish.** Preferences, shortcuts, About, icon, `.desktop`,
-  `make install`, opt-in track-change notifications.
+- ✅ **M7 — Polish.** Preferences (theme, notifications), keyboard shortcuts,
+  About, the app icon, `.desktop`, `make install`, and opt-in track-change
+  notifications.
 
 **Stay lean — flag the drift, don't gatekeep.** Not the default focus: lyrics,
 Discord presence, podcasts, radio, multi-account, an equaliser, scrobbling,

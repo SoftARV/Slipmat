@@ -32,8 +32,10 @@ use crate::components::{
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
+use crate::notify;
 use crate::player::protocol::{Command, Event, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
+use crate::settings::{Settings, Theme};
 
 /// How often the seek bar redraws while playing.
 ///
@@ -135,6 +137,122 @@ fn start_index(songs: &[String], start_id: Option<&String>) -> usize {
         .unwrap_or(0)
 }
 
+// The primary menu's action group. GTK menu items invoke `GAction`s by name;
+// each of these bridges to an `AppMsg` so the reducer stays the only place
+// state changes.
+relm4::new_action_group!(AppMenuActionGroup, "win");
+relm4::new_stateless_action!(PreferencesAction, AppMenuActionGroup, "preferences");
+relm4::new_stateless_action!(ShortcutsAction, AppMenuActionGroup, "shortcuts");
+relm4::new_stateless_action!(AboutAction, AppMenuActionGroup, "about");
+relm4::new_stateless_action!(QuitAction, AppMenuActionGroup, "quit");
+relm4::new_stateless_action!(PlayPauseAction, AppMenuActionGroup, "play-pause");
+relm4::new_stateless_action!(NextAction, AppMenuActionGroup, "next");
+relm4::new_stateless_action!(PreviousAction, AppMenuActionGroup, "previous");
+relm4::new_stateless_action!(ToggleQueueAction, AppMenuActionGroup, "toggle-queue");
+
+/// Wire the primary menu's actions to messages, with their accelerators.
+fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>) {
+    use relm4::actions::{AccelsPlus, RelmAction, RelmActionGroup};
+
+    let mut group = RelmActionGroup::<AppMenuActionGroup>::new();
+
+    let s = sender.clone();
+    group.add_action(RelmAction::<PreferencesAction>::new_stateless(move |_| {
+        s.input(AppMsg::ShowPreferences)
+    }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<ShortcutsAction>::new_stateless(move |_| {
+        s.input(AppMsg::ShowShortcuts)
+    }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<AboutAction>::new_stateless(move |_| {
+        s.input(AppMsg::ShowAbout)
+    }));
+    group.add_action(RelmAction::<QuitAction>::new_stateless(move |_| {
+        relm4::main_application().quit()
+    }));
+
+    // Transport, so the app answers the keyboard even when the bar does not
+    // have focus. Media keys already arrive over MPRIS; these are the
+    // in-window equivalents.
+    let s = sender.clone();
+    group.add_action(RelmAction::<PlayPauseAction>::new_stateless(move |_| {
+        s.input(AppMsg::PlayPause)
+    }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<NextAction>::new_stateless(move |_| {
+        s.input(AppMsg::Next)
+    }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<PreviousAction>::new_stateless(move |_| {
+        s.input(AppMsg::Previous)
+    }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<ToggleQueueAction>::new_stateless(move |_| {
+        s.input(AppMsg::ToggleQueue)
+    }));
+
+    let app = relm4::main_application();
+    app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
+    app.set_accelerators_for_action::<ShortcutsAction>(&["<Control>question"]);
+    app.set_accelerators_for_action::<QuitAction>(&["<Control>q"]);
+    app.set_accelerators_for_action::<PlayPauseAction>(&["<Control>space"]);
+    app.set_accelerators_for_action::<NextAction>(&["<Control>Right"]);
+    app.set_accelerators_for_action::<PreviousAction>(&["<Control>Left"]);
+    app.set_accelerators_for_action::<ToggleQueueAction>(&["<Control>u"]);
+
+    group.register_for_widget(window);
+}
+
+fn show_about(parent: &adw::ApplicationWindow) {
+    let about = adw::AboutDialog::builder()
+        .application_name("Tonearm")
+        .application_icon(crate::APP_ID)
+        .developer_name("Miguel Rincon")
+        .version(env!("CARGO_PKG_VERSION"))
+        .license_type(gtk::License::Gpl30)
+        .website("https://github.com/SoftARV/Tonearm")
+        .issue_url("https://github.com/SoftARV/Tonearm/issues")
+        .comments(
+            "A native GNOME client for Apple Music.\n\n\
+             Playback runs through Apple's own MusicKit player using Google's \
+             Widevine CDM, in a hidden helper process. Tonearm is a native \
+             front-end for a licensed session — it requires an active Apple \
+             Music subscription and an internet connection.",
+        )
+        .build();
+    about.present(Some(parent));
+}
+
+fn show_shortcuts(parent: &adw::ApplicationWindow) {
+    // Built by hand rather than from a .ui file: it is a dozen lines either
+    // way, and this keeps the strings next to the code that implements them.
+    let dialog = adw::ShortcutsDialog::new();
+
+    let playback = adw::ShortcutsSection::new(Some("Playback"));
+    for (title, accel) in [
+        ("Play or pause", "<Control>space"),
+        ("Next track", "<Control>Right"),
+        ("Previous track", "<Control>Left"),
+    ] {
+        playback.add(adw::ShortcutsItem::new(title, accel));
+    }
+
+    let general = adw::ShortcutsSection::new(Some("General"));
+    for (title, accel) in [
+        ("Toggle the queue", "<Control>u"),
+        ("Preferences", "<Control>comma"),
+        ("Keyboard shortcuts", "<Control>question"),
+        ("Quit", "<Control>q"),
+    ] {
+        general.add(adw::ShortcutsItem::new(title, accel));
+    }
+
+    dialog.add(playback);
+    dialog.add(general);
+    dialog.present(Some(parent));
+}
+
 /// Where we are in bringing the sidecar up. Each variant is a distinct
 /// `StatusPage`, because "it's just spinning" is the failure mode this whole
 /// module exists to avoid (rule 4).
@@ -207,6 +325,13 @@ pub struct AppModel {
     art_for: Option<String>,
     /// Live only while playing; see `TICK_MS`.
     tick: Option<gtk::glib::SourceId>,
+    settings: Settings,
+    /// The track the last notification was sent for, so a queue echo or a
+    /// position tick cannot re-notify for the song already playing.
+    notified_for: Option<String>,
+    /// A track whose notification is waiting on its cover to finish
+    /// downloading. See `maybe_notify`.
+    notify_when_art_lands: Option<String>,
 }
 
 #[derive(Debug)]
@@ -228,6 +353,11 @@ pub enum AppMsg {
     PlayFrom(usize),
     SearchChanged(String),
     ReloadLibrary,
+    ShowPreferences,
+    ShowShortcuts,
+    ShowAbout,
+    SetTheme(u32),
+    SetNotifyTrackChange(bool),
     ToggleQueue,
     /// A library row was activated; the position is resolved immediately.
     LibraryActivated(u32),
@@ -253,7 +383,7 @@ pub enum CommandMsg {
 
 #[relm4::component(pub)]
 impl Component for AppModel {
-    type Init = ();
+    type Init = Settings;
     type Input = AppMsg;
     type Output = ();
     type CommandOutput = CommandMsg;
@@ -297,6 +427,12 @@ impl Component for AppModel {
                             } else {
                                 "title"
                             },
+                        },
+
+                        pack_end = &gtk::MenuButton {
+                            set_icon_name: "open-menu-symbolic",
+                            set_tooltip_text: Some("Main Menu"),
+                            set_menu_model: Some(&primary_menu),
                         },
 
                         pack_end = &gtk::Button {
@@ -423,7 +559,7 @@ impl Component for AppModel {
     }
 
     fn init(
-        _init: Self::Init,
+        settings: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
@@ -482,12 +618,26 @@ impl Component for AppModel {
             art_path: None,
             art_for: None,
             tick: None,
+            settings,
+            notified_for: None,
+            notify_when_art_lands: None,
         };
+        let primary_menu = gtk::gio::Menu::new();
+        {
+            let section = gtk::gio::Menu::new();
+            section.append(Some("_Preferences"), Some("win.preferences"));
+            section.append(Some("_Keyboard Shortcuts"), Some("win.shortcuts"));
+            section.append(Some("_About Tonearm"), Some("win.about"));
+            primary_menu.append_section(None, &section);
+        }
+
         let toaster = &model.toaster;
         let now_playing_bar = model.now_playing.widget();
         let library_list = &model.library.view;
         let queue_sidebar = model.queue_view.widget();
         let widgets = view_output!();
+
+        register_actions(&root, &sender);
 
         // Rows read playability from here, so seed it before any are built.
         *model.dead_rows.borrow_mut() = model.dead_ids.clone();
@@ -497,7 +647,12 @@ impl Component for AppModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
+    fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
+        // A now-playing notification must not outlive the player that sent it.
+        notify::clear(relm4::main_application().upcast_ref::<gtk::gio::Application>());
+    }
+
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
             AppMsg::PlayPause => self.send(Command::PlayPause),
@@ -526,6 +681,18 @@ impl Component for AppModel {
                 }
             }
             AppMsg::ReloadLibrary => self.load_library(&sender),
+            AppMsg::ShowPreferences => self.show_preferences(&sender, root),
+            AppMsg::ShowShortcuts => show_shortcuts(root),
+            AppMsg::ShowAbout => show_about(root),
+            AppMsg::SetTheme(index) => {
+                self.settings.theme = Theme::from_index(index);
+                self.settings.apply_theme();
+                self.settings.save();
+            }
+            AppMsg::SetNotifyTrackChange(on) => {
+                self.settings.notify_track_change = on;
+                self.settings.save();
+            }
             AppMsg::ToggleQueue => {
                 self.show_queue = !self.show_queue;
                 if self.show_queue {
@@ -597,6 +764,16 @@ impl Component for AppModel {
                 }
                 self.art_path = path.clone();
                 self.now_playing.emit(NowPlayingInput::ArtworkReady(path));
+
+                // A notification was held back for this track so it would not
+                // go out carrying the previous album's cover. Guarded on the
+                // id, in case the track changed again while the fetch ran.
+                if self.notify_when_art_lands.is_some()
+                    && self.notify_when_art_lands == self.playing_catalog_id()
+                {
+                    self.send_track_notification();
+                }
+
                 // MPRIS carries the cover too, so the Shell applet and lock
                 // screen pick it up as soon as it lands.
                 self.push_snapshot();
@@ -665,6 +842,51 @@ impl AppModel {
     }
 
     /// Tell the rows which one is playing, so the list shows a play marker.
+    /// Notify about a new track, if the user asked for that.
+    ///
+    /// Keyed on the track id rather than on "metadata changed": a queue echo,
+    /// a seek or an artwork arrival all count as metadata changes, and none of
+    /// them is a new song. Without this you get several notifications per
+    /// track.
+    fn maybe_notify(&mut self, artwork_in_flight: bool) {
+        if !self.settings.notify_track_change {
+            // Still track what is playing, so switching the preference on
+            // mid-song does not immediately fire for the song already playing.
+            self.notified_for = self.playing_catalog_id();
+            return;
+        }
+
+        let current = self.playing_catalog_id();
+        if current.is_none() || current == self.notified_for {
+            return;
+        }
+        self.notified_for = current.clone();
+
+        if artwork_in_flight {
+            // `art_path` still holds the PREVIOUS track's cover: the fetch is
+            // async and has not landed yet. Notifying now shows the wrong
+            // album. Wait for CommandMsg::Artwork, which always arrives — with
+            // None if the fetch failed.
+            self.notify_when_art_lands = current;
+            return;
+        }
+        self.send_track_notification();
+    }
+
+    /// Post the notification for whatever is playing now.
+    fn send_track_notification(&mut self) {
+        self.notify_when_art_lands = None;
+        let Some(item) = self.player.now_playing.as_ref() else {
+            return;
+        };
+        notify::track_changed(
+            relm4::main_application().upcast_ref::<gtk::gio::Application>(),
+            &item.title,
+            &item.artist,
+            self.art_path.as_deref(),
+        );
+    }
+
     /// The catalog id of the track MusicKit is on, if any.
     fn playing_catalog_id(&self) -> Option<String> {
         self.player
@@ -892,6 +1114,52 @@ impl AppModel {
         })
     }
 
+    /// Preferences: theme and the track-change notification.
+    ///
+    /// Built imperatively rather than in `view!` because it is presented on
+    /// demand and owns no state of its own — every change goes straight back
+    /// through `AppMsg` so the reducer stays the only writer.
+    fn show_preferences(&self, sender: &ComponentSender<Self>, parent: &adw::ApplicationWindow) {
+        let dialog = adw::PreferencesDialog::new();
+        let page = adw::PreferencesPage::new();
+
+        let appearance = adw::PreferencesGroup::builder().title("Appearance").build();
+        let theme = adw::ComboRow::builder()
+            .title("Theme")
+            .model(&gtk::StringList::new(&["Follow System", "Light", "Dark"]))
+            .selected(self.settings.theme.index())
+            .build();
+        {
+            let sender = sender.clone();
+            theme.connect_selected_notify(move |row| {
+                sender.input(AppMsg::SetTheme(row.selected()));
+            });
+        }
+        appearance.add(&theme);
+
+        let notifications = adw::PreferencesGroup::builder()
+            .title("Notifications")
+            .description("Notifications only appear once Tonearm is installed — see the README.")
+            .build();
+        let notify = adw::SwitchRow::builder()
+            .title("Notify on track change")
+            .subtitle("Show a notification when a new song starts")
+            .active(self.settings.notify_track_change)
+            .build();
+        {
+            let sender = sender.clone();
+            notify.connect_active_notify(move |row| {
+                sender.input(AppMsg::SetNotifyTrackChange(row.is_active()));
+            });
+        }
+        notifications.add(&notify);
+
+        page.add(&appearance);
+        page.add(&notifications);
+        dialog.add(&page);
+        dialog.present(Some(parent));
+    }
+
     fn showing_library(&self) -> bool {
         matches!(self.stage, Stage::Ready) && !self.all_tracks.is_empty()
     }
@@ -1003,7 +1271,9 @@ impl AppModel {
     }
 
     /// Fetch cover art for the current track, at most once per template.
-    fn sync_artwork(&mut self, sender: &ComponentSender<Self>) {
+    /// Returns whether a fetch is now in flight, so the caller knows that
+    /// `art_path` is stale until `CommandMsg::Artwork` arrives.
+    fn sync_artwork(&mut self, sender: &ComponentSender<Self>) -> bool {
         let template = self
             .player
             .now_playing
@@ -1011,7 +1281,9 @@ impl AppModel {
             .and_then(|i| i.artwork_template.clone());
 
         if template == self.art_for {
-            return;
+            // Same cover as the last track — usually the next song on the same
+            // album. `art_path` is already correct.
+            return false;
         }
         self.art_for = template.clone();
 
@@ -1021,8 +1293,13 @@ impl AppModel {
                 sender.oneshot_command(async move {
                     CommandMsg::Artwork(artwork::fetch(art, ART_SIZE).await.ok())
                 });
+                true
             }
-            None => self.now_playing.emit(NowPlayingInput::ArtworkReady(None)),
+            None => {
+                self.art_path = None;
+                self.now_playing.emit(NowPlayingInput::ArtworkReady(None));
+                false
+            }
         }
     }
 
@@ -1138,8 +1415,9 @@ impl AppModel {
         // place rather than being sprinkled through the match above — miss one
         // branch there and the bar silently goes stale.
         if metadata_changed {
-            self.sync_artwork(sender);
+            let artwork_in_flight = self.sync_artwork(sender);
             self.mark_now_playing();
+            self.maybe_notify(artwork_in_flight);
         }
         self.sync_tick(sender);
         self.push_snapshot();
