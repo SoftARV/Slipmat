@@ -174,6 +174,7 @@ relm4::new_stateless_action!(PlayPauseAction, AppMenuActionGroup, "play-pause");
 relm4::new_stateless_action!(NextAction, AppMenuActionGroup, "next");
 relm4::new_stateless_action!(PreviousAction, AppMenuActionGroup, "previous");
 relm4::new_stateless_action!(ToggleQueueAction, AppMenuActionGroup, "toggle-queue");
+relm4::new_stateless_action!(ToggleSidebarAction, AppMenuActionGroup, "toggle-sidebar");
 
 /// Wire the primary menu's actions to messages, with their accelerators.
 fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>) {
@@ -216,6 +217,10 @@ fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<Ap
     group.add_action(RelmAction::<ToggleQueueAction>::new_stateless(move |_| {
         s.input(AppMsg::ToggleQueue)
     }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<ToggleSidebarAction>::new_stateless(
+        move |_| s.input(AppMsg::ToggleSidebar),
+    ));
 
     let app = relm4::main_application();
     app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
@@ -225,6 +230,8 @@ fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<Ap
     app.set_accelerators_for_action::<NextAction>(&["<Control>Right"]);
     app.set_accelerators_for_action::<PreviousAction>(&["<Control>Left"]);
     app.set_accelerators_for_action::<ToggleQueueAction>(&["<Control>u"]);
+    // F9 is the GNOME convention for showing and hiding a sidebar.
+    app.set_accelerators_for_action::<ToggleSidebarAction>(&["F9"]);
 
     group.register_for_widget(window);
 }
@@ -282,6 +289,7 @@ fn show_shortcuts(parent: &adw::ApplicationWindow) {
 
     let general = adw::ShortcutsSection::new(Some("General"));
     for (title, accel) in [
+        ("Toggle the sidebar", "F9"),
         ("Toggle the queue", "<Control>u"),
         ("Preferences", "<Control>comma"),
         ("Keyboard shortcuts", "<Control>question"),
@@ -331,6 +339,9 @@ pub struct AppModel {
     library: TypedListView<LibraryItem, gtk::NoSelection>,
     /// Whether the queue sidebar is open.
     show_queue: bool,
+    /// Whether the navigation sidebar is open. Persisted, like the section:
+    /// someone who closes it wants it closed next time too.
+    show_sidebar: bool,
     /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
@@ -414,6 +425,7 @@ pub enum AppMsg {
     /// The debounce elapsed for this generation; run the catalog search.
     RunCatalogSearch(u64),
     SetScope(SearchScope),
+    ToggleSidebar,
     /// The results list is near its end; fetch the next page if there is one.
     LoadMoreCatalog,
     ReloadLibrary,
@@ -482,22 +494,21 @@ impl Component for AppModel {
                         #[local_ref]
                         set_sidebar = queue_sidebar -> adw::ToolbarView {},
 
-                        // Navigation on the left. A NavigationSplitView rather
-                        // than another OverlaySplitView: this sidebar is where
-                        // you are, not a panel you summon, and it should
-                        // collapse into a back-navigable page on narrow
-                        // windows rather than overlay the content.
+                        // Navigation on the left, and an OverlaySplitView
+                        // rather than a NavigationSplitView because it can be
+                        // dismissed: once the sidebar is something you toggle,
+                        // it is a panel you summon, which is exactly what this
+                        // widget is for. The queue on the right is the same
+                        // shape for the same reason.
                         #[wrap(Some)]
-                        set_content = &adw::NavigationSplitView {
+                        set_content = &adw::OverlaySplitView {
                             set_min_sidebar_width: 200.0,
                             set_max_sidebar_width: 260.0,
+                            #[watch]
+                            set_show_sidebar: model.show_sidebar,
 
                             #[wrap(Some)]
-                            set_sidebar = &adw::NavigationPage {
-                                set_title: "Tonearm",
-
-                                #[wrap(Some)]
-                                set_child = &adw::ToolbarView {
+                            set_sidebar = &adw::ToolbarView {
                                     add_top_bar = &adw::HeaderBar {
                                         #[wrap(Some)]
                                         set_title_widget = &adw::WindowTitle {
@@ -598,22 +609,28 @@ impl Component for AppModel {
                                                     },
                                                 },
                                             },
-                                        },
                                     },
                                 },
                             },
 
                             #[wrap(Some)]
-                            set_content = &adw::NavigationPage {
-                                #[watch]
-                                set_title: match model.scope {
-                                    SearchScope::Library => "Songs",
-                                    SearchScope::Catalog => "Search",
-                                },
-
-                                #[wrap(Some)]
-                                set_child = &adw::ToolbarView {
+                            set_content = &adw::ToolbarView {
                                     add_top_bar = &adw::HeaderBar {
+                                        // The sidebar's own header carries the
+                                        // start-side window controls while it
+                                        // is open, so this header only shows
+                                        // them once the sidebar is away.
+                                        #[watch]
+                                        set_show_start_title_buttons: !model.show_sidebar,
+
+                                        pack_start = &gtk::ToggleButton {
+                                            set_icon_name: "sidebar-show-symbolic",
+                                            set_tooltip_text: Some("Toggle Sidebar"),
+                                            #[watch]
+                                            set_active: model.show_sidebar,
+                                            connect_clicked => AppMsg::ToggleSidebar,
+                                        },
+
                                         // When the queue is open it is the
                                         // rightmost pane, so the window
                                         // controls belong to its header, not
@@ -763,7 +780,6 @@ impl Component for AppModel {
                                     },
                                 },
                             },
-                        },
                     },
 
                     // The bar spans the full width under both panes — it is
@@ -823,6 +839,7 @@ impl Component for AppModel {
             queue_view,
             library,
             show_queue: false,
+            show_sidebar: settings.show_sidebar,
             marked_playing: None,
             library_icons: row_registry(),
             current_track: current_track(),
@@ -1076,6 +1093,11 @@ impl Component for AppModel {
             }
             AppMsg::SetNotifyTrackChange(on) => {
                 self.settings.notify_track_change = on;
+                self.settings.save();
+            }
+            AppMsg::ToggleSidebar => {
+                self.show_sidebar = !self.show_sidebar;
+                self.settings.show_sidebar = self.show_sidebar;
                 self.settings.save();
             }
             AppMsg::ToggleQueue => {

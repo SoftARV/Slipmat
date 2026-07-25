@@ -84,14 +84,28 @@ impl Section {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub theme: Theme,
     pub section: Section,
+    pub show_sidebar: bool,
     /// Notify when the track changes. Off by default (`bool`'s default): a
     /// notification for every song is a lot of noise, and the person who wants
     /// it will go and turn it on.
     pub notify_track_change: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: Theme::default(),
+            section: Section::default(),
+            // Visible on a first run: a sidebar nobody has hidden yet should
+            // be there to be found.
+            show_sidebar: true,
+            notify_track_change: false,
+        }
+    }
 }
 
 fn path() -> Option<std::path::PathBuf> {
@@ -123,6 +137,9 @@ impl Settings {
         if let Ok(section) = file.string(GROUP, "section") {
             settings.section = Section::parse(&section);
         }
+        if let Ok(show) = file.boolean(GROUP, "show-sidebar") {
+            settings.show_sidebar = show;
+        }
         tracing::debug!(?settings, "loaded settings");
         settings
     }
@@ -141,6 +158,7 @@ impl Settings {
         file.set_string(GROUP, "theme", self.theme.as_str());
         file.set_boolean(GROUP, "notify-track-change", self.notify_track_change);
         file.set_string(GROUP, "section", self.section.as_str());
+        file.set_boolean(GROUP, "show-sidebar", self.show_sidebar);
 
         if let Err(err) = std::fs::create_dir_all(dir) {
             tracing::warn!(?err, "could not create config directory");
@@ -201,6 +219,12 @@ mod tests {
         // A hand-edited or future-version ini must not break startup.
         assert_eq!(Section::parse("playlists"), Section::Library);
         assert_eq!(Section::parse(""), Section::Library);
+    }
+
+    #[test]
+    fn the_sidebar_starts_visible() {
+        // Not bool's default: a sidebar nobody has hidden should be findable.
+        assert!(Settings::default().show_sidebar);
     }
 
     #[test]
