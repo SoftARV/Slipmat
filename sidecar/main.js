@@ -30,20 +30,20 @@ const readline = require('node:readline')
 const DEBUG =
   process.argv.includes('--debug') || process.env.TONEARM_SHOW_SIDECAR === '1'
 const APPLE_MUSIC = 'https://music.apple.com/'
-/// How the window stays out of the way. Set TONEARM_SIDECAR_WINDOW to pick:
+/// How the window stays out of the way. Set TONEARM_SIDECAR_WINDOW to override:
 ///
-///   concealed  (default) mapped but 1x1, transparent and click-through.
-///              Chromium keeps the renderer alive because the window is on
-///              screen — at the cost of a speck in the window overview.
-///   hidden     never mapped at all. Completely invisible, nothing in the
-///              overview or the dash. Only safe if Chromium does not freeze
-///              the renderer of an unmapped window; if playback stops working
-///              or the hook never attaches, that is exactly what happened.
+///   hidden     (default) never mapped. Completely invisible — nothing in the
+///              window overview, nothing in the dash. Verified on GNOME/Wayland
+///              with playback left running for a long stretch and still
+///              responding afterwards.
+///   concealed  mapped but 1x1, transparent and click-through. Kept as an
+///              escape hatch in case a compositor does freeze the renderer of
+///              an unmapped window; the cost is a speck in the overview.
 ///
-/// The freeze this guards against was observed in a headless test environment
-/// and never confirmed on a real desktop session, so `hidden` may well be fine.
-/// Test it before changing the default.
-const WINDOW_MODE = process.env.TONEARM_SIDECAR_WINDOW || 'concealed'
+/// Note the --disable-renderer-backgrounding family below was already in place
+/// when `hidden` was verified, so those switches may well be what makes it
+/// viable. Do not remove them and assume this still works.
+const WINDOW_MODE = process.env.TONEARM_SIDECAR_WINDOW || 'hidden'
 
 const READY_TIMEOUT_MS = 60_000
 const PROBE_INTERVAL_MS = 500
@@ -64,12 +64,12 @@ const TOKEN_NUDGES = 10
 //
 //   disable-renderer-backgrounding / disable-background-timer-throttling /
 //   disable-backgrounding-occluded-windows
-//     A window created with show:false counts as hidden AND occluded, so
-//     Chromium freezes its renderer: setTimeout stops firing within a second or
-//     two and the page stops making progress. webPreferences.backgroundThrottling
-//     alone does NOT cover this. Observed symptom: the MusicKit readiness poll
-//     emitted exactly one tick and then went silent for 90s — no hook-ready and
-//     no hook-failed, because the loop that would report either had frozen.
+//     A window created with show:false counts as hidden AND occluded, and
+//     Chromium will freeze such a renderer: timers stop firing and the page
+//     stops making progress. webPreferences.backgroundThrottling alone does
+//     NOT cover it. These three are almost certainly what lets the sidecar run
+//     entirely unmapped (WINDOW_MODE=hidden), which is verified working — so
+//     treat them as load-bearing, not as leftovers from a fixed bug.
 // Identity. Without these the sidecar shows up in the dash and window list as
 // a separate app called "tonearm-sidecar" (from package.json's name), with a
 // generic icon. Pointing it at Tonearm's own desktop entry makes the shell
@@ -212,7 +212,6 @@ async function createWindow() {
 
   win.on('close', (e) => {
     // Closing the login window must not kill playback; Rust owns our lifetime.
-    // Back to concealed rather than hidden, so the renderer keeps running.
     e.preventDefault()
     conceal()
     send({ event: 'window-hidden' })
@@ -224,21 +223,11 @@ async function createWindow() {
   probeForMusicKit()
 }
 
-/// Make the window invisible to the user but *mapped* as far as Chromium is
-/// concerned.
+/// Put the window away. See WINDOW_MODE.
 ///
-/// This is the load-bearing trick of the whole sidecar. A window that is never
-/// shown has its renderer frozen: page timers stop, and even
-/// executeJavaScript() from the main process never resolves. Nothing you can
-/// pass in webPreferences or on the command line prevents it — the page has to
-/// actually be on screen.
-///
-/// So it *is* on screen: fully transparent, click-through, off the taskbar, one
-/// pixel. The user never sees it and can never interact with it, but the
-/// compositor has it mapped, so the renderer stays alive and decodes audio.
-///
-/// Do NOT "fix" this back to win.hide() — that reintroduces the freeze, and the
-/// symptom is a player that goes silent with no error anywhere.
+/// Default is a plain hide — genuinely unmapped, so it appears nowhere in the
+/// shell. `concealed` is the fallback: mapped but 1x1, transparent and
+/// click-through, for a compositor that freezes unmapped renderers.
 function conceal() {
   // Tell the OS this process must not be suspended. On its own this does not
   // stop Chromium's per-page freezing, but without it a laptop on battery can
@@ -345,7 +334,8 @@ function dispatch(msg) {
       if (win) reveal()
       return
     case 'hide':
-      // conceal(), never win.hide() — see the note on conceal().
+      // Always conceal(), never win.hide() directly — conceal() is what
+      // honours WINDOW_MODE.
       if (win) conceal()
       return
     case 'quit':

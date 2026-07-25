@@ -283,6 +283,16 @@ the specific traps; do not re-introduce them.
 - **Timers in `main.js` must be module-level and cleared before re-arming.** The
   probe re-arms on every navigation; `const` locals shadowed the handles and
   leaked a nudger per navigation.
+- **The window is genuinely unmapped (`WINDOW_MODE=hidden`), and that is
+  verified.** The `--disable-renderer-backgrounding` /
+  `--disable-background-timer-throttling` /
+  `--disable-backgrounding-occluded-windows` switches were already in place when
+  it was verified, so treat them as load-bearing rather than leftovers — pulling
+  them may reintroduce a frozen renderer. `concealed` (mapped, 1x1,
+  transparent) remains as an escape hatch for a compositor that needs it.
+- **The sidecar must not look like a second app.** `app.setName('Tonearm')` plus
+  `app.setDesktopName('dev.miguelrincon.Tonearm.desktop')`, or the shell invents
+  a "tonearm-sidecar" entry with a generic icon.
 - **Diagnose by layer, in order:** `cmd-queued` → never dispatched.
   No `cmd-recv` → renderer never ran it. `cmd-recv` but no `cmd-done` → the
   command is hanging. `cmd-done` with a full queue but a non-playing state →
