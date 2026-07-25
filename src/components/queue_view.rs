@@ -313,10 +313,10 @@ impl QueueView {
 
     /// Bring the rows in line with `entries`.
     ///
-    /// Rebuilding the store is far cheaper than it was: it holds data, not
-    /// widgets, and `ListView` only materialises the handful of rows on screen.
-    /// A single removal is still applied as a single removal, because that is
-    /// the one case where the scroll position visibly matters.
+    /// Everything here is surgical, because `clear()` + refill resets the
+    /// scroll to the top — and the playing track changes on every song, so a
+    /// rebuild for that alone sent the queue back to the top once a minute
+    /// whether or not the user had touched it.
     fn apply(
         &mut self,
         entries: Vec<QueueEntry>,
@@ -324,37 +324,60 @@ impl QueueView {
         sender: relm4::Sender<QueueViewInput>,
     ) {
         let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
-        let same_tracks = ids == self.shown;
-        let same_playing = playing == self.playing;
 
-        if same_tracks && same_playing {
-            return;
-        }
-        self.playing = playing;
-
-        if same_playing && let Some(removed) = single_removal(&self.shown, &ids) {
-            tracing::debug!(index = removed, "queue: removing one row in place");
+        if ids != self.shown {
+            if let Some(removed) = single_removal(&self.shown, &ids) {
+                tracing::debug!(index = removed, "queue: removing one row in place");
+                self.list.remove(removed as u32);
+            } else {
+                tracing::debug!(
+                    was = self.shown.len(),
+                    now = ids.len(),
+                    "queue: rebuilding rows"
+                );
+                let marker = playing.clone();
+                self.list.clear();
+                self.list
+                    .extend_from_iter(entries.into_iter().map(|entry| QueueItem {
+                        playing: Some(&entry.id) == marker.as_ref(),
+                        entry,
+                        sender: sender.clone(),
+                    }));
+                self.shown = ids;
+                self.count = self.shown.len();
+                self.playing = playing;
+                return;
+            }
             self.shown = ids;
-            self.count = entries.len();
-            self.list.remove(removed as u32);
-            return;
+            self.count = self.shown.len();
         }
 
-        tracing::debug!(
-            was = self.shown.len(),
-            now = ids.len(),
-            "queue: rebuilding rows"
-        );
-        self.shown = ids;
-        self.count = entries.len();
-        let playing = self.playing.clone();
-        self.list.clear();
-        self.list
-            .extend_from_iter(entries.into_iter().map(|entry| QueueItem {
-                playing: Some(&entry.id) == playing.as_ref(),
-                entry,
-                sender: sender.clone(),
-            }));
+        // Move the marker by replacing only the two rows it affects. Mutating
+        // an item in place does nothing — the store emits no change, so the row
+        // is never told to re-bind.
+        if playing != self.playing {
+            if let Some(old) = self.playing.take() {
+                self.set_row_playing(&old, false);
+            }
+            if let Some(new) = &playing {
+                self.set_row_playing(new, true);
+            }
+            self.playing = playing;
+        }
+    }
+
+    fn set_row_playing(&mut self, id: &str, playing: bool) {
+        let Some(position) = self.list.find(|item| item.entry.id == id) else {
+            return;
+        };
+        let Some(existing) = self.list.get(position) else {
+            return;
+        };
+        let mut item = existing.borrow().clone();
+        drop(existing);
+        item.playing = playing;
+        self.list.remove(position);
+        self.list.insert(position, item);
     }
 }
 
