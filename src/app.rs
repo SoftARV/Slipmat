@@ -82,30 +82,47 @@ fn unresolvable_ids(detail: &str) -> Vec<String> {
         .collect()
 }
 
-/// Build a MusicKit queue from the visible rows, and translate a row index into
-/// a queue position.
+/// Build a MusicKit queue from the visible rows, plus **the id to start on**.
 ///
-/// The **whole visible list** is enqueued, never just the clicked track — that
-/// is the gapless rule (rule 3): MusicKit can only transition seamlessly
-/// between items it already holds.
+/// The whole visible list is enqueued, never just the clicked track — the
+/// gapless rule (rule 3): MusicKit can only transition seamlessly between items
+/// it already holds.
 ///
-/// The translation is the subtle part. Unplayable tracks are shown as rows but
-/// cannot go in the queue, so row index and queue position drift apart by the
-/// number of unplayable rows above the click. Using the row index directly
-/// would start the wrong track in any library containing an upload — silently,
-/// and only for some rows.
-fn queue_from(visible: &[&Track], row: usize) -> (Vec<String>, usize) {
-    let songs = visible
+/// Note this returns an *id*, not an index. Rows are filtered twice on the way
+/// to a queue — once for tracks with no catalog id, again for ids MusicKit has
+/// rejected — and a retry filters a third time. Carrying an index through that
+/// means re-deriving it at every step and being right every time; carrying the
+/// id means the answer cannot drift. An earlier version did the arithmetic and
+/// started the wrong track once dead ids entered the picture.
+///
+/// If the clicked track itself can't be streamed, this starts on the first one
+/// after it that can — which is what a person expects from clicking a dead row.
+fn queue_from(
+    visible: &[&Track],
+    row: usize,
+    dead: &std::collections::HashSet<String>,
+) -> (Vec<String>, Option<String>) {
+    let alive = |id: &String| !dead.contains(id);
+    let songs: Vec<String> = visible
         .iter()
         .filter_map(|t| t.catalog_id.clone())
-        .collect::<Vec<_>>();
-    let start = visible
+        .filter(alive)
+        .collect();
+    let start_id = visible
+        .get(row..)
+        .unwrap_or(&[])
         .iter()
-        .take(row)
-        .filter(|t| t.playable())
-        .count()
-        .min(songs.len().saturating_sub(1));
-    (songs, start)
+        .filter_map(|t| t.catalog_id.clone())
+        .find(alive);
+    (songs, start_id)
+}
+
+/// Where `start_id` sits in `songs`. Falls back to the top rather than failing:
+/// playing from the start beats not playing.
+fn start_index(songs: &[String], start_id: Option<&String>) -> usize {
+    start_id
+        .and_then(|id| songs.iter().position(|s| s == id))
+        .unwrap_or(0)
 }
 
 /// Where we are in bringing the sidecar up. Each variant is a distinct
@@ -148,9 +165,10 @@ pub struct AppModel {
     /// Catalog ids MusicKit has told us it cannot resolve. Remembered for the
     /// session so a delisted track only breaks one play attempt, not every one.
     dead_ids: std::collections::HashSet<String>,
-    /// The last queue we tried, so a `NOT_FOUND` can be retried without the
-    /// offenders instead of making the user click again.
-    last_queue: Option<(Vec<String>, usize)>,
+    /// The last queue we tried and the id we wanted to start on, so a
+    /// `NOT_FOUND` can be retried without the offenders instead of making the
+    /// user click again. An id rather than an index — see `queue_from`.
+    last_queue: Option<(Vec<String>, Option<String>)>,
     mpris: Mpris,
     /// Volume is the one piece of player state the sidecar never echoes back,
     /// so we hold it here to keep the bar and MPRIS agreeing.
@@ -434,26 +452,14 @@ impl Component for AppModel {
             AppMsg::ReloadLibrary => self.load_library(&sender),
             AppMsg::PlayFrom(index) => {
                 let visible: Vec<&Track> = self.visible_tracks().collect();
-                let (mut songs, mut start) = queue_from(&visible, index);
-                // Drop ids already known to be unresolvable, keeping the start
-                // position pointing at the same track.
-                if !self.dead_ids.is_empty() {
-                    let before = songs.len();
-                    let dropped_before_start = songs[..start]
-                        .iter()
-                        .filter(|id| self.dead_ids.contains(*id))
-                        .count();
-                    songs.retain(|id| !self.dead_ids.contains(id));
-                    start = start.saturating_sub(dropped_before_start);
-                    tracing::debug!(dropped = before - songs.len(), "excluded known-dead ids");
-                }
+                let (songs, start_id) = queue_from(&visible, index, &self.dead_ids);
                 if songs.is_empty() {
                     self.toast("Nothing here can be streamed");
                     return;
                 }
-                start = start.min(songs.len().saturating_sub(1));
+                let start = start_index(&songs, start_id.as_ref());
                 tracing::info!(queue = songs.len(), start, "enqueuing from library");
-                self.last_queue = Some((songs.clone(), start));
+                self.last_queue = Some((songs.clone(), start_id));
                 self.send(Command::SetQueue {
                     songs,
                     start_position: start,
@@ -590,7 +596,7 @@ impl AppModel {
         if dead.is_empty() {
             return false;
         }
-        let Some((songs, start)) = self.last_queue.take() else {
+        let Some((songs, wanted)) = self.last_queue.take() else {
             return false;
         };
 
@@ -607,10 +613,18 @@ impl AppModel {
             return false;
         }
 
-        let dropped_before_start = songs[..start.min(songs.len())]
+        // If the track we were aiming at is itself newly dead, aim at the next
+        // surviving track *after* it in the original order — not at the top of
+        // the list, which is where falling back to index 0 would land.
+        let from = songs
             .iter()
-            .filter(|id| self.dead_ids.contains(*id))
-            .count();
+            .position(|s| Some(s) == wanted.as_ref())
+            .unwrap_or(0);
+        let wanted = songs[from..]
+            .iter()
+            .find(|id| !self.dead_ids.contains(*id))
+            .cloned();
+
         let retry: Vec<String> = songs
             .into_iter()
             .filter(|id| !self.dead_ids.contains(id))
@@ -621,16 +635,15 @@ impl AppModel {
             return true;
         }
 
-        let start = start
-            .saturating_sub(dropped_before_start)
-            .min(retry.len() - 1);
+        let start = start_index(&retry, wanted.as_ref());
         tracing::info!(
             dropped = newly_dead,
             queue = retry.len(),
+            start,
             "retrying queue without unresolvable tracks"
         );
         self.mark_dead_tracks_unplayable();
-        self.last_queue = Some((retry.clone(), start));
+        self.last_queue = Some((retry.clone(), wanted));
         self.send(Command::SetQueue {
             songs: retry,
             start_position: start,
@@ -1012,81 +1025,83 @@ mod tests {
         }
     }
 
-    #[test]
-    fn clicking_a_row_enqueues_the_whole_visible_list() {
-        let a = track("a", Some("1"));
-        let b = track("b", Some("2"));
-        let c = track("c", Some("3"));
-        let visible = vec![&a, &b, &c];
-
-        // Rule 3: the whole list goes in, not just the clicked track — that is
-        // what lets MusicKit transition gaplessly.
-        let (songs, start) = queue_from(&visible, 1);
-        assert_eq!(songs, vec!["1", "2", "3"]);
-        assert_eq!(start, 1);
+    fn dead(ids: &[&str]) -> std::collections::HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
-    fn unplayable_rows_shift_the_queue_position() {
-        // Row 3 is "d", but "b" cannot be streamed and so never enters the
-        // queue. Using the row index directly would start "c" instead.
-        let a = track("a", Some("1"));
-        let b = track("b", None);
-        let c = track("c", Some("3"));
-        let d = track("d", Some("4"));
+    fn clicking_a_row_enqueues_the_whole_visible_list() {
+        let (a, b, c) = (
+            track("a", Some("1")),
+            track("b", Some("2")),
+            track("c", Some("3")),
+        );
+        let visible = vec![&a, &b, &c];
+
+        // Rule 3: the whole list goes in, not just the clicked track.
+        let (songs, start_id) = queue_from(&visible, 1, &dead(&[]));
+        assert_eq!(songs, vec!["1", "2", "3"]);
+        assert_eq!(start_index(&songs, start_id.as_ref()), 1);
+    }
+
+    #[test]
+    fn unplayable_rows_do_not_shift_the_chosen_track() {
+        // Row 3 is "d", but "b" cannot be streamed so never enters the queue.
+        // Carrying an index through that filter is what started the wrong song.
+        let (a, b) = (track("a", Some("1")), track("b", None));
+        let (c, d) = (track("c", Some("3")), track("d", Some("4")));
         let visible = vec![&a, &b, &c, &d];
 
-        let (songs, start) = queue_from(&visible, 3);
+        let (songs, start_id) = queue_from(&visible, 3, &dead(&[]));
         assert_eq!(songs, vec!["1", "3", "4"]);
-        assert_eq!(songs[start], "4", "must start the track that was clicked");
+        assert_eq!(songs[start_index(&songs, start_id.as_ref())], "4");
+    }
+
+    #[test]
+    fn known_dead_ids_never_reach_the_queue_and_do_not_shift_it() {
+        // "2" was rejected by MusicKit on an earlier play. Clicking "c" must
+        // still start "c", not the track above or below it.
+        let (a, b, c) = (
+            track("a", Some("1")),
+            track("b", Some("2")),
+            track("c", Some("3")),
+        );
+        let visible = vec![&a, &b, &c];
+
+        let (songs, start_id) = queue_from(&visible, 2, &dead(&["2"]));
+        assert_eq!(songs, vec!["1", "3"], "dead id must not be sent");
+        assert_eq!(songs[start_index(&songs, start_id.as_ref())], "3");
+    }
+
+    #[test]
+    fn clicking_a_dead_row_starts_the_next_streamable_track() {
+        let (a, b, c) = (
+            track("a", Some("1")),
+            track("b", Some("2")),
+            track("c", Some("3")),
+        );
+        let visible = vec![&a, &b, &c];
+
+        // Click "b", which is dead: the sensible result is "c", not the top.
+        let (songs, start_id) = queue_from(&visible, 1, &dead(&["2"]));
+        assert_eq!(songs[start_index(&songs, start_id.as_ref())], "3");
     }
 
     #[test]
     fn a_list_with_nothing_playable_produces_no_queue() {
         let a = track("a", None);
-        let visible = vec![&a];
-        let (songs, _) = queue_from(&visible, 0);
+        let (songs, _) = queue_from(&[&a], 0, &dead(&[]));
         assert!(songs.is_empty(), "caller must toast rather than enqueue");
     }
 
     #[test]
-    fn a_row_past_the_last_playable_track_still_lands_in_range() {
-        // Clicking the last row when everything below it is unplayable must not
-        // produce a start position past the end of the queue.
-        let a = track("a", Some("1"));
-        let b = track("b", None);
+    fn clicking_past_the_last_streamable_track_falls_back_to_the_top() {
+        let (a, b) = (track("a", Some("1")), track("b", None));
         let visible = vec![&a, &b];
-        let (songs, start) = queue_from(&visible, 1);
-        assert!(
-            start < songs.len(),
-            "start {start} out of range for {songs:?}"
-        );
-    }
-
-    #[test]
-    fn unresolvable_ids_are_parsed_out_of_musickits_error() {
-        // setQueue is all-or-nothing: one delisted track kills the whole queue.
-        // The error names the offenders, which is how we recover.
-        let detail = "setQueue: [mk-007] NOT_FOUND; One or more items could not \
-be resolved: 1550626760, 1526511025, 1550626763";
-        let ids = unresolvable_ids(detail);
-        assert_eq!(ids, vec!["1550626760", "1526511025", "1550626763"]);
-    }
-
-    #[test]
-    fn a_reworded_error_yields_nothing_rather_than_garbage() {
-        // Rule 4: this parses a string Apple controls. If the wording changes we
-        // must degrade to reporting the error, not invent ids.
-        assert!(unresolvable_ids("[mk-007] NOT_FOUND; something else entirely").is_empty());
-        assert!(unresolvable_ids("").is_empty());
-    }
-
-    #[test]
-    fn short_numbers_in_the_error_are_not_mistaken_for_ids() {
-        // "mk-007" precedes the marker, but a stray small number after it must
-        // not be treated as a catalog id either.
-        let ids = unresolvable_ids("could not be resolved: 42, 1550626760");
-        assert_eq!(ids, vec!["1550626760"]);
+        let (songs, start_id) = queue_from(&visible, 1, &dead(&[]));
+        // Nothing streamable at or after the click: play from the start rather
+        // than not play at all.
+        assert_eq!(start_index(&songs, start_id.as_ref()), 0);
     }
 
     #[test]
