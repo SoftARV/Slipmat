@@ -1,0 +1,15 @@
+{
+  "name": "tonearm-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Invisible DRM playback engine for Tonearm. Never rendered.",
+  "license": "GPL-3.0-or-later",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "debug": "electron . --debug"
+  },
+  "devDependencies": {
+    "electron": "https://github.com/castlabs/electron-releases#v43.0.0+wvcus"
+  }
+}

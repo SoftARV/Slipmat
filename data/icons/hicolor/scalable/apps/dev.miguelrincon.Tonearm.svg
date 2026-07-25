@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-FileCopyrightText: 2026 Miguel Rincon
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  Placeholder app icon: a record and the arm that tracks it.
+  Replace with a properly drawn GNOME-style icon before v1 (M7).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5e5c64"/>
+      <stop offset="1" stop-color="#241f31"/>
+    </linearGradient>
+    <linearGradient id="vinyl" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3d3846"/>
+      <stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+    <linearGradient id="arm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6f5f4"/>
+      <stop offset="1" stop-color="#c0bfbc"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#plate)"/>
+
+  <!-- the record -->
+  <circle cx="60" cy="68" r="42" fill="url(#vinyl)"/>
+  <g fill="none" stroke="#77767b" stroke-opacity="0.55" stroke-width="1.5">
+    <circle cx="60" cy="68" r="34"/>
+    <circle cx="60" cy="68" r="28"/>
+    <circle cx="60" cy="68" r="22"/>
+  </g>
+  <circle cx="60" cy="68" r="13" fill="#e01b24"/>
+  <circle cx="60" cy="68" r="3.2" fill="#241f31"/>
+
+  <!-- the tonearm: pivot, arm, headshell -->
+  <circle cx="103" cy="30" r="9" fill="url(#arm)"/>
+  <circle cx="103" cy="30" r="3.5" fill="#77767b"/>
+  <path d="M103 30 L74 79" stroke="url(#arm)" stroke-width="7" stroke-linecap="round"/>
+  <path d="M74 79 L69 88" stroke="#deddda" stroke-width="9" stroke-linecap="round"/>
+</svg>
