@@ -1,42 +1,51 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  SPDX-FileCopyrightText: 2026 Miguel Rincon
-  SPDX-License-Identifier: GPL-3.0-or-later
-
-  Placeholder app icon: a record and the arm that tracks it.
-  Replace with a properly drawn GNOME-style icon before v1 (M7).
--->
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Tonearm</title>
   <defs>
-    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#5e5c64"/>
-      <stop offset="1" stop-color="#241f31"/>
+    <linearGradient id="record" x1="24" y1="36" x2="84" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#332e40"></stop>
+      <stop offset="1" stop-color="#191521"></stop>
     </linearGradient>
-    <linearGradient id="vinyl" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3d3846"/>
-      <stop offset="1" stop-color="#000000"/>
+    <linearGradient id="platter" x1="26" y1="34" x2="82" y2="98" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6f5f4"></stop>
+      <stop offset="1" stop-color="#9a9996"></stop>
     </linearGradient>
-    <linearGradient id="arm" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#f6f5f4"/>
-      <stop offset="1" stop-color="#c0bfbc"/>
+    <linearGradient id="tube" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f5f4"></stop>
+      <stop offset="0.45" stop-color="#deddda"></stop>
+      <stop offset="1" stop-color="#77767b"></stop>
     </linearGradient>
   </defs>
 
-  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#plate)"/>
+  
+  <rect x="12" y="24" width="104" height="88" rx="6" fill="#7a5537"></rect>
+  
+  <path d="M18 24h92a6 6 0 0 1 6 6v76a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2V30a6 6 0 0 1 6-6z" fill="#b5835a"></path>
 
-  <!-- the record -->
-  <circle cx="60" cy="68" r="42" fill="url(#vinyl)"/>
-  <g fill="none" stroke="#77767b" stroke-opacity="0.55" stroke-width="1.5">
-    <circle cx="60" cy="68" r="34"/>
-    <circle cx="60" cy="68" r="28"/>
-    <circle cx="60" cy="68" r="22"/>
+  
+  <circle cx="54" cy="66" r="36" fill="url(#platter)"></circle>
+  
+  <circle cx="54" cy="66" r="32" fill="url(#record)"></circle>
+  <g fill="none" stroke="#c0bfbc" stroke-opacity="0.3" stroke-width="2">
+    <circle cx="54" cy="66" r="28"></circle>
+    <circle cx="54" cy="66" r="24"></circle>
+    <circle cx="54" cy="66" r="20"></circle>
   </g>
-  <circle cx="60" cy="68" r="13" fill="#e01b24"/>
-  <circle cx="60" cy="68" r="3.2" fill="#241f31"/>
+  
+  <circle cx="54" cy="66" r="12" fill="#e01b24"></circle>
+  <circle cx="54" cy="66" r="2" fill="#191521"></circle>
 
-  <!-- the tonearm: pivot, arm, headshell -->
-  <circle cx="103" cy="30" r="9" fill="url(#arm)"/>
-  <circle cx="103" cy="30" r="3.5" fill="#77767b"/>
-  <path d="M103 30 L74 79" stroke="url(#arm)" stroke-width="7" stroke-linecap="round"/>
-  <path d="M74 79 L69 88" stroke="#deddda" stroke-width="9" stroke-linecap="round"/>
+  
+  <circle cx="102" cy="92" r="7" fill="#deddda"></circle>
+  <circle cx="102" cy="92" r="5" fill="#f6f5f4"></circle>
+  <rect x="101" y="86" width="2" height="4" rx="1" fill="#77767b"></rect>
+
+  
+  <g transform="translate(98 44) rotate(125)">
+    <circle cx="-13" cy="0" r="6" fill="#5e5c64"></circle>
+    <rect x="-14" y="-2" width="16" height="4" rx="2" fill="#9a9996"></rect>
+    <rect x="0" y="-3" width="50" height="6" rx="3" fill="url(#tube)"></rect>
+    <rect x="48" y="-5.5" width="11" height="11" rx="2" fill="#3d3846"></rect>
+    <circle cx="0" cy="0" r="7" fill="#c0bfbc"></circle>
+    <circle cx="0" cy="0" r="4" fill="#f6f5f4"></circle>
+  </g>
 </svg>
