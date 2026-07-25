@@ -634,6 +634,9 @@ impl AppModel {
     /// filter can change membership arbitrarily on every keystroke, and these
     /// rows hold no state worth preserving (no popovers, no expanders).
     fn rebuild_rows(&mut self) {
+        // Rebuilding resets the scroll. It is legitimate on load and on a
+        // search change; anywhere else it is a bug, so say when it happens.
+        tracing::debug!(query = %self.query, "library: rebuilding rows");
         let visible: Vec<Track> = self.visible_tracks().cloned().collect();
         let playing = self.playing_catalog_id();
         // The rows are built with the marker already set, so record that here
@@ -795,22 +798,27 @@ impl AppModel {
         true
     }
 
-    /// Reflect newly-discovered dead ids in the list, so the affected rows dim
-    /// instead of looking playable and doing nothing.
+    /// Reflect newly-refused tracks in the list **without rebuilding it**.
+    ///
+    /// This fires on the first play of a session — exactly when the user is
+    /// looking at the row they just clicked — so a rebuild here is what sent
+    /// the library back to the top, once per run. Rows consult the shared set
+    /// at bind, so updating it covers everything off screen; the rows that are
+    /// on screen are repainted directly.
+    ///
+    /// `all_tracks` keeps its catalog ids: playability is now a question for
+    /// `dead_rows`, and blanking the id would also lose the handle the queue
+    /// builder needs.
     fn mark_dead_tracks_unplayable(&mut self) {
-        for track in &mut self.all_tracks {
-            if let Some(id) = &track.catalog_id
-                && self.dead_ids.contains(id)
-            {
-                track.catalog_id = None;
+        *self.dead_rows.borrow_mut() = self.dead_ids.clone();
+
+        let playing = self.playing_catalog_id();
+        let registry = self.library_icons.borrow();
+        for id in &self.dead_ids {
+            if let Some(w) = registry.get(id) {
+                apply_row_state(&w.icon, &w.root, Some(id) == playing.as_ref(), false);
             }
         }
-        // Broadcast rather than rebuild. Rebuilding the factory recreates every
-        // row, which scrolls the list back to the top — jarring at the best of
-        // times, and this fires on the first play of a session, right as the
-        // user is looking at the row they just clicked.
-        // Cheap now: the store holds data, and only the visible rows re-bind.
-        self.rebuild_rows();
     }
 
     /// Check that MusicKit actually landed on the track we asked for, and

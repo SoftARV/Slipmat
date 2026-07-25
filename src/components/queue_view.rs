@@ -317,11 +317,7 @@ impl Component for QueueView {
                 let structural = self.apply(entries, playing, sender.input_sender().clone());
 
                 if structural && scrolled_to > 0.0 {
-                    let adj = widgets.scroller.vadjustment();
-                    gtk::glib::idle_add_local_once(move || {
-                        let max = (adj.upper() - adj.page_size()).max(0.0);
-                        adj.set_value(scrolled_to.min(max));
-                    });
+                    restore_scroll(&widgets.scroller, scrolled_to);
                 }
             }
             QueueViewInput::ScrollToPlaying => {
@@ -424,6 +420,34 @@ impl QueueView {
             apply_playing(&w.icon, &w.remove, playing);
         }
     }
+}
+
+/// Put the scroll back where it was after a structural change.
+///
+/// A single idle tick is too early. When the model changes, `ListView` briefly
+/// reports a much smaller content height, so the adjustment clamps `value` to
+/// near zero — and by the time the real height is known, the value we wanted is
+/// already gone. Setting it again in an idle callback just re-applies a value
+/// that gets clamped again.
+///
+/// So wait for the adjustment to settle instead: `changed` fires when `upper`
+/// or `page-size` move, and the handler disconnects itself once it has restored
+/// the offset it was asked for.
+fn restore_scroll(scroller: &gtk::ScrolledWindow, target: f64) {
+    let adj = scroller.vadjustment();
+    let handler = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = handler.clone();
+    let id = adj.connect_changed(move |adj| {
+        let max = (adj.upper() - adj.page_size()).max(0.0);
+        if max < target {
+            return; // still measuring; the list cannot hold this offset yet
+        }
+        adj.set_value(target);
+        if let Some(id) = slot.borrow_mut().take() {
+            adj.disconnect(id);
+        }
+    });
+    *handler.borrow_mut() = Some(id);
 }
 
 /// If `new` is `old` with exactly one element taken out, return its position.
