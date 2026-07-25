@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Tonearm
+GenericName=Music Player
+Comment=Play your Apple Music library natively on GNOME
+Exec=tonearm
+Icon=dev.miguelrincon.Tonearm
+Terminal=false
+Categories=AudioVideo;Audio;Player;GTK;
+Keywords=Music;Apple;Player;Audio;Playlist;Streaming;
+StartupNotify=true
+StartupWMClass=tonearm
+X-GNOME-UsesNotifications=true
