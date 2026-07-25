@@ -1,0 +1,405 @@
+// SPDX-FileCopyrightText: 2026 Miguel Rincon
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! MPRIS — the v1 headline.
+//!
+//! Exposes `org.mpris.MediaPlayer2.Tonearm` so the GNOME Shell media applet,
+//! the lock screen and `playerctl` can see and drive playback. Half-working
+//! MPRIS is the most common failure of the Apple Music wrappers; this has to be
+//! bidirectional and correct or it isn't worth shipping.
+//!
+//! ## Why `Rc<RefCell<…>>` here, of all places
+//!
+//! CLAUDE.md says reaching for `Rc<RefCell<>>` usually means state belongs in a
+//! model. This is the exception, and it is forced by the types rather than
+//! chosen:
+//!
+//! - `mpris_server::Player` is **`!Send`** — its callbacks are `Fn(&Self)`,
+//!   not `Fn(&Self) + Send`. It cannot be moved to another thread, and it
+//!   cannot be sent through a relm4 `CommandOutput` (those require `Send`).
+//! - Building it is **async** (`build().await`), so it does not exist yet when
+//!   `AppModel::init` returns.
+//!
+//! So the handle is created empty, filled in by a task on the GTK main thread,
+//! and every later call goes through the same cell. Everything here runs on the
+//! main thread; there is no cross-thread sharing and no lock contention.
+//!
+//! ## What it must never do
+//!
+//! Emit `PropertiesChanged` on every position tick. MPRIS `Position` is
+//! deliberately *polled*, not signalled — which is why `Player::set_position`
+//! is the one setter in the crate that is neither `async` nor emits a signal.
+//! Everything else is diffed against the last applied state, so a 500ms tick
+//! costs one cheap property write and no bus traffic.
+
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use mpris_server::{Metadata, PlaybackStatus, Player, Time, TrackId};
+use relm4::ComponentSender;
+
+use crate::app::{AppModel, AppMsg};
+
+/// Bus name suffix — the full name becomes `org.mpris.MediaPlayer2.Tonearm`.
+const BUS_SUFFIX: &str = "Tonearm";
+
+/// Everything MPRIS exports, flattened so it can be diffed cheaply.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct MprisState {
+    pub track_id: Option<String>,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub track_number: u32,
+    pub art_path: Option<PathBuf>,
+    pub length_ms: u64,
+    pub position_ms: u64,
+    pub playing: bool,
+    pub stopped: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
+    pub volume: f64,
+}
+
+impl MprisState {
+    fn status(&self) -> PlaybackStatus {
+        if self.stopped {
+            PlaybackStatus::Stopped
+        } else if self.playing {
+            PlaybackStatus::Playing
+        } else {
+            PlaybackStatus::Paused
+        }
+    }
+
+    /// Only the fields that ride in the `Metadata` dict. Used to decide whether
+    /// a `PropertiesChanged` is warranted at all.
+    fn metadata_fields(
+        &self,
+    ) -> (
+        &Option<String>,
+        &str,
+        &str,
+        &str,
+        u32,
+        &Option<PathBuf>,
+        u64,
+    ) {
+        (
+            &self.track_id,
+            &self.title,
+            &self.artist,
+            &self.album,
+            self.track_number,
+            &self.art_path,
+            self.length_ms,
+        )
+    }
+
+    fn metadata(&self) -> Metadata {
+        let mut m = Metadata::new();
+        m.set_trackid(track_id(self.track_id.as_deref()));
+        m.set_title(Some(self.title.clone()));
+        if !self.artist.is_empty() {
+            m.set_artist(Some([self.artist.clone()]));
+        }
+        if !self.album.is_empty() {
+            m.set_album(Some(self.album.clone()));
+        }
+        if self.track_number > 0 {
+            m.set_track_number(Some(self.track_number as i32));
+        }
+        if self.length_ms > 0 {
+            m.set_length(Some(Time::from_millis(self.length_ms as i64)));
+        }
+        // `mpris:artUrl` must be a file:// URL — GNOME Shell will not reliably
+        // fetch an https:// one, which is the whole reason artwork is cached to
+        // disk in components/artwork.rs.
+        if let Some(path) = &self.art_path {
+            m.set_art_url(Some(format!("file://{}", path.display())));
+        }
+        m
+    }
+}
+
+/// Build a D-Bus object path for a track.
+///
+/// Track ids are object paths, so only `[A-Za-z0-9_]` and `/` are legal.
+/// Apple's catalog ids are numeric, but library ids are not (`i.AbCd123`), and
+/// an invalid path would make the whole metadata dict fail to serialise —
+/// taking the Shell applet's display down with it. Sanitise, don't trust.
+fn track_id(id: Option<&str>) -> Option<TrackId> {
+    let id = id?;
+    let safe: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if safe.is_empty() {
+        return None;
+    }
+    TrackId::try_from(format!("/dev/miguelrincon/Tonearm/track/{safe}")).ok()
+}
+
+/// Handle to the exported player. Cheap to clone and hold in the model.
+#[derive(Clone)]
+pub struct Mpris {
+    player: Rc<RefCell<Option<Rc<Player>>>>,
+    last: Rc<RefCell<Option<MprisState>>>,
+}
+
+impl std::fmt::Debug for Mpris {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mpris")
+            .field("connected", &self.player.borrow().is_some())
+            .finish()
+    }
+}
+
+impl Mpris {
+    /// Start exporting on the session bus.
+    ///
+    /// Returns immediately; the D-Bus name is claimed by a task on the main
+    /// thread. Failing to export is **not fatal** — MPRIS is an integration,
+    /// not the app, and a missing session bus should degrade to a working
+    /// player rather than a dead one. It logs and stays disconnected.
+    pub fn start(sender: ComponentSender<AppModel>) -> Self {
+        let this = Self {
+            player: Rc::new(RefCell::new(None)),
+            last: Rc::new(RefCell::new(None)),
+        };
+
+        let slot = this.player.clone();
+        relm4::spawn_local(async move {
+            let player = match Player::builder(BUS_SUFFIX)
+                .identity("Tonearm")
+                .desktop_entry(crate::APP_ID)
+                .can_play(true)
+                .can_pause(true)
+                .can_seek(true)
+                .can_control(true)
+                .build()
+                .await
+            {
+                Ok(player) => player,
+                Err(err) => {
+                    tracing::warn!(?err, "MPRIS unavailable — playback still works");
+                    return;
+                }
+            };
+
+            wire_controls(&player, sender);
+
+            let player = Rc::new(player);
+            // The run task owns its state (`LocalServerRunTask` is 'static), so
+            // it can outlive this scope. It must be awaited promptly or the
+            // interface never answers.
+            relm4::spawn_local(player.run());
+            tracing::info!("MPRIS exported as org.mpris.MediaPlayer2.{BUS_SUFFIX}");
+            *slot.borrow_mut() = Some(player);
+        });
+
+        this
+    }
+
+    /// Push the current state, emitting signals only for what actually changed.
+    pub fn update(&self, state: MprisState) {
+        let Some(player) = self.player.borrow().clone() else {
+            return; // not exported (yet, or at all)
+        };
+
+        let previous = self.last.borrow().clone();
+        *self.last.borrow_mut() = Some(state.clone());
+
+        // Position is a polled property in MPRIS, so this is a plain setter
+        // with no bus traffic. Doing it unconditionally is what keeps
+        // `playerctl position` honest between events.
+        player.set_position(Time::from_millis(state.position_ms as i64));
+
+        let Some(prev) = previous else {
+            // First push: send everything.
+            relm4::spawn_local(apply_all(player, state));
+            return;
+        };
+
+        relm4::spawn_local(async move {
+            if state.metadata_fields() != prev.metadata_fields() {
+                log_err("metadata", player.set_metadata(state.metadata()).await);
+            }
+            if state.status() != prev.status() {
+                log_err(
+                    "playback status",
+                    player.set_playback_status(state.status()).await,
+                );
+            }
+            if state.can_next != prev.can_next {
+                log_err("can-go-next", player.set_can_go_next(state.can_next).await);
+            }
+            if state.can_previous != prev.can_previous {
+                log_err(
+                    "can-go-previous",
+                    player.set_can_go_previous(state.can_previous).await,
+                );
+            }
+            if (state.volume - prev.volume).abs() > f64::EPSILON {
+                log_err("volume", player.set_volume(state.volume).await);
+            }
+        });
+    }
+
+    /// Announce a discontinuous jump. Required by the spec — without it,
+    /// controllers keep extrapolating from the old position after a seek.
+    pub fn seeked(&self, position_ms: u64) {
+        let Some(player) = self.player.borrow().clone() else {
+            return;
+        };
+        relm4::spawn_local(async move {
+            log_err(
+                "seeked",
+                player.seeked(Time::from_millis(position_ms as i64)).await,
+            );
+        });
+    }
+}
+
+async fn apply_all(player: Rc<Player>, state: MprisState) {
+    log_err("metadata", player.set_metadata(state.metadata()).await);
+    log_err(
+        "playback status",
+        player.set_playback_status(state.status()).await,
+    );
+    log_err("can-go-next", player.set_can_go_next(state.can_next).await);
+    log_err(
+        "can-go-previous",
+        player.set_can_go_previous(state.can_previous).await,
+    );
+    log_err("volume", player.set_volume(state.volume).await);
+}
+
+/// A failed property update is worth a log line and nothing more — the bus
+/// going away must not take playback with it (rule 5).
+fn log_err(what: &str, result: mpris_server::zbus::Result<()>) {
+    if let Err(err) = result {
+        tracing::warn!(?err, "MPRIS {what} update failed");
+    }
+}
+
+/// Wire the Shell's buttons to `AppMsg`. This is the half that makes MPRIS
+/// bidirectional, and the half wrappers usually skip.
+fn wire_controls(player: &Player, sender: ComponentSender<AppModel>) {
+    macro_rules! on {
+        ($connect:ident, $msg:expr) => {{
+            let sender = sender.clone();
+            player.$connect(move |_| sender.input($msg));
+        }};
+    }
+
+    on!(connect_play_pause, AppMsg::PlayPause);
+    on!(connect_play, AppMsg::Play);
+    on!(connect_pause, AppMsg::Pause);
+    on!(connect_stop, AppMsg::Pause);
+    on!(connect_next, AppMsg::Next);
+    on!(connect_previous, AppMsg::Previous);
+
+    // Relative seek, in microseconds, and it can be negative.
+    let s = sender.clone();
+    player.connect_seek(move |player, offset| {
+        let target = player.position().as_millis() + offset.as_millis();
+        s.input(AppMsg::Seek(target.max(0) as u64));
+    });
+
+    // Absolute seek. The track id is ignored on purpose: we export one player
+    // with no TrackList, so there is nothing else it could refer to.
+    let s = sender.clone();
+    player.connect_set_position(move |_, _track, position| {
+        s.input(AppMsg::Seek(position.as_millis().max(0) as u64));
+    });
+
+    player.connect_set_volume(move |_, volume| {
+        sender.input(AppMsg::SetVolume(volume.clamp(0.0, 1.0)));
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_ids_are_valid_object_paths() {
+        let id = track_id(Some("1049009209")).expect("numeric id");
+        assert_eq!(id.as_str(), "/dev/miguelrincon/Tonearm/track/1049009209");
+    }
+
+    #[test]
+    fn library_ids_with_illegal_characters_are_sanitised() {
+        // Library ids look like `i.AbCd123`. A dot is not legal in an object
+        // path, and an invalid one makes the whole metadata dict fail to
+        // serialise — which takes the Shell applet's display down with it.
+        let id = track_id(Some("i.AbCd-123")).expect("sanitised id");
+        assert_eq!(id.as_str(), "/dev/miguelrincon/Tonearm/track/i_AbCd_123");
+    }
+
+    #[test]
+    fn no_track_means_no_id() {
+        assert!(track_id(None).is_none());
+        assert!(track_id(Some("")).is_none());
+    }
+
+    #[test]
+    fn status_maps_the_three_mpris_states() {
+        let playing = MprisState {
+            playing: true,
+            ..Default::default()
+        };
+        assert_eq!(playing.status(), PlaybackStatus::Playing);
+
+        let paused = MprisState::default();
+        assert_eq!(paused.status(), PlaybackStatus::Paused);
+
+        let stopped = MprisState {
+            stopped: true,
+            playing: true, // stopped wins
+            ..Default::default()
+        };
+        assert_eq!(stopped.status(), PlaybackStatus::Stopped);
+    }
+
+    #[test]
+    fn position_is_not_part_of_the_metadata_diff() {
+        // Position changes every tick. If it counted as a metadata change we
+        // would emit PropertiesChanged twice a second forever, which is what
+        // makes Shell applets stutter.
+        let a = MprisState {
+            title: "Roundabout".into(),
+            position_ms: 1_000,
+            ..Default::default()
+        };
+        let b = MprisState {
+            position_ms: 90_000,
+            ..a.clone()
+        };
+        assert_eq!(a.metadata_fields(), b.metadata_fields());
+    }
+
+    #[test]
+    fn art_url_is_a_file_uri() {
+        let state = MprisState {
+            art_path: Some(PathBuf::from("/home/x/.cache/tonearm/artwork/ab-512.jpg")),
+            ..Default::default()
+        };
+        let art = state.metadata().art_url().expect("art url");
+        assert!(
+            art.starts_with("file:///"),
+            "GNOME Shell needs a file:// path, got {art}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_length_is_omitted_rather_than_sent_as_zero() {
+        let state = MprisState::default();
+        assert!(
+            state.metadata().length().is_none(),
+            "a zero length would render as a 0:00 track"
+        );
+    }
+}

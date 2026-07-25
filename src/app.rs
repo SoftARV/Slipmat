@@ -21,6 +21,7 @@ use relm4::{
 
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
+use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
 use crate::player::protocol::{Command, Event, Tokens};
@@ -68,6 +69,12 @@ pub struct AppModel {
     restarts: u32,
     toaster: adw::ToastOverlay,
     now_playing: Controller<NowPlaying>,
+    mpris: Mpris,
+    /// Volume is the one piece of player state the sidecar never echoes back,
+    /// so we hold it here to keep the bar and MPRIS agreeing.
+    volume: f64,
+    /// Where the current cover lives on disk, for MPRIS's file:// artUrl.
+    art_path: Option<PathBuf>,
     /// The artwork template of the track we last fetched, so a position tick
     /// or a queue echo doesn't re-request the same cover.
     art_for: Option<String>,
@@ -79,6 +86,11 @@ pub struct AppModel {
 pub enum AppMsg {
     SignIn,
     PlayPause,
+    /// Explicit, not a toggle. MPRIS sends `Play`, `Pause` and `PlayPause` as
+    /// three distinct calls, and collapsing the first two into the toggle makes
+    /// the Shell pause a track it just asked to play.
+    Play,
+    Pause,
     Next,
     Previous,
     Seek(u64),
@@ -211,6 +223,9 @@ impl Component for AppModel {
             restarts: 0,
             toaster: adw::ToastOverlay::new(),
             now_playing,
+            mpris: Mpris::start(sender.clone()),
+            volume: 1.0,
+            art_path: None,
             art_for: None,
             tick: None,
         };
@@ -227,10 +242,23 @@ impl Component for AppModel {
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
             AppMsg::PlayPause => self.send(Command::PlayPause),
+            AppMsg::Play => self.send(Command::Play),
+            AppMsg::Pause => self.send(Command::Pause),
             AppMsg::Next => self.send(Command::Next),
             AppMsg::Previous => self.send(Command::Previous),
-            AppMsg::Seek(position_ms) => self.send(Command::Seek { position_ms }),
-            AppMsg::SetVolume(volume) => self.send(Command::SetVolume { volume }),
+            AppMsg::Seek(position_ms) => {
+                self.send(Command::Seek { position_ms });
+                // Announce the jump straight away rather than waiting for the
+                // sidecar's echo. The spec requires `Seeked` on discontinuous
+                // moves — without it controllers keep extrapolating from the
+                // old position and their progress bars drift.
+                self.mpris.seeked(position_ms);
+            }
+            AppMsg::SetVolume(volume) => {
+                self.volume = volume;
+                self.send(Command::SetVolume { volume });
+                self.push_snapshot();
+            }
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::PlayTestTrack => {
                 let Some(tokens) = &self.tokens else {
@@ -298,7 +326,11 @@ impl Component for AppModel {
                     // Cosmetic. The bar falls back to a generic icon.
                     tracing::debug!("artwork unavailable");
                 }
+                self.art_path = path.clone();
                 self.now_playing.emit(NowPlayingInput::ArtworkReady(path));
+                // MPRIS carries the cover too, so the Shell applet and lock
+                // screen pick it up as soon as it lands.
+                self.push_snapshot();
             }
             CommandMsg::Sidecar(Incoming::Event(event)) => self.on_event(event, &sender),
             CommandMsg::Sidecar(Incoming::Unparsed(line)) => {
@@ -341,6 +373,24 @@ impl AppModel {
             active: item.is_some(),
         };
         self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));
+
+        // Same state, second consumer. MPRIS diffs internally, so calling this
+        // on every tick costs one property write and no bus traffic.
+        self.mpris.update(MprisState {
+            track_id: item.and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone())),
+            title: item.map(|i| i.title.clone()).unwrap_or_default(),
+            artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
+            album: item.map(|i| i.album.clone()).unwrap_or_default(),
+            track_number: item.map(|i| i.track_number).unwrap_or(0),
+            art_path: self.art_path.clone(),
+            length_ms: self.player.duration_ms,
+            position_ms: self.player.interpolated_position_ms(),
+            playing: self.player.state.is_playing(),
+            stopped: item.is_none(),
+            can_next: self.player.has_next(),
+            can_previous: self.player.has_previous(),
+            volume: self.volume,
+        });
     }
 
     /// Start the repaint timer while playing, drop it otherwise.

@@ -418,8 +418,9 @@ Playback engine first. One vertical slice, one PR each.
   login, tokens harvested. Verified: Widevine → MusicKit → PipeWire, window
   never mapped.
 - ✅ **M2 — Transport.** The Now Playing bar, sidecar-owned queue, supervision.
-- **M3 — MPRIS.** The bar above. *Done when:* the Shell applet and lock screen
-  show artwork and controls work both ways.
+- ✅ **M3 — MPRIS.** `org.mpris.MediaPlayer2.Tonearm`, bidirectional, artwork as
+  a `file://` URL. Verified over `busctl`: properties read, and `PlayPause` /
+  `Next` from the bus reach the sidecar.
 - **M4 — Queue view.** Native list, reorder, jump via `changeToMediaAtIndex`.
 - **M5 — Library.** Playlists / albums / songs, client-side instant search.
 - **M6 — Catalog.** Search, album and artist pages.
