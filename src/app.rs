@@ -35,7 +35,7 @@ use crate::music::types::{Artwork, Track};
 use crate::notify;
 use crate::player::protocol::{Command, Event, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
-use crate::settings::{Settings, Theme};
+use crate::settings::{Section, Settings, Theme};
 
 /// How often the seek bar redraws while playing.
 ///
@@ -581,6 +581,15 @@ impl Component for AppModel {
                                 #[wrap(Some)]
                                 set_child = &adw::ToolbarView {
                                     add_top_bar = &adw::HeaderBar {
+                                        // When the queue is open it is the
+                                        // rightmost pane, so the window
+                                        // controls belong to its header, not
+                                        // this one. Without this they vanish:
+                                        // the queue's header hides them and
+                                        // this header is no longer at the edge.
+                                        #[watch]
+                                        set_show_end_title_buttons: !model.show_queue,
+
                                         #[wrap(Some)]
                                         #[name = "search_entry"]
                                         set_title_widget = &gtk::SearchEntry {
@@ -682,6 +691,18 @@ impl Component for AppModel {
                                             },
                                         },
 
+                                        // An empty search box is not a failed
+                                        // search. Telling someone that Apple
+                                        // Music has nothing matching "" is
+                                        // nonsense — this is an invitation.
+                                        add_named[Some("search-prompt")] = &adw::StatusPage {
+                                            set_icon_name: Some("system-search-symbolic"),
+                                            set_title: "Search Apple Music",
+                                            set_description: Some(
+                                                "Find songs from the whole catalogue, not just your library.",
+                                            ),
+                                        },
+
                                         // Distinct from "status": an empty
                                         // library and a search with no matches
                                         // are different problems.
@@ -739,7 +760,6 @@ impl Component for AppModel {
         let now_playing = NowPlaying::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
-                NowPlayingOutput::ShowQueue => AppMsg::ToggleQueue,
                 NowPlayingOutput::PlayPause => AppMsg::PlayPause,
                 NowPlayingOutput::Next => AppMsg::Next,
                 NowPlayingOutput::Previous => AppMsg::Previous,
@@ -760,6 +780,11 @@ impl Component for AppModel {
                 QueueViewOutput::Remove(id) => AppMsg::RemoveFromQueue(id),
             });
 
+        let starting_scope = match settings.section {
+            Section::Library => SearchScope::Library,
+            Section::Catalog => SearchScope::Catalog,
+        };
+
         let model = AppModel {
             stage: Stage::Starting,
             queue_view,
@@ -773,7 +798,7 @@ impl Component for AppModel {
             all_tracks: Vec::new(),
             library_query: String::new(),
             catalog_query: String::new(),
-            scope: SearchScope::default(),
+            scope: starting_scope,
             catalog: Vec::new(),
             searching_catalog: false,
             catalog_exhausted: false,
@@ -818,11 +843,23 @@ impl Component for AppModel {
         // and the two behave as one selection: picking a row in either clears
         // the other, which a single ListBox would do for free but two will not.
         let songs = sidebar_row("Songs", "folder-music-symbolic");
+        let search = sidebar_row("Search", "system-search-symbolic");
         widgets.nav_library.append(&songs);
-        widgets
-            .nav_catalog
-            .append(&sidebar_row("Search", "system-search-symbolic"));
-        widgets.nav_library.select_row(Some(&songs));
+        widgets.nav_catalog.append(&search);
+
+        // Select the row for the section we actually opened on, and clear the
+        // other explicitly. Two ListBoxes each track their own selection, so
+        // leaving one alone leaves it looking active.
+        match model.scope {
+            SearchScope::Library => {
+                widgets.nav_library.select_row(Some(&songs));
+                widgets.nav_catalog.unselect_all();
+            }
+            SearchScope::Catalog => {
+                widgets.nav_catalog.select_row(Some(&search));
+                widgets.nav_library.unselect_all();
+            }
+        }
         {
             let catalog = widgets.nav_catalog.clone();
             widgets.nav_library.connect_row_selected(move |_, row| {
@@ -962,6 +999,11 @@ impl Component for AppModel {
                     return;
                 }
                 self.scope = scope;
+                self.settings.section = match scope {
+                    SearchScope::Library => Section::Library,
+                    SearchScope::Catalog => Section::Catalog,
+                };
+                self.settings.save();
                 // Switching scope re-reads whichever set is now showing; the
                 // other is kept, so switching back is instant.
                 match scope {
@@ -1578,6 +1620,10 @@ impl AppModel {
             "loading"
         } else if !self.showing_library() {
             "status"
+        } else if self.scope == SearchScope::Catalog && self.catalog_query.trim().is_empty() {
+            // Nothing typed yet: invite a search rather than report a failed
+            // one.
+            "search-prompt"
         } else if self.library.is_empty() {
             "no-results"
         } else {

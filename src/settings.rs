@@ -59,9 +59,35 @@ impl Theme {
     }
 }
 
+/// Which sidebar section the app opens on. Persisted, so it reopens where you
+/// left it rather than always on the same one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Section {
+    #[default]
+    Library,
+    Catalog,
+}
+
+impl Section {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Library => "library",
+            Self::Catalog => "catalog",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s {
+            "catalog" => Self::Catalog,
+            _ => Self::Library,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Settings {
     pub theme: Theme,
+    pub section: Section,
     /// Notify when the track changes. Off by default (`bool`'s default): a
     /// notification for every song is a lot of noise, and the person who wants
     /// it will go and turn it on.
@@ -94,6 +120,9 @@ impl Settings {
         if let Ok(notify) = file.boolean(GROUP, "notify-track-change") {
             settings.notify_track_change = notify;
         }
+        if let Ok(section) = file.string(GROUP, "section") {
+            settings.section = Section::parse(&section);
+        }
         tracing::debug!(?settings, "loaded settings");
         settings
     }
@@ -111,6 +140,7 @@ impl Settings {
         let file = KeyFile::new();
         file.set_string(GROUP, "theme", self.theme.as_str());
         file.set_boolean(GROUP, "notify-track-change", self.notify_track_change);
+        file.set_string(GROUP, "section", self.section.as_str());
 
         if let Err(err) = std::fs::create_dir_all(dir) {
             tracing::warn!(?err, "could not create config directory");
@@ -161,6 +191,16 @@ mod tests {
     #[test]
     fn an_out_of_range_index_falls_back_to_system() {
         assert_eq!(Theme::from_index(99), Theme::System);
+    }
+
+    #[test]
+    fn section_round_trips_and_falls_back() {
+        for section in [Section::Library, Section::Catalog] {
+            assert_eq!(Section::parse(section.as_str()), section);
+        }
+        // A hand-edited or future-version ini must not break startup.
+        assert_eq!(Section::parse("playlists"), Section::Library);
+        assert_eq!(Section::parse(""), Section::Library);
     }
 
     #[test]
