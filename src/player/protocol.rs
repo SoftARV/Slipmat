@@ -155,6 +155,12 @@ pub enum Event {
     #[serde(rename = "cmd-recv")]
     CmdRecv { cmd: String },
 
+    /// The sidecar parked a command because the hook was not attached. Emitted
+    /// so this can never again be silent: a queued command and a dropped one
+    /// look identical otherwise.
+    #[serde(rename = "cmd-queued")]
+    CmdQueued { cmd: String, depth: u32 },
+
     /// The command resolved. `state` and `queue_len` are MusicKit's own view
     /// immediately afterwards: a `setQueue` that completes with a populated
     /// queue but a non-playing state means playback is being *blocked*, not

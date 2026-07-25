@@ -334,6 +334,9 @@ impl AppModel {
             }
             Event::HookWarning { detail } => tracing::warn!(%detail, "hook warning"),
             Event::CmdRecv { cmd } => tracing::info!(%cmd, "sidecar received command"),
+            Event::CmdQueued { cmd, depth } => {
+                tracing::warn!(%cmd, depth, "command queued — hook not attached")
+            }
             Event::CmdDone {
                 cmd,
                 state,

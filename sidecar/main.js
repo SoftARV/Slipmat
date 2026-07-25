@@ -148,8 +148,33 @@ async function createWindow() {
   // there — so commands must go back to the pending queue rather than being
   // forwarded into a context that will throw. Without this, every command sent
   // between sign-in and the new hook-ready is silently lost.
-  win.webContents.on('did-start-loading', () => {
-    hookReady = false
+  // ONLY a real cross-document navigation in the main frame invalidates the
+  // hook. `did-start-loading` is the wrong event and was a serious bug: it
+  // fires for SPA route changes and subresource loads too, so on
+  // music.apple.com it flipped hookReady to false within seconds and it never
+  // came back — `hook-ready` is emitted once per document, not once per load.
+  // Every command from Rust after that was queued forever, with no error
+  // anywhere. Symptom: refreshTokens (sent straight from main.js, bypassing
+  // dispatch) kept working while setQueue vanished.
+  win.webContents.on('did-start-navigation', (...args) => {
+    // Electron has changed this signature across versions: older releases pass
+    // (event, url, isInPlace, isMainFrame, …), newer ones a single details
+    // object. Accept both rather than silently reading undefined.
+    const first = args[0]
+    const d =
+      first && typeof first === 'object' && 'isMainFrame' in first
+        ? first
+        : { isMainFrame: args[3], isSameDocument: args[2] }
+
+    if (d.isMainFrame && !d.isSameDocument) {
+      log('main-frame navigation — hook invalidated, re-probing')
+      hookReady = false
+      // Re-arm the probe. The new document gets a fresh preload which will
+      // self-poll, but the probe is the backstop that guarantees a re-wire —
+      // otherwise an invalidated hook could never recover and every later
+      // command would queue forever.
+      probeForMusicKit()
+    }
   })
 
   win.on('close', (e) => {
@@ -275,7 +300,12 @@ function dispatch(msg) {
   }
 
   if (!hookReady) {
+    // Never queue silently. A command that is waiting is indistinguishable
+    // from one that was dropped unless it says so, and that ambiguity cost
+    // three debugging rounds.
     pending.push(msg)
+    log('queued (hook not ready):', msg.cmd, 'depth=', pending.length)
+    send({ event: 'cmd-queued', cmd: msg.cmd, depth: pending.length })
     return
   }
   // `visible` is the diagnostic that matters when a command produces no
