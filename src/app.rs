@@ -530,39 +530,29 @@ impl Component for AppModel {
                                             set_spacing: 2,
                                             set_margin_top: 6,
 
-                                            gtk::Label {
-                                                set_label: "Apple Music",
-                                                set_xalign: 0.0,
-                                                set_margin_start: 16,
-                                                set_margin_top: 6,
-                                                add_css_class: "heading",
-                                                add_css_class: "dim-label",
-                                            },
-
-                                            #[name = "nav_catalog"]
+                                            // ONE ListBox, not one per
+                                            // section. Two boxes each keep
+                                            // their own selection, and the one
+                                            // that takes initial focus selects
+                                            // its first row — overriding
+                                            // whatever the other was set to,
+                                            // which is why the wrong row looked
+                                            // active on startup. Section
+                                            // headings come from a header func
+                                            // instead.
+                                            #[name = "nav_list"]
                                             gtk::ListBox {
                                                 add_css_class: "navigation-sidebar",
                                                 set_selection_mode: gtk::SelectionMode::Single,
-                                                connect_row_activated[sender] => move |_, _| {
-                                                    sender.input(AppMsg::SetScope(SearchScope::Catalog));
-                                                },
-                                            },
-
-                                            gtk::Label {
-                                                set_label: "Library",
-                                                set_xalign: 0.0,
-                                                set_margin_start: 16,
-                                                set_margin_top: 12,
-                                                add_css_class: "heading",
-                                                add_css_class: "dim-label",
-                                            },
-
-                                            #[name = "nav_library"]
-                                            gtk::ListBox {
-                                                add_css_class: "navigation-sidebar",
-                                                set_selection_mode: gtk::SelectionMode::Single,
-                                                connect_row_activated[sender] => move |_, _| {
-                                                    sender.input(AppMsg::SetScope(SearchScope::Library));
+                                                connect_row_selected[sender] => move |_, row| {
+                                                    if let Some(row) = row {
+                                                        sender.input(AppMsg::SetScope(
+                                                            match row.index() {
+                                                                0 => SearchScope::Catalog,
+                                                                _ => SearchScope::Library,
+                                                            },
+                                                        ));
+                                                    }
                                                 },
                                             },
                                         },
@@ -842,37 +832,41 @@ impl Component for AppModel {
         // Sidebar rows, added imperatively so each section is its own ListBox
         // and the two behave as one selection: picking a row in either clears
         // the other, which a single ListBox would do for free but two will not.
-        let songs = sidebar_row("Songs", "folder-music-symbolic");
-        let search = sidebar_row("Search", "system-search-symbolic");
-        widgets.nav_library.append(&songs);
-        widgets.nav_catalog.append(&search);
+        // Order matters: index 0 is Apple Music, index 1 is Library, and
+        // `connect_row_selected` maps those indices back to a scope.
+        widgets
+            .nav_list
+            .append(&sidebar_row("Search", "system-search-symbolic"));
+        widgets
+            .nav_list
+            .append(&sidebar_row("Songs", "folder-music-symbolic"));
 
-        // Select the row for the section we actually opened on, and clear the
-        // other explicitly. Two ListBoxes each track their own selection, so
-        // leaving one alone leaves it looking active.
-        match model.scope {
-            SearchScope::Library => {
-                widgets.nav_library.select_row(Some(&songs));
-                widgets.nav_catalog.unselect_all();
-            }
-            SearchScope::Catalog => {
-                widgets.nav_catalog.select_row(Some(&search));
-                widgets.nav_library.unselect_all();
-            }
-        }
-        {
-            let catalog = widgets.nav_catalog.clone();
-            widgets.nav_library.connect_row_selected(move |_, row| {
-                if row.is_some() {
-                    catalog.unselect_all();
-                }
-            });
-            let library = widgets.nav_library.clone();
-            widgets.nav_catalog.connect_row_selected(move |_, row| {
-                if row.is_some() {
-                    library.unselect_all();
-                }
-            });
+        // Section headings, drawn above the row that starts each section.
+        widgets.nav_list.set_header_func(|row, _before| {
+            let title = match row.index() {
+                0 => "Apple Music",
+                1 => "Library",
+                _ => return,
+            };
+            let label = gtk::Label::new(Some(title));
+            label.set_xalign(0.0);
+            label.set_margin_start(16);
+            label.set_margin_top(if row.index() == 0 { 6 } else { 12 });
+            label.set_margin_bottom(2);
+            label.add_css_class("heading");
+            label.add_css_class("dim-label");
+            row.set_header(Some(&label));
+        });
+
+        // Open on the section we were last in. Selecting fires
+        // `row-selected`, which posts SetScope — harmless, since the model is
+        // already on that scope and SetScope returns early when unchanged.
+        let start_row = match model.scope {
+            SearchScope::Catalog => 0,
+            SearchScope::Library => 1,
+        };
+        if let Some(row) = widgets.nav_list.row_at_index(start_row) {
+            widgets.nav_list.select_row(Some(&row));
         }
 
         // Fetch the next page of catalog results as the list nears its end.
