@@ -227,6 +227,15 @@ const commands = {
   next: () => music.skipToNextItem(),
   previous: () => music.skipToPreviousItem(),
   changeToIndex: ({ index }) => music.changeToMediaAtIndex(index),
+  removeFromQueue: ({ index }) => {
+    // `queue.remove` is not in MusicKit's documented surface, so treat it as
+    // load-bearing-but-unowned: check it exists rather than throwing a
+    // TypeError at the user, and let the queue event report the real result.
+    if (typeof music.queue?.remove !== 'function') {
+      throw new Error('this MusicKit build cannot remove queue items')
+    }
+    music.queue.remove(index)
+  },
   seek: ({ positionMs }) => music.seekToTime(positionMs / 1000),
   setVolume: ({ volume }) => {
     music.volume = volume

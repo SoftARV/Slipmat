@@ -23,6 +23,7 @@ use relm4::{
 
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
+use crate::components::queue_view::{QueueEntry, QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::{TrackRow, TrackRowInit, TrackRowInput, TrackRowOutput};
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
@@ -160,6 +161,7 @@ pub struct AppModel {
     restarts: u32,
     toaster: adw::ToastOverlay,
     now_playing: Controller<NowPlaying>,
+    queue_view: Controller<QueueView>,
     /// The rows on screen — the filtered view.
     library: FactoryVecDeque<TrackRow>,
     /// The full library from the last load. The filter reads this, never the
@@ -210,6 +212,10 @@ pub enum AppMsg {
     PlayFrom(usize),
     SearchChanged(String),
     ReloadLibrary,
+    ShowQueue,
+    /// Jump to a position in MusicKit's queue (not our list).
+    JumpTo(usize),
+    RemoveFromQueue(usize),
 }
 
 #[derive(Debug)]
@@ -387,6 +393,7 @@ impl Component for AppModel {
         let now_playing = NowPlaying::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
+                NowPlayingOutput::ShowQueue => AppMsg::ShowQueue,
                 NowPlayingOutput::PlayPause => AppMsg::PlayPause,
                 NowPlayingOutput::Next => AppMsg::Next,
                 NowPlayingOutput::Previous => AppMsg::Previous,
@@ -400,8 +407,16 @@ impl Component for AppModel {
                 TrackRowOutput::Activated(index) => AppMsg::PlayFrom(index),
             });
 
+        let queue_view = QueueView::builder()
+            .launch(())
+            .forward(sender.input_sender(), |out| match out {
+                QueueViewOutput::Jump(index) => AppMsg::JumpTo(index),
+                QueueViewOutput::Remove(index) => AppMsg::RemoveFromQueue(index),
+            });
+
         let model = AppModel {
             stage: Stage::Starting,
+            queue_view,
             library,
             all_tracks: Vec::new(),
             query: String::new(),
@@ -431,7 +446,7 @@ impl Component for AppModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
             AppMsg::PlayPause => self.send(Command::PlayPause),
@@ -460,6 +475,9 @@ impl Component for AppModel {
                 }
             }
             AppMsg::ReloadLibrary => self.load_library(&sender),
+            AppMsg::ShowQueue => self.queue_view.widget().present(Some(root)),
+            AppMsg::JumpTo(index) => self.send(Command::ChangeToIndex { index }),
+            AppMsg::RemoveFromQueue(index) => self.send(Command::RemoveFromQueue { index }),
             AppMsg::PlayFrom(index) => {
                 let visible: Vec<&Track> = self.visible_tracks().collect();
                 let (songs, start_id) = queue_from(&visible, index, &self.dead_ids);
@@ -770,6 +788,21 @@ impl AppModel {
             active: item.is_some(),
         };
         self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));
+
+        // The queue dialog reads MusicKit's queue, not our library list.
+        self.queue_view.emit(QueueViewInput::Sync(
+            self.player
+                .queue
+                .iter()
+                .enumerate()
+                .map(|(i, item)| QueueEntry {
+                    title: item.title.clone(),
+                    artist: item.artist.clone(),
+                    duration_ms: item.duration_ms,
+                    playing: i == self.player.queue_position,
+                })
+                .collect(),
+        ));
 
         // Same state, second consumer. MPRIS diffs internally, so calling this
         // on every tick costs one property write and no bus traffic.

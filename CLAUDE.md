@@ -427,7 +427,10 @@ Playback engine first. One vertical slice, one PR each.
 - ✅ **M3 — MPRIS.** `org.mpris.MediaPlayer2.Tonearm`, bidirectional, artwork as
   a `file://` URL. Verified over `busctl`: properties read, and `PlayPause` /
   `Next` from the bus reach the sidecar.
-- **M4 — Queue view.** Native list, reorder, jump via `changeToMediaAtIndex`.
+- ✅ **M4 — Queue view.** MusicKit's queue in an `adw::Dialog` from the Now
+  Playing bar: jump via `changeToMediaAtIndex`, remove in place. Drag-reorder
+  is deliberately not shipped — `queue.splice` is undocumented and the risk is
+  to the gapless buffer.
 - ✅ **M5 — Library.** Saved songs in a native list, type-to-find search,
   click-to-play enqueuing the whole visible list. Verified against a real
   library: 539 tracks over 6 pages, 4 correctly detected as unplayable.
