@@ -67,6 +67,8 @@ dev-install:
 	install -Dm644 data/$(APPID).desktop $(DATADIR)/applications/$(APPID).desktop
 	install -Dm644 data/icons/hicolor/scalable/apps/$(APPID).svg \
 		$(DATADIR)/icons/hicolor/scalable/apps/$(APPID).svg
+	install -Dm644 data/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg \
+		$(DATADIR)/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg
 	@for sz in $(ICON_SIZES); do \
 		if [ -f data/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png ]; then \
 			install -Dm644 data/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png \
@@ -84,6 +86,7 @@ uninstall:
 	rm -rf $(DATADIR)/tonearm
 	rm -f $(DATADIR)/applications/$(APPID).desktop
 	rm -f $(DATADIR)/icons/hicolor/scalable/apps/$(APPID).svg
+	rm -f $(DATADIR)/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg
 	@for sz in $(ICON_SIZES); do \
 		rm -f $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png; \
 	done
