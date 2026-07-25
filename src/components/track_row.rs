@@ -19,7 +19,19 @@ use relm4::prelude::*;
 use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
+use crate::components::RowRegistry;
 use crate::music::types::Track;
+
+/// Icon name and CSS classes for a row's leading indicator.
+pub fn row_icon(playing: bool, playable: bool) -> (&'static str, &'static [&'static str]) {
+    if playing {
+        ("media-playback-start-symbolic", &["accent"])
+    } else if !playable {
+        ("action-unavailable-symbolic", &["dim-label"])
+    } else {
+        ("audio-x-generic-symbolic", &["dim-label"])
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct LibraryItem {
@@ -33,10 +45,13 @@ pub struct LibraryItem {
     /// store, which is what makes `ListView` re-bind the row.
     pub playing: bool,
     pub subtitle: String,
+    /// Where this row publishes its icon while it is on screen, so the marker
+    /// can be moved without touching the model. See `RowRegistry`.
+    pub registry: RowRegistry<gtk::Image>,
 }
 
 impl LibraryItem {
-    pub fn new(track: Track) -> Self {
+    pub fn new(track: Track, registry: RowRegistry<gtk::Image>) -> Self {
         let subtitle = match (track.artist.is_empty(), track.album.is_empty()) {
             (false, false) => format!("{} — {}", track.artist, track.album),
             (false, true) => track.artist.clone(),
@@ -47,6 +62,7 @@ impl LibraryItem {
             subtitle,
             playing: false,
             track,
+            registry,
         }
     }
 }
@@ -127,17 +143,16 @@ impl RelmListItem for LibraryItem {
         widgets.subtitle.set_label(&self.subtitle);
         widgets.duration.set_label(&self.track.duration_label());
 
-        let playing = self.playing;
-        widgets.icon.set_icon_name(Some(if playing {
-            "media-playback-start-symbolic"
-        } else if !self.track.playable() {
-            "action-unavailable-symbolic"
-        } else {
-            "audio-x-generic-symbolic"
-        }));
-        widgets
-            .icon
-            .set_css_classes(if playing { &["accent"] } else { &["dim-label"] });
+        let (icon, classes) = row_icon(self.playing, self.track.playable());
+        widgets.icon.set_icon_name(Some(icon));
+        widgets.icon.set_css_classes(classes);
+
+        // Publish this row's icon while it is on screen.
+        if let Some(id) = &self.track.catalog_id {
+            self.registry
+                .borrow_mut()
+                .insert(id.clone(), widgets.icon.clone());
+        }
 
         // An unplayable track is shown, not hidden — it is in the library, and
         // pretending otherwise is more confusing than dimming it.
@@ -148,11 +163,19 @@ impl RelmListItem for LibraryItem {
             Some("Not available to stream — this track is only in your library")
         });
     }
+
+    fn unbind(&mut self, _widgets: &mut Self::Widgets, _root: &mut Self::Root) {
+        // The widget is about to be handed to another track.
+        if let Some(id) = &self.track.catalog_id {
+            self.registry.borrow_mut().remove(id);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::row_registry;
     use crate::music::types::TrackId;
 
     fn track(artist: &str, album: &str) -> Track {
@@ -171,11 +194,17 @@ mod tests {
     #[test]
     fn subtitle_collapses_rather_than_showing_a_dangling_dash() {
         assert_eq!(
-            LibraryItem::new(track("Aitana", "Superestrella")).subtitle,
+            LibraryItem::new(track("Aitana", "Superestrella"), row_registry()).subtitle,
             "Aitana — Superestrella"
         );
-        assert_eq!(LibraryItem::new(track("Aitana", "")).subtitle, "Aitana");
-        assert_eq!(LibraryItem::new(track("", "Album")).subtitle, "Album");
-        assert_eq!(LibraryItem::new(track("", "")).subtitle, "");
+        assert_eq!(
+            LibraryItem::new(track("Aitana", ""), row_registry()).subtitle,
+            "Aitana"
+        );
+        assert_eq!(
+            LibraryItem::new(track("", "Album"), row_registry()).subtitle,
+            "Album"
+        );
+        assert_eq!(LibraryItem::new(track("", ""), row_registry()).subtitle, "");
     }
 }

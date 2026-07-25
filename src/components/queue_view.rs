@@ -21,7 +21,15 @@ use relm4::prelude::*;
 use relm4::typed_view::list::{RelmListItem, TypedListView};
 use relm4::{Component, ComponentParts, ComponentSender, adw, gtk, view};
 
+use crate::components::{RowRegistry, row_registry};
 use crate::music::types::format_duration;
+
+/// The widgets a queue row publishes while it is on screen.
+#[derive(Debug, Clone)]
+pub struct QueueRowWidgets {
+    icon: gtk::Image,
+    remove: gtk::Button,
+}
 
 /// One queue entry, flattened from the sidecar's view of MusicKit's queue.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +49,9 @@ pub struct QueueItem {
     /// `setup` is a static function with no sender, and the button must know
     /// *which* track it belongs to — which is only known at bind time.
     sender: relm4::Sender<QueueViewInput>,
+    /// Where this row publishes its widgets while on screen, so the marker can
+    /// move without editing the model. See `RowRegistry`.
+    registry: RowRegistry<QueueRowWidgets>,
 }
 
 pub struct QueueItemWidgets {
@@ -169,7 +180,22 @@ impl RelmListItem for QueueItem {
         if let Some(old) = widgets.handler.take() {
             widgets.remove.disconnect(old);
         }
+        self.registry.borrow_mut().remove(&self.entry.id);
     }
+}
+
+/// Paint a row's marker. Shared so the bind path and the live-update path
+/// cannot drift apart.
+fn apply_playing(icon: &gtk::Image, remove: &gtk::Button, playing: bool) {
+    icon.set_icon_name(Some(if playing {
+        "media-playback-start-symbolic"
+    } else {
+        "audio-x-generic-symbolic"
+    }));
+    icon.set_css_classes(if playing { &["accent"] } else { &["dim-label"] });
+    // Removing the track you are listening to is a stop dressed up as an edit;
+    // skip is the button for that.
+    remove.set_sensitive(!playing);
 }
 
 // --- the sidebar ------------------------------------------------------------
@@ -179,6 +205,7 @@ pub struct QueueView {
     count: usize,
     shown: Vec<String>,
     playing: Option<String>,
+    registry: RowRegistry<QueueRowWidgets>,
 }
 
 #[derive(Debug)]
@@ -261,6 +288,7 @@ impl Component for QueueView {
             count: 0,
             shown: Vec::new(),
             playing: None,
+            registry: row_registry(),
         };
         let queue_list = &model.list.view;
         let widgets = view_output!();
@@ -336,12 +364,16 @@ impl QueueView {
                     "queue: rebuilding rows"
                 );
                 let marker = playing.clone();
+                let registry = self.registry.clone();
+                // These rows are going away; none of their widgets are ours.
+                registry.borrow_mut().clear();
                 self.list.clear();
                 self.list
                     .extend_from_iter(entries.into_iter().map(|entry| QueueItem {
                         playing: Some(&entry.id) == marker.as_ref(),
                         entry,
                         sender: sender.clone(),
+                        registry: registry.clone(),
                     }));
                 self.shown = ids;
                 self.count = self.shown.len();
@@ -366,18 +398,21 @@ impl QueueView {
         }
     }
 
+    /// Move the marker on one row **without touching the model**.
+    ///
+    /// Editing the store — even replacing a single item — makes `ListView`
+    /// re-measure and the scroll jumps to the top. So: update the data
+    /// silently, so a later re-bind is correct, and update the widget directly
+    /// if the row is on screen right now.
     fn set_row_playing(&mut self, id: &str, playing: bool) {
-        let Some(position) = self.list.find(|item| item.entry.id == id) else {
-            return;
-        };
-        let Some(existing) = self.list.get(position) else {
-            return;
-        };
-        let mut item = existing.borrow().clone();
-        drop(existing);
-        item.playing = playing;
-        self.list.remove(position);
-        self.list.insert(position, item);
+        if let Some(position) = self.list.find(|item| item.entry.id == id)
+            && let Some(item) = self.list.get(position)
+        {
+            item.borrow_mut().playing = playing;
+        }
+        if let Some(w) = self.registry.borrow().get(id) {
+            apply_playing(&w.icon, &w.remove, playing);
+        }
     }
 }
 

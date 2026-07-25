@@ -24,7 +24,8 @@ use relm4::typed_view::list::TypedListView;
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
 use crate::components::queue_view::{QueueEntry, QueueView, QueueViewInput, QueueViewOutput};
-use crate::components::track_row::LibraryItem;
+use crate::components::track_row::{LibraryItem, row_icon};
+use crate::components::{RowRegistry, row_registry};
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
@@ -167,9 +168,11 @@ pub struct AppModel {
     library: TypedListView<LibraryItem, gtk::NoSelection>,
     /// Whether the queue sidebar is open.
     show_queue: bool,
-    /// Which library row currently carries the play marker, so only the two
-    /// affected rows are touched when it moves.
+    /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
+    /// Icons of the library rows currently on screen, so the marker can move
+    /// without editing the model — see `RowRegistry`.
+    library_icons: RowRegistry<gtk::Image>,
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
@@ -449,6 +452,7 @@ impl Component for AppModel {
             library,
             show_queue: false,
             marked_playing: None,
+            library_icons: row_registry(),
             all_tracks: Vec::new(),
             query: String::new(),
             loading_library: false,
@@ -626,10 +630,13 @@ impl AppModel {
         // The rows are built with the marker already set, so record that here
         // or `mark_now_playing` will think it still needs applying.
         self.marked_playing = playing.clone();
+        let registry = self.library_icons.clone();
+        // Rows are about to be discarded; none of their widgets are ours now.
+        registry.borrow_mut().clear();
         self.library.clear();
         self.library
             .extend_from_iter(visible.into_iter().map(|track| {
-                let mut item = LibraryItem::new(track);
+                let mut item = LibraryItem::new(track, registry.clone());
                 item.playing = item.track.catalog_id.is_some() && item.track.catalog_id == playing;
                 item
             }));
@@ -666,21 +673,28 @@ impl AppModel {
         self.marked_playing = current;
     }
 
+    /// Move the marker on one row **without touching the model**.
+    ///
+    /// Editing the store — even replacing a single item — makes `ListView`
+    /// re-measure, and the scroll jumps to the top. Intolerable for something
+    /// that fires on every track change. So: update the item's data silently,
+    /// so a later re-bind is correct, and update the widget directly if this
+    /// row happens to be on screen right now.
     fn set_row_playing(&mut self, catalog_id: &str, playing: bool) {
-        let Some(position) = self
+        if let Some(position) = self
             .library
             .find(|item| item.track.catalog_id.as_deref() == Some(catalog_id))
-        else {
-            return;
-        };
-        let Some(existing) = self.library.get(position) else {
-            return;
-        };
-        let mut item = existing.borrow().clone();
-        drop(existing);
-        item.playing = playing;
-        self.library.remove(position);
-        self.library.insert(position, item);
+            && let Some(item) = self.library.get(position)
+        {
+            item.borrow_mut().playing = playing;
+        }
+
+        if let Some(icon) = self.library_icons.borrow().get(catalog_id) {
+            // Only a playable row can be the current track.
+            let (name, classes) = row_icon(playing, true);
+            icon.set_icon_name(Some(name));
+            icon.set_css_classes(classes);
+        }
     }
 
     fn load_library(&mut self, sender: &ComponentSender<Self>) {
