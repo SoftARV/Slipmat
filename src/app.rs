@@ -462,10 +462,13 @@ impl Component for AppModel {
             library_icons: row_registry(),
             current_track: current_track(),
             dead_rows: dead_tracks(),
+            // filled from `dead_ids` once the model exists (see below)
             all_tracks: Vec::new(),
             query: String::new(),
             loading_library: false,
-            dead_ids: std::collections::HashSet::new(),
+            // Seeded from the cache so the first play of a session does not
+            // have to rediscover them by failing a setQueue.
+            dead_ids: crate::unplayable::load(),
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
@@ -485,6 +488,9 @@ impl Component for AppModel {
         let library_list = &model.library.view;
         let queue_sidebar = model.queue_view.widget();
         let widgets = view_output!();
+
+        // Rows read playability from here, so seed it before any are built.
+        *model.dead_rows.borrow_mut() = model.dead_ids.clone();
 
         start_sidecar(&sender);
 
@@ -751,6 +757,10 @@ impl AppModel {
             .filter(|id| !self.dead_ids.contains(*id))
             .count();
         self.dead_ids.extend(dead);
+        if newly_dead > 0 {
+            // Remember them, so the next run starts already knowing.
+            crate::unplayable::save(&self.dead_ids);
+        }
 
         // Nothing new: the retry already happened and failed again. Stop, or we
         // loop forever on an error we cannot parse our way out of.

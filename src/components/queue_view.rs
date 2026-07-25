@@ -313,11 +313,30 @@ impl Component for QueueView {
                 // (An earlier version restored on every sync, including marker
                 // changes, and re-asserting an offset against an `upper` that
                 // was still settling is what made the list twitch.)
-                let scrolled_to = widgets.scroller.vadjustment().value();
+                // Anchor on an ITEM, not on a pixel offset.
+                //
+                // Restoring the adjustment's value keeps losing: on a model
+                // change `ListView` briefly reports a much smaller content
+                // height and clamps `value` to near zero, and whatever we set
+                // afterwards is clamped again. Two attempts at timing that were
+                // both wrong.
+                //
+                // The topmost visible row is a stable thing to hold on to, and
+                // `scroll_to` is ListView's own operation on it — no
+                // adjustment arithmetic, no race with measurement.
+                let anchor = self.topmost_visible();
                 let structural = self.apply(entries, playing, sender.input_sender().clone());
 
-                if structural && scrolled_to > 0.0 {
-                    restore_scroll(&widgets.scroller, scrolled_to);
+                if structural
+                    && let Some(anchor) = anchor
+                    && let Some(position) = self.shown.iter().position(|id| *id == anchor)
+                {
+                    let list = widgets.queue_list.clone();
+                    // Deferred one tick: the store has changed, but the view
+                    // has not been through a layout pass yet.
+                    gtk::glib::idle_add_local_once(move || {
+                        list.scroll_to(position as u32, gtk::ListScrollFlags::NONE, None);
+                    });
                 }
             }
             QueueViewInput::ScrollToPlaying => {
@@ -414,40 +433,25 @@ impl QueueView {
         structural
     }
 
+    /// The id of the topmost row currently on screen.
+    ///
+    /// The registry holds exactly the bound rows, so the smallest queue
+    /// position among them is the row at the top of the viewport. That is the
+    /// thing to keep still across an edit.
+    fn topmost_visible(&self) -> Option<String> {
+        let registry = self.registry.borrow();
+        self.shown
+            .iter()
+            .find(|id| registry.contains_key(*id))
+            .cloned()
+    }
+
     /// Repaint one row's marker. Touches a widget, never the model.
     fn set_row_playing(&self, id: &str, playing: bool) {
         if let Some(w) = self.registry.borrow().get(id) {
             apply_playing(&w.icon, &w.remove, playing);
         }
     }
-}
-
-/// Put the scroll back where it was after a structural change.
-///
-/// A single idle tick is too early. When the model changes, `ListView` briefly
-/// reports a much smaller content height, so the adjustment clamps `value` to
-/// near zero — and by the time the real height is known, the value we wanted is
-/// already gone. Setting it again in an idle callback just re-applies a value
-/// that gets clamped again.
-///
-/// So wait for the adjustment to settle instead: `changed` fires when `upper`
-/// or `page-size` move, and the handler disconnects itself once it has restored
-/// the offset it was asked for.
-fn restore_scroll(scroller: &gtk::ScrolledWindow, target: f64) {
-    let adj = scroller.vadjustment();
-    let handler = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let slot = handler.clone();
-    let id = adj.connect_changed(move |adj| {
-        let max = (adj.upper() - adj.page_size()).max(0.0);
-        if max < target {
-            return; // still measuring; the list cannot hold this offset yet
-        }
-        adj.set_value(target);
-        if let Some(id) = slot.borrow_mut().take() {
-            adj.disconnect(id);
-        }
-    });
-    *handler.borrow_mut() = Some(id);
 }
 
 /// If `new` is `old` with exactly one element taken out, return its position.

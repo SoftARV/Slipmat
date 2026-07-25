@@ -6,6 +6,7 @@ mod components;
 mod mpris;
 mod music;
 mod player;
+mod unplayable;
 
 use relm4::RelmApp;
 use relm4::gtk;
