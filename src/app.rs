@@ -16,7 +16,8 @@ use std::path::PathBuf;
 
 use relm4::adw::prelude::*;
 use relm4::{
-    Component, ComponentController, ComponentParts, ComponentSender, Controller, adw, gtk,
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmWidgetExt,
+    adw, gtk,
 };
 
 use relm4::typed_view::list::TypedListView;
@@ -228,29 +229,21 @@ fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<Ap
     group.register_for_widget(window);
 }
 
-/// One row in the navigation sidebar.
+/// Check an icon name against the theme, falling back if it is missing.
 ///
-/// The icon name is checked against the theme. A name that does not exist
-/// renders as nothing at all — silently, with no warning — which is how
-/// `music-note-single-symbolic` shipped as an invisible icon.
-fn sidebar_row(label: &str, icon: &str) -> gtk::ListBoxRow {
-    let resolved = gtk::gdk::Display::default()
+/// A name that does not exist renders as nothing at all — silently, with no
+/// warning — which is how `music-note-single-symbolic` shipped as an invisible
+/// icon.
+fn icon(name: &'static str) -> &'static str {
+    let present = gtk::gdk::Display::default()
         .map(|display| gtk::IconTheme::for_display(&display))
-        .filter(|theme| theme.has_icon(icon))
-        .map(|_| icon)
-        .unwrap_or_else(|| {
-            tracing::warn!(icon, "icon missing from the theme; falling back");
-            "audio-x-generic-symbolic"
-        });
-
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    row.set_margin_top(8);
-    row.set_margin_bottom(8);
-    row.set_margin_start(12);
-    row.set_margin_end(12);
-    row.append(&gtk::Image::from_icon_name(resolved));
-    row.append(&gtk::Label::new(Some(label)));
-    gtk::ListBoxRow::builder().child(&row).build()
+        .is_some_and(|theme| theme.has_icon(name));
+    if present {
+        name
+    } else {
+        tracing::warn!(icon = name, "icon missing from the theme; falling back");
+        "audio-x-generic-symbolic"
+    }
 }
 
 fn show_about(parent: &adw::ApplicationWindow) {
@@ -554,6 +547,56 @@ impl Component for AppModel {
                                                         ));
                                                     }
                                                 },
+
+                                                // Index 0 — Apple Music. The
+                                                // order is the contract that
+                                                // connect_row_selected reads.
+                                                gtk::ListBoxRow {
+                                                    #[wrap(Some)]
+                                                    set_child = &gtk::Box {
+                                                        set_spacing: 12,
+                                                        set_margin_all: 8,
+
+                                                        gtk::Image {
+                                                            set_icon_name: Some(icon("system-search-symbolic")),
+                                                        },
+                                                        gtk::Label {
+                                                            set_label: "Search",
+                                                        },
+                                                    },
+                                                },
+
+                                                // Index 1 — Library.
+                                                gtk::ListBoxRow {
+                                                    #[wrap(Some)]
+                                                    set_child = &gtk::Box {
+                                                        set_spacing: 12,
+                                                        set_margin_all: 8,
+
+                                                        gtk::Image {
+                                                            set_icon_name: Some(icon("folder-music-symbolic")),
+                                                        },
+                                                        gtk::Label {
+                                                            set_label: "Songs",
+                                                            set_hexpand: true,
+                                                            set_xalign: 0.0,
+                                                        },
+
+                                                        // The library loads on
+                                                        // startup whichever
+                                                        // section you are in.
+                                                        // Say so here, next to
+                                                        // the thing that is
+                                                        // loading, rather than
+                                                        // across the whole
+                                                        // window.
+                                                        adw::Spinner {
+                                                            set_size_request: (16, 16),
+                                                            #[watch]
+                                                            set_visible: model.loading_library,
+                                                        },
+                                                    },
+                                                },
                                             },
                                         },
                                     },
@@ -832,15 +875,6 @@ impl Component for AppModel {
         // Sidebar rows, added imperatively so each section is its own ListBox
         // and the two behave as one selection: picking a row in either clears
         // the other, which a single ListBox would do for free but two will not.
-        // Order matters: index 0 is Apple Music, index 1 is Library, and
-        // `connect_row_selected` maps those indices back to a scope.
-        widgets
-            .nav_list
-            .append(&sidebar_row("Search", "system-search-symbolic"));
-        widgets
-            .nav_list
-            .append(&sidebar_row("Songs", "folder-music-symbolic"));
-
         // Section headings, drawn above the row that starts each section.
         widgets.nav_list.set_header_func(|row, _before| {
             let title = match row.index() {
@@ -858,9 +892,9 @@ impl Component for AppModel {
             row.set_header(Some(&label));
         });
 
-        // Open on the section we were last in. Selecting fires
-        // `row-selected`, which posts SetScope — harmless, since the model is
-        // already on that scope and SetScope returns early when unchanged.
+        // Open on the section we were last in. Selecting fires `row-selected`,
+        // which posts SetScope — harmless, since the model is already on that
+        // scope and SetScope returns early when unchanged.
         let start_row = match model.scope {
             SearchScope::Catalog => 0,
             SearchScope::Library => 1,
@@ -1606,7 +1640,13 @@ impl AppModel {
         // in more catalog results happens *below* a list the user is already
         // reading, and replacing that list with a spinner mid-scroll is worse
         // than a moment with no new rows.
-        let first_library_load = self.loading_library && self.all_tracks.is_empty();
+        // Scoped to the Library section on purpose. The library loads at
+        // startup whichever section you are in, and taking over the Apple
+        // Music pane to say "Loading your library" reads as the whole app
+        // being stuck. The sidebar spinner covers that case instead.
+        let first_library_load = self.scope == SearchScope::Library
+            && self.loading_library
+            && self.all_tracks.is_empty();
         let first_catalog_page =
             self.scope == SearchScope::Catalog && self.searching_catalog && self.catalog.is_empty();
 
