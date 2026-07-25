@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 mod app;
+mod components;
 mod music;
 mod player;
 

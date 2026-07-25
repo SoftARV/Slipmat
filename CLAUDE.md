@@ -414,10 +414,10 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
 
 Playback engine first. One vertical slice, one PR each.
 
-- **M1 — Handshake.** Scaffold, sidecar, NDJSON round-trip, one-time Apple login,
-  tokens harvested → keyring. *Done when:* a hardcoded song id plays audio and no
-  window is ever seen after login.
-- **M2 — Transport.** The Now Playing bar, sidecar-owned queue, supervision.
+- ✅ **M1 — Handshake.** Scaffold, sidecar, NDJSON round-trip, one-time Apple
+  login, tokens harvested. Verified: Widevine → MusicKit → PipeWire, window
+  never mapped.
+- ✅ **M2 — Transport.** The Now Playing bar, sidecar-owned queue, supervision.
 - **M3 — MPRIS.** The bar above. *Done when:* the Shell applet and lock screen
   show artwork and controls work both ways.
 - **M4 — Queue view.** Native list, reorder, jump via `changeToMediaAtIndex`.

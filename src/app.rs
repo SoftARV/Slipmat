@@ -8,18 +8,31 @@
 //! the sidecar's stdout is drained by a streaming relm4 `Command` so the GTK
 //! main thread never blocks (CLAUDE.md rule 8).
 //!
-//! **M1, the handshake slice.** Spawn the sidecar, wait for Widevine and the
-//! MusicKit hook, run Apple's sign-in once, harvest the tokens. The UI here is
-//! deliberately a single `adw::StatusPage` reporting where we are in that
-//! sequence — the Now Playing bar arrives in M2.
+//! **M2, the transport slice.** M1's handshake plus the persistent Now Playing
+//! bar: artwork, labels, seek, transport and volume. The main surface is still
+//! a `StatusPage` — the library lands in M5.
+
+use std::path::PathBuf;
 
 use relm4::adw::prelude::*;
-use relm4::{Component, ComponentParts, ComponentSender, adw, gtk};
+use relm4::{
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, adw, gtk,
+};
 
+use crate::components::artwork::{self, ART_SIZE};
+use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
 use crate::music::client::Client;
-use crate::music::types::Track;
+use crate::music::types::{Artwork, Track};
 use crate::player::protocol::{Command, Event, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
+
+/// How often the seek bar redraws while playing.
+///
+/// The sidecar's own position events are coarse and irregular, so
+/// `PlayerState::interpolated_position_ms` fills the gaps; this timer just
+/// drives the repaint. Removed entirely when not playing — a paused player
+/// should cost nothing (the same discipline as Pitwall's suspend-gated poll).
+const TICK_MS: u32 = 500;
 
 /// What `PlayTestTrack` searches for. Override with `TONEARM_TEST_TERM` to try
 /// something else without a rebuild.
@@ -54,6 +67,12 @@ pub struct AppModel {
     sidecar: Option<sidecar::Handle>,
     restarts: u32,
     toaster: adw::ToastOverlay,
+    now_playing: Controller<NowPlaying>,
+    /// The artwork template of the track we last fetched, so a position tick
+    /// or a queue echo doesn't re-request the same cover.
+    art_for: Option<String>,
+    /// Live only while playing; see `TICK_MS`.
+    tick: Option<gtk::glib::SourceId>,
 }
 
 #[derive(Debug)]
@@ -62,6 +81,10 @@ pub enum AppMsg {
     PlayPause,
     Next,
     Previous,
+    Seek(u64),
+    SetVolume(f64),
+    /// Repaint the seek bar from the interpolated position.
+    Tick,
     /// M1's acceptance test, as a button: search the catalog with the harvested
     /// developer token, then enqueue the first hit. Proves the token, the API
     /// client and the DRM path in one click. Retire it when M5 lands a real
@@ -77,6 +100,9 @@ pub enum CommandMsg {
     Spawned(sidecar::Handle),
     /// Catalog search came back with something to enqueue (or an error).
     TestTrack(Result<Vec<Track>, String>),
+    /// Cover art is on disk. `None` when the fetch failed — a missing cover is
+    /// cosmetic and must not become a toast.
+    Artwork(Option<PathBuf>),
 }
 
 #[relm4::component(pub)]
@@ -139,37 +165,20 @@ impl Component for AppModel {
                                 connect_clicked => AppMsg::PlayTestTrack,
                             },
 
-                            gtk::Button {
-                                set_icon_name: "media-skip-backward-symbolic",
-                                add_css_class: "circular",
-                                #[watch]
-                                set_visible: matches!(model.stage, Stage::Ready),
-                                #[watch]
-                                set_sensitive: model.player.has_previous(),
-                                connect_clicked => AppMsg::Previous,
-                            },
-                            gtk::Button {
-                                add_css_class: "circular",
-                                add_css_class: "suggested-action",
-                                #[watch]
-                                set_icon_name: if model.player.state.is_playing() {
-                                    "media-playback-pause-symbolic"
-                                } else {
-                                    "media-playback-start-symbolic"
-                                },
-                                #[watch]
-                                set_visible: matches!(model.stage, Stage::Ready),
-                                connect_clicked => AppMsg::PlayPause,
-                            },
-                            gtk::Button {
-                                set_icon_name: "media-skip-forward-symbolic",
-                                add_css_class: "circular",
-                                #[watch]
-                                set_visible: matches!(model.stage, Stage::Ready),
-                                #[watch]
-                                set_sensitive: model.player.has_next(),
-                                connect_clicked => AppMsg::Next,
-                            },
+                        },
+                    },
+
+                    // The bar is present on every screen — it is the app.
+                    // Wrapped in a Box so the visibility watch has somewhere to
+                    // live: the bar itself is a child component, and `#[watch]`
+                    // can only drive widgets this macro owns.
+                    add_bottom_bar = &gtk::Box {
+                        #[watch]
+                        set_visible: matches!(model.stage, Stage::Ready),
+
+                        #[local_ref]
+                        now_playing_bar -> gtk::Box {
+                            set_hexpand: true,
                         },
                     },
                 },
@@ -182,6 +191,18 @@ impl Component for AppModel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        // The bar emits intent, never commands — `app.rs` is the only place
+        // that talks to the sidecar (rule 9).
+        let now_playing = NowPlaying::builder()
+            .launch(())
+            .forward(sender.input_sender(), |out| match out {
+                NowPlayingOutput::PlayPause => AppMsg::PlayPause,
+                NowPlayingOutput::Next => AppMsg::Next,
+                NowPlayingOutput::Previous => AppMsg::Previous,
+                NowPlayingOutput::Seek(ms) => AppMsg::Seek(ms),
+                NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
+            });
+
         let model = AppModel {
             stage: Stage::Starting,
             player: PlayerState::new(),
@@ -189,8 +210,12 @@ impl Component for AppModel {
             sidecar: None,
             restarts: 0,
             toaster: adw::ToastOverlay::new(),
+            now_playing,
+            art_for: None,
+            tick: None,
         };
         let toaster = &model.toaster;
+        let now_playing_bar = model.now_playing.widget();
         let widgets = view_output!();
 
         start_sidecar(&sender);
@@ -204,6 +229,9 @@ impl Component for AppModel {
             AppMsg::PlayPause => self.send(Command::PlayPause),
             AppMsg::Next => self.send(Command::Next),
             AppMsg::Previous => self.send(Command::Previous),
+            AppMsg::Seek(position_ms) => self.send(Command::Seek { position_ms }),
+            AppMsg::SetVolume(volume) => self.send(Command::SetVolume { volume }),
+            AppMsg::Tick => self.push_snapshot(),
             AppMsg::PlayTestTrack => {
                 let Some(tokens) = &self.tokens else {
                     self.toast("No tokens yet — wait for the sidecar to connect");
@@ -265,7 +293,14 @@ impl Component for AppModel {
                 tracing::warn!(%err, "catalog search failed");
                 self.toast(&format!("Search failed: {err}"));
             }
-            CommandMsg::Sidecar(Incoming::Event(event)) => self.on_event(event),
+            CommandMsg::Artwork(path) => {
+                if path.is_none() {
+                    // Cosmetic. The bar falls back to a generic icon.
+                    tracing::debug!("artwork unavailable");
+                }
+                self.now_playing.emit(NowPlayingInput::ArtworkReady(path));
+            }
+            CommandMsg::Sidecar(Incoming::Event(event)) => self.on_event(event, &sender),
             CommandMsg::Sidecar(Incoming::Unparsed(line)) => {
                 // preload.js and protocol.rs have drifted. Not fatal, but it
                 // means an event is being silently ignored — say so.
@@ -287,6 +322,78 @@ impl Component for AppModel {
 }
 
 impl AppModel {
+    /// Flatten `PlayerState` into what the bar renders, and push it down.
+    ///
+    /// Called after every event that could change it *and* on each tick, since
+    /// the interpolated position moves without any event arriving.
+    fn push_snapshot(&self) {
+        let item = self.player.now_playing.as_ref();
+        let snap = Snapshot {
+            title: item.map(|i| i.title.clone()).unwrap_or_default(),
+            artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
+            album: item.map(|i| i.album.clone()).unwrap_or_default(),
+            position_ms: self.player.interpolated_position_ms(),
+            duration_ms: self.player.duration_ms,
+            playing: self.player.state.is_playing(),
+            busy: self.player.state.is_busy(),
+            has_next: self.player.has_next(),
+            has_previous: self.player.has_previous(),
+            active: item.is_some(),
+        };
+        self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));
+    }
+
+    /// Start the repaint timer while playing, drop it otherwise.
+    ///
+    /// `glib::SourceId` must be removed exactly once — holding it in an
+    /// `Option` and `take()`ing is what makes that safe, since removing an
+    /// already-removed source aborts.
+    fn sync_tick(&mut self, sender: &ComponentSender<Self>) {
+        let want = self.player.state.is_playing();
+        match (want, self.tick.is_some()) {
+            (true, false) => {
+                let sender = sender.clone();
+                self.tick = Some(gtk::glib::timeout_add_local(
+                    std::time::Duration::from_millis(TICK_MS as u64),
+                    move || {
+                        sender.input(AppMsg::Tick);
+                        gtk::glib::ControlFlow::Continue
+                    },
+                ));
+            }
+            (false, true) => {
+                if let Some(id) = self.tick.take() {
+                    id.remove();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Fetch cover art for the current track, at most once per template.
+    fn sync_artwork(&mut self, sender: &ComponentSender<Self>) {
+        let template = self
+            .player
+            .now_playing
+            .as_ref()
+            .and_then(|i| i.artwork_template.clone());
+
+        if template == self.art_for {
+            return;
+        }
+        self.art_for = template.clone();
+
+        match template {
+            Some(t) => {
+                let art = Artwork::new(t);
+                sender.oneshot_command(async move {
+                    CommandMsg::Artwork(artwork::fetch(art, ART_SIZE).await.ok())
+                });
+            }
+            None => self.now_playing.emit(NowPlayingInput::ArtworkReady(None)),
+        }
+    }
+
     fn send(&self, cmd: Command) {
         match &self.sidecar {
             Some(handle) => handle.send(cmd),
@@ -298,7 +405,7 @@ impl AppModel {
         self.toaster.add_toast(adw::Toast::new(text));
     }
 
-    fn on_event(&mut self, event: Event) {
+    fn on_event(&mut self, event: Event, sender: &ComponentSender<Self>) {
         match &event {
             // Bound as `shown`, not `debug`: inside a tracing macro the name
             // `debug` resolves to `tracing::field::debug` instead of our
@@ -391,7 +498,16 @@ impl AppModel {
         }
         // The mirror is updated last so the stage transitions above always see
         // the previous state (rule 3: this is a projection, not a source).
-        self.player.apply(&event);
+        let metadata_changed = self.player.apply(&event);
+
+        // Everything below is derived from the mirror, so it happens in one
+        // place rather than being sprinkled through the match above — miss one
+        // branch there and the bar silently goes stale.
+        if metadata_changed {
+            self.sync_artwork(sender);
+        }
+        self.sync_tick(sender);
+        self.push_snapshot();
     }
 
     fn icon(&self) -> &'static str {
