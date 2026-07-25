@@ -133,6 +133,11 @@ impl SimpleComponent for NowPlaying {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
                     add_css_class: "heading",
+                    // Track and album names are plain text, not markup. Without
+                    // this, a title containing `&` — "Blood, Sweat & 3 Years",
+                    // "Slade & Co" — fails to render and GTK warns on every
+                    // track change.
+                    set_use_markup: false,
                     #[watch]
                     set_label: if model.snap.title.is_empty() {
                         "Nothing playing"
@@ -145,6 +150,7 @@ impl SimpleComponent for NowPlaying {
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
                     add_css_class: "caption",
                     add_css_class: "dim-label",
+                    set_use_markup: false,
                     #[watch]
                     set_label: &model.subtitle(),
                     #[watch]

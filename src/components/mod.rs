@@ -6,3 +6,4 @@
 
 pub mod artwork;
 pub mod now_playing;
+pub mod track_row;

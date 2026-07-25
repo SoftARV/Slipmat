@@ -203,7 +203,23 @@ function wireEvents() {
 
 const commands = {
   async setQueue({ songs, startPosition = 0 }) {
-    await music.setQueue({ songs, startPosition, startPlaying: true })
+    // BOTH keys, deliberately. MusicKit v3's setQueue forwards only
+    // `startWith` to the queue descriptor:
+    //
+    //   startPlaying: e.startPlaying, startTime: e.startTime,
+    //   startWith: e.startWith, context: e.context, ...
+    //
+    // so a lone `startPosition` is silently dropped and playback always begins
+    // at index 0 — the queue is correct, just started in the wrong place.
+    // Deeper down the descriptor does accept either (`startWith ?? startPosition`),
+    // so sending both is harmless and survives whichever layer a future
+    // MusicKit build hands the options to.
+    await music.setQueue({
+      songs,
+      startWith: startPosition,
+      startPosition,
+      startPlaying: true,
+    })
   },
   play: () => music.play(),
   pause: () => music.pause(),
