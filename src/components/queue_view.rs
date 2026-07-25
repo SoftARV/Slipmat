@@ -305,12 +305,24 @@ impl Component for QueueView {
     ) {
         match msg {
             QueueViewInput::Sync { entries, playing } => {
-                // No scroll juggling here any more. That was needed when every
-                // row was a real widget and a rebuild destroyed them all;
-                // `ListView` keeps its position across a store edit on its own,
-                // and re-asserting an offset against an `upper` that is still
-                // being recomputed is what made the list jump about.
-                self.apply(entries, playing, sender.input_sender().clone());
+                // Moving the marker no longer touches the model, so the only
+                // thing left that can disturb the scroll is a real structural
+                // change — a removal, or a new queue. Capture the offset only
+                // for those, and only restore it when one actually happened.
+                //
+                // (An earlier version restored on every sync, including marker
+                // changes, and re-asserting an offset against an `upper` that
+                // was still settling is what made the list twitch.)
+                let scrolled_to = widgets.scroller.vadjustment().value();
+                let structural = self.apply(entries, playing, sender.input_sender().clone());
+
+                if structural && scrolled_to > 0.0 {
+                    let adj = widgets.scroller.vadjustment();
+                    gtk::glib::idle_add_local_once(move || {
+                        let max = (adj.upper() - adj.page_size()).max(0.0);
+                        adj.set_value(scrolled_to.min(max));
+                    });
+                }
             }
             QueueViewInput::ScrollToPlaying => {
                 if let Some(index) = self.playing_index() {
@@ -340,21 +352,21 @@ impl QueueView {
         self.shown.iter().position(|id| id == playing)
     }
 
-    /// Bring the rows in line with `entries`.
+    /// Bring the rows in line with `entries`. Returns whether the *structure*
+    /// changed — a removal or a rebuild — as opposed to just the marker.
     ///
-    /// Everything here is surgical, because `clear()` + refill resets the
-    /// scroll to the top — and the playing track changes on every song, so a
-    /// rebuild for that alone sent the queue back to the top once a minute
-    /// whether or not the user had touched it.
+    /// Only a structural change can move the scroll: the marker is applied to
+    /// widgets, never to the model.
     fn apply(
         &mut self,
         entries: Vec<QueueEntry>,
         playing: Option<String>,
         sender: relm4::Sender<QueueViewInput>,
-    ) {
+    ) -> bool {
         let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+        let structural = ids != self.shown;
 
-        if ids != self.shown {
+        if structural {
             if let Some(removed) = single_removal(&self.shown, &ids) {
                 tracing::debug!(index = removed, "queue: removing one row in place");
                 self.list.remove(removed as u32);
@@ -382,7 +394,7 @@ impl QueueView {
                 self.shown = ids;
                 self.count = self.shown.len();
                 self.playing = playing;
-                return;
+                return true;
             }
             self.shown = ids;
             self.count = self.shown.len();
@@ -403,6 +415,7 @@ impl QueueView {
             }
             self.playing = playing;
         }
+        structural
     }
 
     /// Repaint one row's marker. Touches a widget, never the model.

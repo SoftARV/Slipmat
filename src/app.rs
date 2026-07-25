@@ -24,8 +24,11 @@ use relm4::typed_view::list::TypedListView;
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
 use crate::components::queue_view::{QueueEntry, QueueView, QueueViewInput, QueueViewOutput};
-use crate::components::track_row::{LibraryItem, row_icon};
-use crate::components::{CurrentTrack, RowRegistry, current_track, row_registry};
+use crate::components::track_row::LibraryRowWidgets;
+use crate::components::track_row::{LibraryItem, apply_row_state};
+use crate::components::{
+    CurrentTrack, DeadTracks, RowRegistry, current_track, dead_tracks, row_registry,
+};
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
@@ -172,9 +175,11 @@ pub struct AppModel {
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
     /// without editing the model — see `RowRegistry`.
-    library_icons: RowRegistry<gtk::Image>,
+    library_icons: RowRegistry<LibraryRowWidgets>,
     /// Who is playing. Shared with every library row; see `CurrentTrack`.
     current_track: CurrentTrack,
+    /// Ids MusicKit refused, shared with every library row; see `DeadTracks`.
+    dead_rows: DeadTracks,
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
@@ -456,6 +461,7 @@ impl Component for AppModel {
             marked_playing: None,
             library_icons: row_registry(),
             current_track: current_track(),
+            dead_rows: dead_tracks(),
             all_tracks: Vec::new(),
             query: String::new(),
             loading_library: false,
@@ -640,11 +646,12 @@ impl AppModel {
         // current before they are built.
         let current = self.current_track.clone();
         *current.borrow_mut() = playing.clone();
+        let dead = self.dead_rows.clone();
         self.library.clear();
         self.library.extend_from_iter(
-            visible
-                .into_iter()
-                .map(|track| LibraryItem::new(track, registry.clone(), current.clone())),
+            visible.into_iter().map(|track| {
+                LibraryItem::new(track, registry.clone(), current.clone(), dead.clone())
+            }),
         );
     }
 
@@ -691,11 +698,9 @@ impl AppModel {
     /// row happens to be on screen right now.
     /// Repaint one row's marker. Touches a widget, never the model.
     fn set_row_playing(&self, catalog_id: &str, playing: bool) {
-        if let Some(icon) = self.library_icons.borrow().get(catalog_id) {
-            // Only a playable row can be the current track.
-            let (name, classes) = row_icon(playing, true);
-            icon.set_icon_name(Some(name));
-            icon.set_css_classes(classes);
+        if let Some(w) = self.library_icons.borrow().get(catalog_id) {
+            let playable = !self.dead_rows.borrow().contains(catalog_id);
+            apply_row_state(&w.icon, &w.root, playing, playable);
         }
     }
 

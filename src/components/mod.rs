@@ -37,3 +37,15 @@ pub type CurrentTrack = std::rc::Rc<std::cell::RefCell<Option<String>>>;
 pub fn current_track() -> CurrentTrack {
     std::rc::Rc::new(std::cell::RefCell::new(None))
 }
+
+/// Catalog ids MusicKit has refused, shared with every row.
+///
+/// Same reasoning as [`CurrentTrack`]: discovering a track is unplayable
+/// happens mid-session, and rebuilding the list to reflect it costs the scroll
+/// position. Rows consult this at `bind` instead of trusting a flag baked into
+/// their copy of the track.
+pub type DeadTracks = std::rc::Rc<std::cell::RefCell<std::collections::HashSet<String>>>;
+
+pub fn dead_tracks() -> DeadTracks {
+    std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new()))
+}

@@ -19,8 +19,31 @@ use relm4::prelude::*;
 use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
-use crate::components::{CurrentTrack, RowRegistry};
+use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
+
+/// The widgets a library row publishes while it is on screen.
+#[derive(Debug, Clone)]
+pub struct LibraryRowWidgets {
+    pub icon: gtk::Image,
+    pub root: gtk::Box,
+}
 use crate::music::types::Track;
+
+/// Paint a row. Shared between the bind path and the live-update path so the
+/// two cannot drift into showing different things for the same state.
+pub fn apply_row_state(icon: &gtk::Image, root: &gtk::Box, playing: bool, playable: bool) {
+    let (name, classes) = row_icon(playing, playable);
+    icon.set_icon_name(Some(name));
+    icon.set_css_classes(classes);
+    // An unplayable track is shown, not hidden — it is in the library, and
+    // pretending otherwise is more confusing than dimming it.
+    root.set_sensitive(playable);
+    root.set_tooltip_text(if playable {
+        None
+    } else {
+        Some("Not available to stream — this track is only in your library")
+    });
+}
 
 /// Icon name and CSS classes for a row's leading indicator.
 pub fn row_icon(playing: bool, playable: bool) -> (&'static str, &'static [&'static str]) {
@@ -43,11 +66,27 @@ pub struct LibraryItem {
     pub subtitle: String,
     /// Where this row publishes its icon while it is on screen, so the marker
     /// can be moved without touching the model. See `RowRegistry`.
-    pub registry: RowRegistry<gtk::Image>,
+    pub registry: RowRegistry<LibraryRowWidgets>,
+    /// Ids MusicKit has refused. Consulted at bind, so a track discovered to be
+    /// dead mid-session dims without the list being rebuilt.
+    pub dead: DeadTracks,
 }
 
 impl LibraryItem {
-    pub fn new(track: Track, registry: RowRegistry<gtk::Image>, current: CurrentTrack) -> Self {
+    /// Streamable *and* not on the refused list.
+    pub fn playable(&self) -> bool {
+        match &self.track.catalog_id {
+            Some(id) => !self.dead.borrow().contains(id),
+            None => false,
+        }
+    }
+
+    pub fn new(
+        track: Track,
+        registry: RowRegistry<LibraryRowWidgets>,
+        current: CurrentTrack,
+        dead: DeadTracks,
+    ) -> Self {
         let subtitle = match (track.artist.is_empty(), track.album.is_empty()) {
             (false, false) => format!("{} — {}", track.artist, track.album),
             (false, true) => track.artist.clone(),
@@ -59,6 +98,7 @@ impl LibraryItem {
             current,
             track,
             registry,
+            dead,
         }
     }
 }
@@ -139,27 +179,21 @@ impl RelmListItem for LibraryItem {
         widgets.subtitle.set_label(&self.subtitle);
         widgets.duration.set_label(&self.track.duration_label());
 
-        let playing = self.current.borrow().as_deref() == self.track.catalog_id.as_deref()
-            && self.track.catalog_id.is_some();
-        let (icon, classes) = row_icon(playing, self.track.playable());
-        widgets.icon.set_icon_name(Some(icon));
-        widgets.icon.set_css_classes(classes);
+        let playable = self.playable();
+        let playing = self.track.catalog_id.is_some()
+            && self.current.borrow().as_deref() == self.track.catalog_id.as_deref();
+        apply_row_state(&widgets.icon, root, playing, playable);
 
-        // Publish this row's icon while it is on screen.
+        // Publish this row's widgets while it is on screen.
         if let Some(id) = &self.track.catalog_id {
-            self.registry
-                .borrow_mut()
-                .insert(id.clone(), widgets.icon.clone());
+            self.registry.borrow_mut().insert(
+                id.clone(),
+                LibraryRowWidgets {
+                    icon: widgets.icon.clone(),
+                    root: root.clone(),
+                },
+            );
         }
-
-        // An unplayable track is shown, not hidden — it is in the library, and
-        // pretending otherwise is more confusing than dimming it.
-        root.set_sensitive(self.track.playable());
-        root.set_tooltip_text(if self.track.playable() {
-            None
-        } else {
-            Some("Not available to stream — this track is only in your library")
-        });
     }
 
     fn unbind(&mut self, _widgets: &mut Self::Widgets, _root: &mut Self::Root) {
@@ -173,7 +207,7 @@ impl RelmListItem for LibraryItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{current_track, row_registry};
+    use crate::components::{current_track, dead_tracks, row_registry};
     use crate::music::types::TrackId;
 
     fn track(artist: &str, album: &str) -> Track {
@@ -195,21 +229,40 @@ mod tests {
             LibraryItem::new(
                 track("Aitana", "Superestrella"),
                 row_registry(),
-                current_track()
+                current_track(),
+                dead_tracks()
             )
             .subtitle,
             "Aitana — Superestrella"
         );
         assert_eq!(
-            LibraryItem::new(track("Aitana", ""), row_registry(), current_track()).subtitle,
+            LibraryItem::new(
+                track("Aitana", ""),
+                row_registry(),
+                current_track(),
+                dead_tracks()
+            )
+            .subtitle,
             "Aitana"
         );
         assert_eq!(
-            LibraryItem::new(track("", "Album"), row_registry(), current_track()).subtitle,
+            LibraryItem::new(
+                track("", "Album"),
+                row_registry(),
+                current_track(),
+                dead_tracks()
+            )
+            .subtitle,
             "Album"
         );
         assert_eq!(
-            LibraryItem::new(track("", ""), row_registry(), current_track()).subtitle,
+            LibraryItem::new(
+                track("", ""),
+                row_registry(),
+                current_track(),
+                dead_tracks()
+            )
+            .subtitle,
             ""
         );
     }
