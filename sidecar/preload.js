@@ -95,9 +95,20 @@ function readTokens() {
   }
 }
 
+let lastTokens = ''
+
+/// Emit tokens only when they actually change.
+///
+/// main.js nudges this once a second for the first ten seconds (the developer
+/// token can land after MusicKit), and unconditional emitting turned that into
+/// ten identical log lines that buried everything else.
 function pushTokens() {
   const t = readTokens()
-  if (t) emit('tokens', t)
+  if (!t) return null
+  const fingerprint = JSON.stringify(t)
+  if (fingerprint === lastTokens) return t
+  lastTokens = fingerprint
+  emit('tokens', t)
   return t
 }
 
