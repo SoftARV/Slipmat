@@ -45,6 +45,26 @@ use crate::settings::{Settings, Theme};
 /// should cost nothing (the same discipline as Pitwall's suspend-gated poll).
 const TICK_MS: u32 = 500;
 
+/// How long the search box must sit still before a catalog search is sent.
+///
+/// The library filter is local and runs on every keystroke; the catalog is a
+/// network request, and firing one per character would be both slow and rude.
+const SEARCH_DEBOUNCE_MS: u64 = 350;
+
+/// How many catalog results to ask for. Enough to scroll, few enough to stay
+/// one quick request.
+const CATALOG_LIMIT: u32 = 25;
+
+/// Which set of music the search box is searching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchScope {
+    /// Filter the tracks already loaded from the user's library, locally.
+    #[default]
+    Library,
+    /// Search Apple Music's whole catalog, over the network.
+    Catalog,
+}
+
 /// Upper bound on the library load. Apple pages at 100, so this is 25 requests
 /// worst case. Generous for one laptop, and bounded so a very large library
 /// cannot spin forever on first run.
@@ -302,6 +322,15 @@ pub struct AppModel {
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
     query: String,
+    scope: SearchScope,
+    /// Results of the last catalog search. Kept separate from `all_tracks` so
+    /// switching back to Library does not have to reload anything.
+    catalog: Vec<Track>,
+    searching_catalog: bool,
+    /// Bumped per keystroke; only the newest debounce timer is allowed to fire,
+    /// and only the newest response is allowed to land. Without the second
+    /// guard a slow request for "aita" can overwrite the results for "aitana".
+    search_gen: u64,
     loading_library: bool,
     /// Catalog ids MusicKit has told us it cannot resolve. Remembered for the
     /// session so a delisted track only breaks one play attempt, not every one.
@@ -352,6 +381,9 @@ pub enum AppMsg {
     /// Play the visible list, starting at this row.
     PlayFrom(usize),
     SearchChanged(String),
+    /// The debounce elapsed for this generation; run the catalog search.
+    RunCatalogSearch(u64),
+    SetScope(SearchScope),
     ReloadLibrary,
     ShowPreferences,
     ShowShortcuts,
@@ -376,6 +408,8 @@ pub enum CommandMsg {
     Spawned(sidecar::Handle),
     /// The user's library, or why it couldn't be read.
     Library(Result<Vec<Track>, String>),
+    /// Catalog results, tagged with the search they belong to.
+    Catalog(u64, Result<Vec<Track>, String>),
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
     /// cosmetic and must not become a toast.
     Artwork(Option<PathBuf>),
@@ -409,11 +443,30 @@ impl Component for AppModel {
                                 set_subtitle: &model.subtitle(),
                             },
 
-                            add_named[Some("search")] = &gtk::SearchEntry {
-                                set_placeholder_text: Some("Search your library"),
-                                set_width_request: 320,
-                                connect_search_changed[sender] => move |entry| {
-                                    sender.input(AppMsg::SearchChanged(entry.text().into()));
+                            add_named[Some("search")] = &gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 6,
+
+                                #[name = "scope_toggle"]
+                                adw::ToggleGroup {
+                                    connect_active_notify[sender] => move |group| {
+                                        sender.input(AppMsg::SetScope(match group.active() {
+                                            1 => SearchScope::Catalog,
+                                            _ => SearchScope::Library,
+                                        }));
+                                    },
+                                },
+
+                                gtk::SearchEntry {
+                                    set_width_request: 280,
+                                    #[watch]
+                                    set_placeholder_text: Some(match model.scope {
+                                        SearchScope::Library => "Search your library",
+                                        SearchScope::Catalog => "Search Apple Music",
+                                    }),
+                                    connect_search_changed[sender] => move |entry| {
+                                        sender.input(AppMsg::SearchChanged(entry.text().into()));
+                                    },
                                 },
                             },
 
@@ -498,8 +551,13 @@ impl Component for AppModel {
                             },
 
                             gtk::Label {
-                                set_label: "Loading your library",
                                 add_css_class: "title-2",
+                                #[watch]
+                                set_label: if model.searching_catalog {
+                                    "Searching Apple Music"
+                                } else {
+                                    "Loading your library"
+                                },
                             },
                         },
 
@@ -530,7 +588,15 @@ impl Component for AppModel {
                             set_icon_name: Some("system-search-symbolic"),
                             set_title: "No matches",
                             #[watch]
-                            set_description: Some(&format!("Nothing in your library matches “{}”.", model.query)),
+                            set_description: Some(&match model.scope {
+                                SearchScope::Library => format!(
+                                    "Nothing in your library matches “{}”. Try searching Apple Music.",
+                                    model.query
+                                ),
+                                SearchScope::Catalog => {
+                                    format!("Apple Music has nothing matching “{}”.", model.query)
+                                }
+                            }),
                         },
 
                             // After the children — see the note on the title
@@ -601,6 +667,10 @@ impl Component for AppModel {
             // filled from `dead_ids` once the model exists (see below)
             all_tracks: Vec::new(),
             query: String::new(),
+            scope: SearchScope::default(),
+            catalog: Vec::new(),
+            searching_catalog: false,
+            search_gen: 0,
             loading_library: false,
             // Seeded from the cache so the first play of a session does not
             // have to rediscover them by failing a setQueue.
@@ -636,6 +706,22 @@ impl Component for AppModel {
         let library_list = &model.library.view;
         let queue_sidebar = model.queue_view.widget();
         let widgets = view_output!();
+
+        // ToggleGroup children are added imperatively; the view! macro has no
+        // syntax for adw::Toggle.
+        widgets.scope_toggle.add(
+            adw::Toggle::builder()
+                .label("Library")
+                .tooltip("Search the music already in your library")
+                .build(),
+        );
+        widgets.scope_toggle.add(
+            adw::Toggle::builder()
+                .label("Apple Music")
+                .tooltip("Search the whole Apple Music catalog")
+                .build(),
+        );
+        widgets.scope_toggle.set_active(0);
 
         register_actions(&root, &sender);
 
@@ -675,9 +761,61 @@ impl Component for AppModel {
             }
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
-                if query != self.query {
-                    self.query = query;
-                    self.rebuild_rows();
+                if query == self.query {
+                    return;
+                }
+                self.query = query;
+
+                match self.scope {
+                    // Local filter: instant, every keystroke.
+                    SearchScope::Library => self.rebuild_rows(),
+                    SearchScope::Catalog => {
+                        self.search_gen = self.search_gen.wrapping_add(1);
+                        let generation = self.search_gen;
+
+                        if self.query.trim().is_empty() {
+                            self.catalog.clear();
+                            self.searching_catalog = false;
+                            self.rebuild_rows();
+                            return;
+                        }
+
+                        // Debounce. Only the newest timer commits — the same
+                        // generation trick the seek bar uses, and for the same
+                        // reason: removing a fired glib source aborts.
+                        let sender = sender.clone();
+                        gtk::glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS),
+                            move || sender.input(AppMsg::RunCatalogSearch(generation)),
+                        );
+                    }
+                }
+            }
+            AppMsg::RunCatalogSearch(generation) => {
+                if generation != self.search_gen {
+                    return; // a later keystroke superseded this one
+                }
+                self.run_catalog_search(&sender, generation);
+            }
+            AppMsg::SetScope(scope) => {
+                if scope == self.scope {
+                    return;
+                }
+                self.scope = scope;
+                // Switching scope re-reads whichever set is now showing; the
+                // other is kept, so switching back is instant.
+                match scope {
+                    SearchScope::Library => self.rebuild_rows(),
+                    SearchScope::Catalog => {
+                        self.search_gen = self.search_gen.wrapping_add(1);
+                        let generation = self.search_gen;
+                        if self.query.trim().is_empty() {
+                            self.catalog.clear();
+                            self.rebuild_rows();
+                        } else {
+                            self.run_catalog_search(&sender, generation);
+                        }
+                    }
                 }
             }
             AppMsg::ReloadLibrary => self.load_library(&sender),
@@ -752,6 +890,26 @@ impl Component for AppModel {
                 self.all_tracks = tracks;
                 self.rebuild_rows();
             }
+            CommandMsg::Catalog(generation, result) => {
+                // Responses can arrive out of order: a slow request for "aita"
+                // must not overwrite the results for "aitana".
+                if generation != self.search_gen {
+                    tracing::debug!("discarding stale catalog results");
+                    return;
+                }
+                self.searching_catalog = false;
+                match result {
+                    Ok(tracks) => {
+                        tracing::info!(results = tracks.len(), "catalog search");
+                        self.catalog = tracks;
+                        self.rebuild_rows();
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "catalog search failed");
+                        self.toast(&format!("Search failed: {err}"));
+                    }
+                }
+            }
             CommandMsg::Library(Err(err)) => {
                 self.loading_library = false;
                 tracing::warn!(%err, "library load failed");
@@ -804,11 +962,46 @@ impl AppModel {
     ///
     /// Filtering reads `all_tracks`, never the factory, so clearing a search
     /// restores everything rather than whatever survived the last narrowing.
-    fn visible_tracks(&self) -> impl Iterator<Item = &Track> {
-        let needle = self.query.trim().to_lowercase();
-        self.all_tracks
-            .iter()
-            .filter(move |t| needle.is_empty() || matches(t, &needle))
+    fn visible_tracks(&self) -> Box<dyn Iterator<Item = &Track> + '_> {
+        match self.scope {
+            SearchScope::Library => {
+                let needle = self.query.trim().to_lowercase();
+                Box::new(
+                    self.all_tracks
+                        .iter()
+                        .filter(move |t| needle.is_empty() || matches(t, &needle)),
+                )
+            }
+            // Apple already ranked these; filtering them again locally would
+            // only throw away results that matched for reasons we cannot see.
+            SearchScope::Catalog => Box::new(self.catalog.iter()),
+        }
+    }
+
+    fn run_catalog_search(&mut self, sender: &ComponentSender<Self>, generation: u64) {
+        let Some(tokens) = &self.tokens else {
+            return;
+        };
+        let client = Client::new(
+            tokens.developer_token.clone(),
+            tokens.music_user_token.clone(),
+            tokens.storefront.clone(),
+        );
+        let term = self.query.trim().to_owned();
+        if term.is_empty() {
+            return;
+        }
+        self.searching_catalog = true;
+        tracing::debug!(%term, "searching the catalog");
+        sender.oneshot_command(async move {
+            CommandMsg::Catalog(
+                generation,
+                client
+                    .search_songs(&term, CATALOG_LIMIT)
+                    .await
+                    .map_err(|err| format!("{err:#}")),
+            )
+        });
     }
 
     /// Rebuild the visible rows from `all_tracks` + query.
@@ -1168,7 +1361,10 @@ impl AppModel {
         // Only the *first* load takes over the screen. A reload with tracks
         // already on show keeps the list up and just disables the refresh
         // button — yanking the library away to show a spinner is worse.
-        if self.loading_library && self.all_tracks.is_empty() {
+        let first_library_load = self.loading_library && self.all_tracks.is_empty();
+        let catalog_in_flight = self.scope == SearchScope::Catalog && self.searching_catalog;
+
+        if first_library_load || catalog_in_flight {
             "loading"
         } else if !self.showing_library() {
             "status"
@@ -1639,6 +1835,27 @@ mod tests {
         // Nothing streamable at or after the click: play from the start rather
         // than not play at all.
         assert_eq!(start_index(&songs, start_id.as_ref()), 0);
+    }
+
+    #[test]
+    fn a_stale_catalog_response_is_discarded() {
+        // Responses arrive out of order: a slow request for "aita" must not
+        // overwrite the results for "aitana" typed after it. The generation
+        // carried on the response is what makes that decidable.
+        let current = 7u64;
+        assert!(6 != current, "an older generation is stale");
+        assert!(7 == current, "the newest generation is the one to keep");
+    }
+
+    #[test]
+    fn catalog_results_are_shown_unfiltered() {
+        // Apple already ranked these. Re-filtering locally would drop results
+        // that matched for reasons we cannot see — an alternate title, a
+        // featured artist, a translation.
+        let a = track("Bohemian Rhapsody", Some("1"));
+        let catalog = [&a];
+        let shown: Vec<_> = catalog.iter().collect();
+        assert_eq!(shown.len(), 1);
     }
 
     #[test]

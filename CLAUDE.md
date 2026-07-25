@@ -443,7 +443,9 @@ Playback engine first. One vertical slice, one PR each.
   click-to-play enqueuing the whole visible list. Verified against a real
   library: 539 tracks over 6 pages, 4 correctly detected as unplayable.
   Playlists and albums are still to come.
-- **M6 — Catalog.** Search, album and artist pages.
+- 🚧 **M6 — Catalog.** Search across the whole Apple Music catalog, with a
+  Library/Apple Music toggle in the header. Album and artist pages are still
+  to come — they need an `adw::NavigationView` the app does not have yet.
 - ✅ **M7 — Polish.** Preferences (theme, notifications), keyboard shortcuts,
   About, the app icon, `.desktop`, `make install`, and opt-in track-change
   notifications.
