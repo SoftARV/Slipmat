@@ -10,6 +10,7 @@
 //! It never talks to the sidecar directly.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use relm4::adw::prelude::*;
 use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent, gtk};
@@ -28,11 +29,16 @@ const SCRUB_COMMIT_MS: u64 = 250;
 /// we believe the seek landed and start trusting its numbers again.
 const SEEK_SETTLE_MS: u64 = 1_500;
 
-/// How many snapshots to keep holding a seek target before giving up on it.
-/// At the app's 500ms tick that is a few seconds — enough for a DRM re-buffer,
-/// short enough that a seek which silently failed doesn't freeze the readout
-/// on a position playback never reached.
-const SEEK_SETTLE_TRIES: u8 = 12;
+/// How long to keep holding a seek target before giving up on it.
+///
+/// Wall-clock, deliberately. This was a snapshot *count* first, which was
+/// wrong: `Sync` fires on every sidecar event plus the 500ms repaint tick, so
+/// during playback a dozen snapshots elapse in two or three seconds — less than
+/// a backward seek into unbuffered audio takes. The hold expired mid-buffer,
+/// the bar fell back to the old position, and the seek then landed a moment
+/// later. Buffering happens in seconds, so the budget has to be measured in
+/// seconds.
+const SEEK_HOLD: Duration = Duration::from_secs(10);
 
 /// Everything the bar needs, flattened out of `PlayerState` at the boundary.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -63,11 +69,11 @@ pub struct NowPlaying {
     /// earlier timers without juggling `SourceId`s (removing an already-fired
     /// source aborts the process).
     scrub_gen: u64,
-    /// A seek we have sent but whose effect hasn't come back yet, plus how many
-    /// more snapshots we'll hold it for. Without this the slider snaps back to
-    /// the old position for the moment between committing a seek and the
-    /// sidecar reporting the new one.
-    pending_seek: Option<(u64, u8)>,
+    /// A seek we have sent but whose effect hasn't come back yet, and the
+    /// wall-clock deadline for believing in it. Without this the slider snaps
+    /// back to the old position between committing a seek and the sidecar
+    /// reporting the new one.
+    pending_seek: Option<(u64, Instant)>,
 }
 
 #[derive(Debug)]
@@ -304,7 +310,7 @@ impl SimpleComponent for NowPlaying {
                     // Hold the target on screen until the sidecar's own
                     // position reports reach it, so the handle doesn't bounce
                     // back to where playback still is.
-                    self.pending_seek = Some((target, SEEK_SETTLE_TRIES));
+                    self.pending_seek = Some((target, Instant::now() + SEEK_HOLD));
                     let _ = sender.output(NowPlayingOutput::Seek(target));
                 }
             }
@@ -363,27 +369,38 @@ impl NowPlaying {
     /// Precedence: the user's drag beats a pending seek, which beats the
     /// sidecar.
     fn settle_position(&mut self, held: u64, incoming: u64) -> u64 {
+        self.settle_position_at(held, incoming, Instant::now())
+    }
+
+    /// `settle_position` with the clock injected, so the hold can be tested
+    /// without sleeping.
+    fn settle_position_at(&mut self, held: u64, incoming: u64, now: Instant) -> u64 {
         if self.scrubbing {
             return held;
         }
-        match self.pending_seek {
-            Some((target, tries)) => {
-                if incoming.abs_diff(target) <= SEEK_SETTLE_MS {
-                    // The sidecar got there; hand control back.
-                    self.pending_seek = None;
-                    incoming
-                } else if tries == 0 {
-                    // Give up rather than show a position playback never
-                    // reached — a silently failed seek must not freeze the bar.
-                    self.pending_seek = None;
-                    incoming
-                } else {
-                    self.pending_seek = Some((target, tries - 1));
-                    target
-                }
-            }
-            None => incoming,
+        let Some((target, deadline)) = self.pending_seek else {
+            return incoming;
+        };
+
+        if incoming.abs_diff(target) <= SEEK_SETTLE_MS {
+            // The sidecar got there; hand control back.
+            self.pending_seek = None;
+            return incoming;
         }
+        if now >= deadline {
+            // Give up rather than show a position playback never reached — a
+            // silently failed seek must not freeze the readout.
+            self.pending_seek = None;
+            return incoming;
+        }
+
+        // Still working towards audio (loading, waiting, stalled). Buffering is
+        // exactly the case this hold exists for, so don't let it run the clock
+        // down — a slow seek must not be mistaken for a failed one.
+        if self.snap.busy {
+            self.pending_seek = Some((target, now + SEEK_HOLD));
+        }
+        target
     }
 
     /// Whether a fired debounce timer is the one we're still waiting for.
@@ -472,30 +489,77 @@ mod tests {
 
     #[test]
     fn a_committed_seek_is_held_until_the_sidecar_catches_up() {
+        let now = Instant::now();
         let mut m = model(Snapshot::default());
-        m.pending_seek = Some((150_000, SEEK_SETTLE_TRIES));
+        m.pending_seek = Some((150_000, now + SEEK_HOLD));
 
         // Still reporting the old position: keep showing the target, no bounce.
-        assert_eq!(m.settle_position(150_000, 10_000), 150_000);
+        assert_eq!(m.settle_position_at(150_000, 10_000, now), 150_000);
         assert!(m.pending_seek.is_some());
 
         // Now it has arrived — hand control back to the sidecar.
-        assert_eq!(m.settle_position(150_000, 150_400), 150_400);
+        assert_eq!(m.settle_position_at(150_000, 150_400, now), 150_400);
         assert!(
             m.pending_seek.is_none(),
             "must stop overriding once settled"
         );
     }
 
+    /// The reported bug: seeking back into audio that had not buffered yet made
+    /// the bar fall back to the old position, then jump forward once the data
+    /// arrived. The hold used to be a count of snapshots, and `Sync` fires
+    /// several times a second while playing, so the budget expired mid-buffer.
+    #[test]
+    fn many_snapshots_do_not_exhaust_the_hold_a_slow_seek_needs() {
+        let now = Instant::now();
+        let mut m = model(Snapshot::default());
+        m.pending_seek = Some((150_000, now + SEEK_HOLD));
+
+        // Fifty snapshots inside one second — easily reached during playback.
+        for i in 0..50 {
+            let t = now + Duration::from_millis(i * 20);
+            assert_eq!(
+                m.settle_position_at(0, 10_000, t),
+                150_000,
+                "snapshot {i} must not shorten a wall-clock hold"
+            );
+        }
+        assert!(m.pending_seek.is_some());
+    }
+
+    #[test]
+    fn buffering_refreshes_the_hold_rather_than_running_it_down() {
+        let now = Instant::now();
+        let mut m = model(Snapshot {
+            busy: true,
+            ..Default::default()
+        });
+        m.pending_seek = Some((150_000, now + Duration::from_millis(10)));
+
+        // Nearly expired, but the player is still working towards audio —
+        // which is exactly the case the hold exists for.
+        assert_eq!(m.settle_position_at(0, 10_000, now), 150_000);
+        let (_, deadline) = m.pending_seek.expect("hold must survive buffering");
+        assert!(deadline > now + SEEK_HOLD - Duration::from_secs(1));
+    }
+
     #[test]
     fn a_seek_that_never_lands_gives_up_rather_than_freezing() {
+        let now = Instant::now();
         let mut m = model(Snapshot::default());
-        m.pending_seek = Some((150_000, 1));
+        m.pending_seek = Some((150_000, now + Duration::from_secs(1)));
 
-        assert_eq!(m.settle_position(0, 10_000), 150_000, "one try left");
-        // Out of tries: accept reality instead of showing a position playback
-        // never reached.
-        assert_eq!(m.settle_position(0, 10_500), 10_500);
+        assert_eq!(
+            m.settle_position_at(0, 10_000, now),
+            150_000,
+            "still inside the hold"
+        );
+        // Past the deadline: accept reality rather than showing a position
+        // playback never reached.
+        assert_eq!(
+            m.settle_position_at(0, 10_500, now + Duration::from_secs(2)),
+            10_500
+        );
         assert!(m.pending_seek.is_none());
     }
 
