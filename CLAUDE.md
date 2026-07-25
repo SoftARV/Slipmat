@@ -453,6 +453,12 @@ cross-platform. Downloads and anything decrypting are not "later", they are
 rule 1. When a change drifts, **name the cost and the direction** so it's a
 conscious choice — then build it if it genuinely helps on this one machine.
 
+## Known issues
+
+- **Removing a queue track scrolls the list to the top** (#6). Four approaches
+  tried and ruled out; the issue records them so they are not retried. Playing
+  and jumping are unaffected, and the library list no longer does it.
+
 ## Commands
 
 ```bash
