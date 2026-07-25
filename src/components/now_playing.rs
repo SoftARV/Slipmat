@@ -24,6 +24,16 @@ use crate::music::types::format_duration;
 /// because the elapsed label moves with the handle straight away.
 const SCRUB_COMMIT_MS: u64 = 250;
 
+/// How close the sidecar's reported position must get to a seek target before
+/// we believe the seek landed and start trusting its numbers again.
+const SEEK_SETTLE_MS: u64 = 1_500;
+
+/// How many snapshots to keep holding a seek target before giving up on it.
+/// At the app's 500ms tick that is a few seconds — enough for a DRM re-buffer,
+/// short enough that a seek which silently failed doesn't freeze the readout
+/// on a position playback never reached.
+const SEEK_SETTLE_TRIES: u8 = 12;
+
 /// Everything the bar needs, flattened out of `PlayerState` at the boundary.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Snapshot {
@@ -53,6 +63,11 @@ pub struct NowPlaying {
     /// earlier timers without juggling `SourceId`s (removing an already-fired
     /// source aborts the process).
     scrub_gen: u64,
+    /// A seek we have sent but whose effect hasn't come back yet, plus how many
+    /// more snapshots we'll hold it for. Without this the slider snaps back to
+    /// the old position for the moment between committing a seek and the
+    /// sidecar reporting the new one.
+    pending_seek: Option<(u64, u8)>,
 }
 
 #[derive(Debug)]
@@ -247,6 +262,7 @@ impl SimpleComponent for NowPlaying {
             volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
+            pending_seek: None,
         };
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -254,7 +270,15 @@ impl SimpleComponent for NowPlaying {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            NowPlayingInput::Sync(snap) => self.snap = *snap,
+            NowPlayingInput::Sync(snap) => {
+                let held = self.snap.position_ms;
+                let incoming = snap.position_ms;
+                self.snap = *snap;
+                // Everything except the position comes straight from the
+                // sidecar. The position is ours to defend while the user is
+                // driving it — see `settle_position`.
+                self.snap.position_ms = self.settle_position(held, incoming);
+            }
             NowPlayingInput::ArtworkReady(path) => self.artwork = path,
             NowPlayingInput::ScrubMoved(fraction) => {
                 let Some(target) = self.fraction_to_ms(fraction) else {
@@ -276,7 +300,12 @@ impl SimpleComponent for NowPlaying {
             NowPlayingInput::ScrubCommit(generation) => {
                 if self.should_commit(generation) {
                     self.scrubbing = false;
-                    let _ = sender.output(NowPlayingOutput::Seek(self.snap.position_ms));
+                    let target = self.snap.position_ms;
+                    // Hold the target on screen until the sidecar's own
+                    // position reports reach it, so the handle doesn't bounce
+                    // back to where playback still is.
+                    self.pending_seek = Some((target, SEEK_SETTLE_TRIES));
+                    let _ = sender.output(NowPlayingOutput::Seek(target));
                 }
             }
             NowPlayingInput::VolumeChanged(v) => {
@@ -321,6 +350,42 @@ impl SimpleComponent for NowPlaying {
 }
 
 impl NowPlaying {
+    /// Decide which position to display when a snapshot arrives.
+    ///
+    /// This is the fix for the bug where a seek during playback jumped back to
+    /// where the track already was. `Sync` replaces the whole snapshot, so
+    /// before this the sidecar's position — which streams in constantly while
+    /// playing — overwrote the position the user was dragging to. By the time
+    /// the debounce committed, it seeked to the *current* position instead of
+    /// the chosen one. Pausing first happened to work only because a paused
+    /// player sends no position events, so the dragged value survived.
+    ///
+    /// Precedence: the user's drag beats a pending seek, which beats the
+    /// sidecar.
+    fn settle_position(&mut self, held: u64, incoming: u64) -> u64 {
+        if self.scrubbing {
+            return held;
+        }
+        match self.pending_seek {
+            Some((target, tries)) => {
+                if incoming.abs_diff(target) <= SEEK_SETTLE_MS {
+                    // The sidecar got there; hand control back.
+                    self.pending_seek = None;
+                    incoming
+                } else if tries == 0 {
+                    // Give up rather than show a position playback never
+                    // reached — a silently failed seek must not freeze the bar.
+                    self.pending_seek = None;
+                    incoming
+                } else {
+                    self.pending_seek = Some((target, tries - 1));
+                    target
+                }
+            }
+            None => incoming,
+        }
+    }
+
     /// Whether a fired debounce timer is the one we're still waiting for.
     ///
     /// Anything older is a leftover from earlier in the same drag; committing
@@ -365,6 +430,7 @@ mod tests {
             volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
+            pending_seek: None,
         }
     }
 
@@ -382,6 +448,61 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(m.progress(), 1.0);
+    }
+
+    /// The reported bug: seeking while playing jumped back to where the track
+    /// already was, and only worked if you paused first. A playing sidecar
+    /// streams position events, and each one used to overwrite the position the
+    /// user was dragging to — so the commit seeked to the current position
+    /// instead of the chosen one. Paused, no events arrive, so it "worked".
+    #[test]
+    fn a_position_update_mid_drag_does_not_steal_the_dragged_position() {
+        let mut m = model(Snapshot {
+            duration_ms: 200_000,
+            ..Default::default()
+        });
+        m.snap.position_ms = 150_000; // where the user dragged to
+        m.scrubbing = true;
+
+        // The sidecar reports playback still down at 10s.
+        let shown = m.settle_position(150_000, 10_000);
+
+        assert_eq!(shown, 150_000, "the drag must win while it is happening");
+    }
+
+    #[test]
+    fn a_committed_seek_is_held_until_the_sidecar_catches_up() {
+        let mut m = model(Snapshot::default());
+        m.pending_seek = Some((150_000, SEEK_SETTLE_TRIES));
+
+        // Still reporting the old position: keep showing the target, no bounce.
+        assert_eq!(m.settle_position(150_000, 10_000), 150_000);
+        assert!(m.pending_seek.is_some());
+
+        // Now it has arrived — hand control back to the sidecar.
+        assert_eq!(m.settle_position(150_000, 150_400), 150_400);
+        assert!(
+            m.pending_seek.is_none(),
+            "must stop overriding once settled"
+        );
+    }
+
+    #[test]
+    fn a_seek_that_never_lands_gives_up_rather_than_freezing() {
+        let mut m = model(Snapshot::default());
+        m.pending_seek = Some((150_000, 1));
+
+        assert_eq!(m.settle_position(0, 10_000), 150_000, "one try left");
+        // Out of tries: accept reality instead of showing a position playback
+        // never reached.
+        assert_eq!(m.settle_position(0, 10_500), 10_500);
+        assert!(m.pending_seek.is_none());
+    }
+
+    #[test]
+    fn without_a_drag_or_pending_seek_the_sidecar_wins() {
+        let mut m = model(Snapshot::default());
+        assert_eq!(m.settle_position(999, 42_000), 42_000);
     }
 
     #[test]
