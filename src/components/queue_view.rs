@@ -95,6 +95,12 @@ impl FactoryComponent for QueueRow {
                 set_valign: gtk::Align::Center,
                 add_css_class: "flat",
                 add_css_class: "circular",
+                // Do NOT take focus on click. Clicking focuses the button, and
+                // removing the row then destroys the focused widget — GTK moves
+                // focus to the first focusable row and the ScrolledWindow
+                // scrolls to reveal it, which is why removing a track jumped
+                // the list to the top. Still reachable by Tab.
+                set_focus_on_click: false,
                 // Removing the track you are listening to is a stop dressed up
                 // as an edit; skip is the button for that.
                 #[watch]
@@ -241,13 +247,16 @@ impl Component for QueueView {
                 // Where the user is looking, captured before anything changes.
                 let scrolled_to = widgets.scroller.vadjustment().value();
 
-                if self.apply(entries) == Applied::Rebuilt && scrolled_to > 0.0 {
-                    // A rebuild recreates every row and drops the scroll to
-                    // zero. The fast path avoids that, but it cannot cover
-                    // every shape of change MusicKit sends, so put the user
-                    // back where they were rather than assuming it never
-                    // happens. Deferred: the new rows have no height until
-                    // they have been allocated, so `upper` is still stale here.
+                if self.apply(entries) != Applied::Unchanged && scrolled_to > 0.0 {
+                    // Restore after ANY change, not just a rebuild. Removing a
+                    // row moved the scroll too — via focus, not via rebuilding
+                    // — and guessing which mutations disturb it has already
+                    // been wrong once. Re-asserting the offset the user was at
+                    // is a no-op when nothing moved it.
+                    //
+                    // Deferred, because rows have no height until they have
+                    // been allocated and the adjustment's `upper` is stale
+                    // until then.
                     let adj = widgets.scroller.vadjustment();
                     gtk::glib::idle_add_local_once(move || {
                         let max = (adj.upper() - adj.page_size()).max(0.0);
