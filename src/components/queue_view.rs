@@ -3,11 +3,16 @@
 
 //! What's playing next — MusicKit's queue, shown natively.
 //!
-//! The indices here are **MusicKit's own**, straight from the queue events, not
-//! positions we derived. That distinction is the whole lesson of M5: our list
-//! and MusicKit's queue are not the same list, and anything computed against
-//! ours is wrong the moment MusicKit drops or collapses an item. Jumping and
-//! removing therefore address the queue as MusicKit reports it.
+//! Two rules here, both learned the hard way in M5 and both re-learned in the
+//! first version of this file:
+//!
+//! 1. **Address MusicKit's queue, never a position we derived.** Its queue and
+//!    our library list are not the same list.
+//! 2. **Identify a track by its id, not its index.** An index is only valid
+//!    until the queue changes, and the queue changes under you — removing an
+//!    item shifts everything below it. The row that is playing is the row whose
+//!    *id* matches, and the row you click is whatever it has *become*, which is
+//!    what `DynamicIndex` is for.
 
 use relm4::adw::prelude::*;
 use relm4::factory::{FactoryComponent, FactoryVecDeque};
@@ -19,10 +24,11 @@ use crate::music::types::format_duration;
 /// One queue entry, flattened from the sidecar's view of MusicKit's queue.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueueEntry {
+    /// MusicKit's id for this item — the only stable handle on a row.
+    pub id: String,
     pub title: String,
     pub artist: String,
     pub duration_ms: u64,
-    pub playing: bool,
 }
 
 // --- rows -------------------------------------------------------------------
@@ -30,7 +36,17 @@ pub struct QueueEntry {
 #[derive(Debug)]
 pub struct QueueRow {
     entry: QueueEntry,
-    index: usize,
+    /// Kept current by relm4 as rows are added and removed, unlike a `usize`
+    /// captured at construction — which, after a removal, points at whatever
+    /// slid up into its place.
+    index: DynamicIndex,
+    playing: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum QueueRowInput {
+    /// The id of the track MusicKit is currently on.
+    NowPlaying(Option<String>),
 }
 
 #[derive(Debug)]
@@ -41,8 +57,8 @@ pub enum QueueRowOutput {
 
 #[relm4::factory(pub)]
 impl FactoryComponent for QueueRow {
-    type Init = (usize, QueueEntry);
-    type Input = ();
+    type Init = QueueEntry;
+    type Input = QueueRowInput;
     type Output = QueueRowOutput;
     type CommandOutput = ();
     type ParentWidget = gtk::ListBox;
@@ -57,16 +73,14 @@ impl FactoryComponent for QueueRow {
 
             add_prefix = &gtk::Image {
                 set_pixel_size: 16,
-                set_icon_name: Some(if self.entry.playing {
+                #[watch]
+                set_icon_name: Some(if self.playing {
                     "media-playback-start-symbolic"
                 } else {
                     "audio-x-generic-symbolic"
                 }),
-                set_css_classes: if self.entry.playing {
-                    &["accent"]
-                } else {
-                    &["dim-label"]
-                },
+                #[watch]
+                set_css_classes: if self.playing { &["accent"] } else { &["dim-label"] },
             },
 
             add_suffix = &gtk::Label {
@@ -83,22 +97,32 @@ impl FactoryComponent for QueueRow {
                 add_css_class: "circular",
                 // Removing the track you are listening to is a stop dressed up
                 // as an edit; skip is the button for that.
-                set_sensitive: !self.entry.playing,
-                connect_clicked[sender, index = self.index] => move |_| {
-                    sender.output(QueueRowOutput::Remove(index)).ok();
+                #[watch]
+                set_sensitive: !self.playing,
+                connect_clicked[sender, index = self.index.clone()] => move |_| {
+                    sender.output(QueueRowOutput::Remove(index.current_index())).ok();
                 },
             },
 
-            connect_activated[sender, index = self.index] => move |_| {
-                sender.output(QueueRowOutput::Jump(index)).ok();
+            connect_activated[sender, index = self.index.clone()] => move |_| {
+                sender.output(QueueRowOutput::Jump(index.current_index())).ok();
             },
         }
     }
 
-    fn init_model(init: Self::Init, _i: &DynamicIndex, _s: FactorySender<Self>) -> Self {
+    fn init_model(entry: Self::Init, index: &DynamicIndex, _s: FactorySender<Self>) -> Self {
         Self {
-            index: init.0,
-            entry: init.1,
+            entry,
+            index: index.clone(),
+            playing: false,
+        }
+    }
+
+    fn update(&mut self, msg: Self::Input, _sender: FactorySender<Self>) {
+        match msg {
+            QueueRowInput::NowPlaying(id) => {
+                self.playing = id.is_some_and(|id| id == self.entry.id);
+            }
         }
     }
 }
@@ -108,14 +132,21 @@ impl FactoryComponent for QueueRow {
 pub struct QueueView {
     rows: FactoryVecDeque<QueueRow>,
     count: usize,
-    /// What we last rendered, so a position tick or an unrelated event does not
-    /// rebuild a list the user might be scrolling.
-    last: Vec<QueueEntry>,
+    /// Ids of what is on screen, so a change can be applied as an edit rather
+    /// than a rebuild.
+    shown: Vec<String>,
+    playing: Option<String>,
 }
 
 #[derive(Debug)]
 pub enum QueueViewInput {
-    Sync(Vec<QueueEntry>),
+    Sync {
+        entries: Vec<QueueEntry>,
+        playing: Option<String>,
+    },
+    /// Bring the current track into view — done when the dialog opens, not on
+    /// every update, or it would fight the user scrolling.
+    ScrollToPlaying,
     Jump(usize),
     Remove(usize),
 }
@@ -156,6 +187,7 @@ impl Component for QueueView {
                 },
 
                 #[wrap(Some)]
+                #[name = "scroller"]
                 set_content = &gtk::ScrolledWindow {
                     set_vexpand: true,
 
@@ -189,30 +221,52 @@ impl Component for QueueView {
         let model = QueueView {
             rows,
             count: 0,
-            last: Vec::new(),
+            shown: Vec::new(),
+            playing: None,
         };
         let queue_list = model.rows.widget();
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
+    fn update_with_view(
+        &mut self,
+        widgets: &mut Self::Widgets,
+        msg: Self::Input,
+        sender: ComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
         match msg {
-            QueueViewInput::Sync(entries) => {
-                // The queue is pushed on every metadata change, most of which
-                // do not touch it. Rebuilding regardless would fight anyone
-                // scrolling a 500-track queue.
-                if entries == self.last {
+            QueueViewInput::Sync { entries, playing } => {
+                self.apply(entries);
+                if playing != self.playing {
+                    self.playing = playing.clone();
+                    self.rows.broadcast(QueueRowInput::NowPlaying(playing));
+                }
+            }
+            QueueViewInput::ScrollToPlaying => {
+                let Some(index) = self.playing_index() else {
                     return;
-                }
-                self.last = entries.clone();
-                self.count = entries.len();
-
-                let mut rows = self.rows.guard();
-                rows.clear();
-                for (index, entry) in entries.into_iter().enumerate() {
-                    rows.push_back((index, entry));
-                }
+                };
+                // Deferred: when the dialog is first presented the rows have
+                // not been allocated yet, so their positions are all zero.
+                let list = widgets.queue_list.clone();
+                let scroller = widgets.scroller.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    if let Some(row) = list.row_at_index(index as i32) {
+                        // `allocation()` and `translate_coordinates()` are
+                        // both deprecated since GTK 4.12; `compute_bounds` is
+                        // the supported way to ask where a child sits.
+                        let y = row
+                            .compute_bounds(&list)
+                            .map(|bounds| f64::from(bounds.y()))
+                            .unwrap_or(0.0);
+                        let adj = scroller.vadjustment();
+                        // A third of a page above, so the track has context
+                        // rather than sitting jammed against the top edge.
+                        adj.set_value((y - adj.page_size() / 3.0).max(0.0));
+                    }
+                });
             }
             QueueViewInput::Jump(index) => {
                 let _ = sender.output(QueueViewOutput::Jump(index));
@@ -221,5 +275,116 @@ impl Component for QueueView {
                 let _ = sender.output(QueueViewOutput::Remove(index));
             }
         }
+        self.update_view(widgets, sender);
+    }
+}
+
+impl QueueView {
+    fn playing_index(&self) -> Option<usize> {
+        let playing = self.playing.as_ref()?;
+        self.shown.iter().position(|id| id == playing)
+    }
+
+    /// Bring the rows in line with `entries`, editing rather than rebuilding
+    /// wherever possible.
+    ///
+    /// A rebuild resets the scroll position, which is unacceptable for the
+    /// commonest change by far — removing one track, while looking at the queue.
+    /// So a single removal is applied as a single removal.
+    fn apply(&mut self, entries: Vec<QueueEntry>) {
+        let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+        if ids == self.shown {
+            return;
+        }
+
+        if let Some(removed) = single_removal(&self.shown, &ids) {
+            self.shown = ids;
+            self.count = entries.len();
+            self.rows.guard().remove(removed);
+            return;
+        }
+
+        self.shown = ids;
+        self.count = entries.len();
+        let mut rows = self.rows.guard();
+        rows.clear();
+        for entry in entries {
+            rows.push_back(entry);
+        }
+    }
+}
+
+/// If `new` is `old` with exactly one element taken out, return its position.
+///
+/// Deliberately conservative: anything else — a reorder, an insertion, a whole
+/// new queue — returns `None` and gets a rebuild. Being wrong here would
+/// desynchronise the rows from the queue, which is worse than a scroll jump.
+fn single_removal(old: &[String], new: &[String]) -> Option<usize> {
+    if new.len() + 1 != old.len() {
+        return None;
+    }
+    let at = old
+        .iter()
+        .zip(new.iter())
+        .position(|(a, b)| a != b)
+        .unwrap_or(new.len());
+    // Everything after the removed element must line up, or this is not a
+    // simple removal.
+    (old[at + 1..] == new[at..]).then_some(at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn detects_a_removal_from_the_middle() {
+        assert_eq!(
+            single_removal(&ids(&["a", "b", "c"]), &ids(&["a", "c"])),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn detects_a_removal_from_either_end() {
+        assert_eq!(
+            single_removal(&ids(&["a", "b", "c"]), &ids(&["b", "c"])),
+            Some(0)
+        );
+        assert_eq!(
+            single_removal(&ids(&["a", "b", "c"]), &ids(&["a", "b"])),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn a_reorder_is_not_a_removal() {
+        // Same length, so this must not be mistaken for an edit.
+        assert_eq!(
+            single_removal(&ids(&["a", "b", "c"]), &ids(&["c", "b", "a"])),
+            None
+        );
+    }
+
+    #[test]
+    fn a_different_queue_of_length_minus_one_is_not_a_removal() {
+        // Correct length, wrong contents — applying this as a removal would
+        // leave the rows out of step with the real queue.
+        assert_eq!(
+            single_removal(&ids(&["a", "b", "c"]), &ids(&["x", "y"])),
+            None
+        );
+    }
+
+    #[test]
+    fn two_removals_fall_back_to_a_rebuild() {
+        assert_eq!(
+            single_removal(&ids(&["a", "b", "c", "d"]), &ids(&["a", "d"])),
+            None
+        );
     }
 }

@@ -475,7 +475,10 @@ impl Component for AppModel {
                 }
             }
             AppMsg::ReloadLibrary => self.load_library(&sender),
-            AppMsg::ShowQueue => self.queue_view.widget().present(Some(root)),
+            AppMsg::ShowQueue => {
+                self.queue_view.widget().present(Some(root));
+                self.queue_view.emit(QueueViewInput::ScrollToPlaying);
+            }
             AppMsg::JumpTo(index) => self.send(Command::ChangeToIndex { index }),
             AppMsg::RemoveFromQueue(index) => self.send(Command::RemoveFromQueue { index }),
             AppMsg::PlayFrom(index) => {
@@ -789,20 +792,30 @@ impl AppModel {
         };
         self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));
 
-        // The queue dialog reads MusicKit's queue, not our library list.
-        self.queue_view.emit(QueueViewInput::Sync(
-            self.player
+        // The queue dialog reads MusicKit's queue, not our library list. The
+        // playing track is identified by id rather than position: after a
+        // removal the positions shift, and marking by index put the indicator
+        // on whichever track slid into the old slot.
+        let queue_id = |item: &crate::player::protocol::Item| {
+            item.catalog_id
+                .clone()
+                .or_else(|| item.id.clone())
+                .unwrap_or_default()
+        };
+        self.queue_view.emit(QueueViewInput::Sync {
+            entries: self
+                .player
                 .queue
                 .iter()
-                .enumerate()
-                .map(|(i, item)| QueueEntry {
+                .map(|item| QueueEntry {
+                    id: queue_id(item),
                     title: item.title.clone(),
                     artist: item.artist.clone(),
                     duration_ms: item.duration_ms,
-                    playing: i == self.player.queue_position,
                 })
                 .collect(),
-        ));
+            playing: item.map(queue_id),
+        });
 
         // Same state, second consumer. MPRIS diffs internally, so calling this
         // on every tick costs one property write and no bus traffic.
