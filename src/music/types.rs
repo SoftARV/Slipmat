@@ -18,13 +18,28 @@ impl std::fmt::Display for TrackId {
 
 #[derive(Debug, Clone)]
 pub struct Track {
+    /// The resource id. For library items this is a library id (`i.AbCd123`),
+    /// which is **not** playable.
     pub id: TrackId,
+    /// The id to hand MusicKit. Library resources carry their catalog
+    /// equivalent in `playParams.catalogId`; catalog resources are already
+    /// playable by their own id. `None` means a track that exists only in the
+    /// user's library (an upload, or something delisted) and cannot be
+    /// streamed — the UI must show it as unplayable rather than enqueue an id
+    /// that silently does nothing.
+    pub catalog_id: Option<String>,
     pub title: String,
     pub artist: String,
     pub album: String,
     pub duration_ms: u64,
     pub track_number: u32,
     pub artwork: Option<Artwork>,
+}
+
+impl Track {
+    pub fn playable(&self) -> bool {
+        self.catalog_id.is_some()
+    }
 }
 
 impl Track {
@@ -130,6 +145,22 @@ pub(crate) struct SongAttributes {
     #[serde(default)]
     pub track_number: u32,
     pub artwork: Option<ArtworkAttributes>,
+    pub play_params: Option<PlayParams>,
+}
+
+/// How Apple says "here is what to actually play".
+///
+/// For a catalog resource `id` is the catalog id. For a library resource `id`
+/// is the library id and `catalog_id` holds the streamable equivalent — the
+/// distinction that makes library playback work at all.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlayParams {
+    #[serde(default)]
+    pub id: String,
+    pub catalog_id: Option<String>,
+    #[serde(default)]
+    pub is_library: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,8 +178,17 @@ impl From<Resource<SongAttributes>> for Track {
             duration_in_millis: 0,
             track_number: 0,
             artwork: None,
+            play_params: None,
+        });
+        // A library resource's own id is not playable; its playParams carry the
+        // catalog equivalent. A catalog resource is playable by its own id.
+        let catalog_id = attrs.play_params.as_ref().and_then(|p| {
+            p.catalog_id
+                .clone()
+                .or_else(|| (!p.is_library && !p.id.is_empty()).then(|| p.id.clone()))
         });
         Track {
+            catalog_id,
             id: TrackId(res.id),
             title: attrs.name,
             artist: attrs.artist_name,
@@ -200,6 +240,44 @@ mod tests {
         assert_eq!(format_duration(42_000), "0:42");
         assert_eq!(format_duration(222_000), "3:42");
         assert_eq!(format_duration(3_735_000), "1:02:15");
+    }
+
+    #[test]
+    fn a_library_track_is_played_by_its_catalog_id_not_its_own() {
+        // Library ids look like `i.AbCd123` and are NOT playable. Enqueuing one
+        // silently does nothing, which is the worst possible failure.
+        let raw = r#"{"data":[{"id":"i.AbCd123","attributes":{"name":"SUPERESTRELLA",
+            "artistName":"Aitana","playParams":{"id":"i.AbCd123","kind":"song",
+            "isLibrary":true,"catalogId":"1799999999"}}}]}"#;
+        let parsed: Response<Resource<SongAttributes>> = serde_json::from_str(raw).unwrap();
+        let track = Track::from(parsed.data.into_iter().next().unwrap());
+
+        assert_eq!(track.id, TrackId("i.AbCd123".into()));
+        assert_eq!(track.catalog_id.as_deref(), Some("1799999999"));
+        assert!(track.playable());
+    }
+
+    #[test]
+    fn a_catalog_track_is_playable_by_its_own_id() {
+        let raw = r#"{"data":[{"id":"1049009209","attributes":{"name":"Roundabout",
+            "playParams":{"id":"1049009209","kind":"song"}}}]}"#;
+        let parsed: Response<Resource<SongAttributes>> = serde_json::from_str(raw).unwrap();
+        let track = Track::from(parsed.data.into_iter().next().unwrap());
+        assert_eq!(track.catalog_id.as_deref(), Some("1049009209"));
+    }
+
+    #[test]
+    fn a_library_only_upload_is_not_playable() {
+        // No catalogId: an upload or a delisted track. It must report itself as
+        // unplayable rather than hand MusicKit a library id that does nothing.
+        let raw = r#"{"data":[{"id":"i.Local1","attributes":{"name":"Demo",
+            "playParams":{"id":"i.Local1","kind":"song","isLibrary":true}}}]}"#;
+        let parsed: Response<Resource<SongAttributes>> = serde_json::from_str(raw).unwrap();
+        let track = Track::from(parsed.data.into_iter().next().unwrap());
+        assert!(
+            !track.playable(),
+            "no catalog id means it cannot be streamed"
+        );
     }
 
     #[test]

@@ -21,6 +21,8 @@ const API_BASE: &str = "https://api.music.apple.com/v1";
 /// The origin the harvested developer token is minted for — see `get()`.
 const WEB_ORIGIN: &str = "https://music.apple.com";
 const WEB_REFERER: &str = "https://music.apple.com/";
+/// Apple's hard cap for a library page. Asking for more is silently clamped.
+const LIBRARY_PAGE: usize = 100;
 
 pub struct Client {
     http: HttpClient,
@@ -129,10 +131,38 @@ impl Client {
         }
     }
 
-    /// The user's saved songs. Paginated by Apple at 100; M5 walks the pages.
-    pub async fn library_songs(&self, limit: u32) -> Result<Vec<Track>> {
+    /// The user's whole saved-songs library.
+    ///
+    /// Apple caps a page at 100 and returns a `next` cursor, so this walks
+    /// until the cursor runs out. `max` bounds it so a very large library
+    /// cannot spin forever on a first run — the count is reported so the UI can
+    /// say the list is partial rather than quietly truncating it.
+    pub async fn all_library_songs(&self, max: usize) -> Result<Vec<Track>> {
+        let mut all: Vec<Track> = Vec::new();
+        let mut offset = 0usize;
+
+        loop {
+            let page = self.library_songs_page(offset).await?;
+            let fetched = page.len();
+            all.extend(page);
+
+            // A short page means the end; Apple omits `next` there too, but
+            // length is the simpler signal and does not depend on the cursor.
+            if fetched < LIBRARY_PAGE || all.len() >= max {
+                break;
+            }
+            offset += fetched;
+        }
+
+        all.truncate(max);
+        Ok(all)
+    }
+
+    async fn library_songs_page(&self, offset: usize) -> Result<Vec<Track>> {
         let res = self
-            .get(&format!("/me/library/songs?limit={limit}"))
+            .get(&format!(
+                "/me/library/songs?limit={LIBRARY_PAGE}&offset={offset}"
+            ))
             .send()
             .await
             .map_err(|err| {

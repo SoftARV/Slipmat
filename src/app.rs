@@ -8,19 +8,22 @@
 //! the sidecar's stdout is drained by a streaming relm4 `Command` so the GTK
 //! main thread never blocks (CLAUDE.md rule 8).
 //!
-//! **M2, the transport slice.** M1's handshake plus the persistent Now Playing
-//! bar: artwork, labels, seek, transport and volume. The main surface is still
-//! a `StatusPage` — the library lands in M5.
+//! **M5, the library slice.** Your saved songs in a native list, with
+//! type-to-find search and click-to-play that enqueues the whole visible list.
+//! The StatusPage now only appears while connecting or signed out.
 
 use std::path::PathBuf;
 
 use relm4::adw::prelude::*;
+use relm4::factory::FactoryVecDeque;
 use relm4::{
-    Component, ComponentController, ComponentParts, ComponentSender, Controller, adw, gtk,
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmWidgetExt,
+    adw, gtk,
 };
 
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
+use crate::components::track_row::{TrackRow, TrackRowInit, TrackRowInput, TrackRowOutput};
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
@@ -35,13 +38,46 @@ use crate::player::{Incoming, PlayerState, sidecar};
 /// should cost nothing (the same discipline as Pitwall's suspend-gated poll).
 const TICK_MS: u32 = 500;
 
-/// What `PlayTestTrack` searches for. Override with `TONEARM_TEST_TERM` to try
-/// something else without a rebuild.
+/// Upper bound on the library load. Apple pages at 100, so this is 25 requests
+/// worst case. Generous for one laptop, and bounded so a very large library
+/// cannot spin forever on first run.
+const LIBRARY_MAX: usize = 2_500;
+
+/// Case-insensitive substring match across the fields a person would search by.
 ///
-/// It plays the first search hit, so this is the track you get rather than a
-/// guaranteed one — remasters and compilations often outrank an original.
-/// Fine for an acceptance test; it retires with the button in M5.
-const TEST_TERM: &str = "Aitana SUPERESTRELLA";
+/// Deliberately not fuzzy: with the whole library in memory, plain substring is
+/// instant and predictable, and "predictable" is what makes type-to-find work.
+fn matches(track: &Track, needle: &str) -> bool {
+    track.title.to_lowercase().contains(needle)
+        || track.artist.to_lowercase().contains(needle)
+        || track.album.to_lowercase().contains(needle)
+}
+
+/// Build a MusicKit queue from the visible rows, and translate a row index into
+/// a queue position.
+///
+/// The **whole visible list** is enqueued, never just the clicked track — that
+/// is the gapless rule (rule 3): MusicKit can only transition seamlessly
+/// between items it already holds.
+///
+/// The translation is the subtle part. Unplayable tracks are shown as rows but
+/// cannot go in the queue, so row index and queue position drift apart by the
+/// number of unplayable rows above the click. Using the row index directly
+/// would start the wrong track in any library containing an upload — silently,
+/// and only for some rows.
+fn queue_from(visible: &[&Track], row: usize) -> (Vec<String>, usize) {
+    let songs = visible
+        .iter()
+        .filter_map(|t| t.catalog_id.clone())
+        .collect::<Vec<_>>();
+    let start = visible
+        .iter()
+        .take(row)
+        .filter(|t| t.playable())
+        .count()
+        .min(songs.len().saturating_sub(1));
+    (songs, start)
+}
 
 /// Where we are in bringing the sidecar up. Each variant is a distinct
 /// `StatusPage`, because "it's just spinning" is the failure mode this whole
@@ -73,6 +109,13 @@ pub struct AppModel {
     restarts: u32,
     toaster: adw::ToastOverlay,
     now_playing: Controller<NowPlaying>,
+    /// The rows on screen — the filtered view.
+    library: FactoryVecDeque<TrackRow>,
+    /// The full library from the last load. The filter reads this, never the
+    /// factory, so narrowing and then clearing a search is lossless.
+    all_tracks: Vec<Track>,
+    query: String,
+    loading_library: bool,
     mpris: Mpris,
     /// Volume is the one piece of player state the sidecar never echoes back,
     /// so we hold it here to keep the bar and MPRIS agreeing.
@@ -101,11 +144,10 @@ pub enum AppMsg {
     SetVolume(f64),
     /// Repaint the seek bar from the interpolated position.
     Tick,
-    /// M1's acceptance test, as a button: search the catalog with the harvested
-    /// developer token, then enqueue the first hit. Proves the token, the API
-    /// client and the DRM path in one click. Retire it when M5 lands a real
-    /// library — until then it is the only way to get audio out of the app.
-    PlayTestTrack,
+    /// Play the visible list, starting at this row.
+    PlayFrom(usize),
+    SearchChanged(String),
+    ReloadLibrary,
 }
 
 #[derive(Debug)]
@@ -114,8 +156,8 @@ pub enum CommandMsg {
     Sidecar(Incoming),
     /// The child started; here is the handle for talking to it.
     Spawned(sidecar::Handle),
-    /// Catalog search came back with something to enqueue (or an error).
-    TestTrack(Result<Vec<Track>, String>),
+    /// The user's library, or why it couldn't be read.
+    Library(Result<Vec<Track>, String>),
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
     /// cosmetic and must not become a toast.
     Artwork(Option<PathBuf>),
@@ -138,49 +180,95 @@ impl Component for AppModel {
             toaster -> adw::ToastOverlay {
                 adw::ToolbarView {
                     add_top_bar = &adw::HeaderBar {
+                        // Title until there is a library, then the search box.
+                        // A bare hidden SearchEntry would leave the header
+                        // blank while connecting.
                         #[wrap(Some)]
-                        set_title_widget = &adw::WindowTitle {
-                            set_title: "Tonearm",
+                        set_title_widget = &gtk::Stack {
                             #[watch]
-                            set_subtitle: &model.subtitle(),
+                            set_visible_child_name: if model.showing_library() {
+                                "search"
+                            } else {
+                                "title"
+                            },
+
+                            add_named[Some("title")] = &adw::WindowTitle {
+                                set_title: "Tonearm",
+                                #[watch]
+                                set_subtitle: &model.subtitle(),
+                            },
+
+                            add_named[Some("search")] = &gtk::SearchEntry {
+                                set_placeholder_text: Some("Search your library"),
+                                set_width_request: 320,
+                                connect_search_changed[sender] => move |entry| {
+                                    sender.input(AppMsg::SearchChanged(entry.text().into()));
+                                },
+                            },
+                        },
+
+                        pack_end = &gtk::Button {
+                            set_icon_name: "view-refresh-symbolic",
+                            set_tooltip_text: Some("Reload library"),
+                            add_css_class: "flat",
+                            #[watch]
+                            set_visible: model.showing_library(),
+                            #[watch]
+                            set_sensitive: !model.loading_library,
+                            connect_clicked => AppMsg::ReloadLibrary,
                         },
                     },
 
                     #[wrap(Some)]
-                    set_content = &adw::StatusPage {
+                    set_content = &gtk::Stack {
                         #[watch]
-                        set_icon_name: Some(model.icon()),
-                        #[watch]
-                        set_title: &model.headline(),
-                        #[watch]
-                        set_description: Some(&model.detail()),
+                        set_visible_child_name: model.page(),
 
-                        #[wrap(Some)]
-                        set_child = &gtk::Box {
-                            set_orientation: gtk::Orientation::Horizontal,
-                            set_halign: gtk::Align::Center,
-                            set_spacing: 12,
+                        add_named[Some("status")] = &adw::StatusPage {
+                            #[watch]
+                            set_icon_name: Some(model.icon()),
+                            #[watch]
+                            set_title: &model.headline(),
+                            #[watch]
+                            set_description: Some(&model.detail()),
 
-                            gtk::Button {
+                            #[wrap(Some)]
+                            set_child = &gtk::Button {
                                 set_label: "Sign in to Apple Music",
+                                set_halign: gtk::Align::Center,
                                 add_css_class: "suggested-action",
                                 add_css_class: "pill",
                                 #[watch]
                                 set_visible: matches!(model.stage, Stage::SignedOut),
                                 connect_clicked => AppMsg::SignIn,
                             },
+                        },
 
-                            // M1's acceptance test. Goes away when M5 lands a
-                            // real library to click on.
-                            gtk::Button {
-                                set_label: "Play a test track",
-                                add_css_class: "pill",
-                                #[watch]
-                                set_visible: matches!(model.stage, Stage::Ready)
-                                    && model.player.queue.is_empty(),
-                                connect_clicked => AppMsg::PlayTestTrack,
+                        add_named[Some("library")] = &gtk::ScrolledWindow {
+                            set_vexpand: true,
+
+                            #[wrap(Some)]
+                            set_child = &adw::Clamp {
+                                set_maximum_size: 800,
+
+                                #[local_ref]
+                                library_list -> gtk::ListBox {
+                                    set_selection_mode: gtk::SelectionMode::None,
+                                    set_valign: gtk::Align::Start,
+                                    set_margin_all: 12,
+                                    add_css_class: "boxed-list",
+                                },
                             },
+                        },
 
+                        // Distinct from "status": an empty library and a
+                        // search with no matches are different problems and
+                        // must not share a message.
+                        add_named[Some("no-results")] = &adw::StatusPage {
+                            set_icon_name: Some("system-search-symbolic"),
+                            set_title: "No matches",
+                            #[watch]
+                            set_description: Some(&format!("Nothing in your library matches “{}”.", model.query)),
                         },
                     },
 
@@ -219,8 +307,18 @@ impl Component for AppModel {
                 NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
             });
 
+        let library = FactoryVecDeque::builder()
+            .launch(gtk::ListBox::default())
+            .forward(sender.input_sender(), |out| match out {
+                TrackRowOutput::Activated(index) => AppMsg::PlayFrom(index),
+            });
+
         let model = AppModel {
             stage: Stage::Starting,
+            library,
+            all_tracks: Vec::new(),
+            query: String::new(),
+            loading_library: false,
             player: PlayerState::new(),
             tokens: None,
             sidecar: None,
@@ -235,6 +333,7 @@ impl Component for AppModel {
         };
         let toaster = &model.toaster;
         let now_playing_bar = model.now_playing.widget();
+        let library_list = model.library.widget();
         let widgets = view_output!();
 
         start_sidecar(&sender);
@@ -264,30 +363,24 @@ impl Component for AppModel {
                 self.push_snapshot();
             }
             AppMsg::Tick => self.push_snapshot(),
-            AppMsg::PlayTestTrack => {
-                let Some(tokens) = &self.tokens else {
-                    self.toast("No tokens yet — wait for the sidecar to connect");
+            AppMsg::SearchChanged(query) => {
+                if query != self.query {
+                    self.query = query;
+                    self.rebuild_rows();
+                }
+            }
+            AppMsg::ReloadLibrary => self.load_library(&sender),
+            AppMsg::PlayFrom(index) => {
+                let visible: Vec<&Track> = self.visible_tracks().collect();
+                let (songs, start) = queue_from(&visible, index);
+                if songs.is_empty() {
+                    self.toast("Nothing here can be streamed");
                     return;
-                };
-                // The client is built per request rather than cached: the
-                // developer token is re-harvested and can be replaced mid-session
-                // (rule 7), and a stale client would 401 in a way that looks
-                // like a sign-in problem.
-                let client = Client::new(
-                    tokens.developer_token.clone(),
-                    tokens.music_user_token.clone(),
-                    tokens.storefront.clone(),
-                );
-                let term =
-                    std::env::var("TONEARM_TEST_TERM").unwrap_or_else(|_| TEST_TERM.to_owned());
-                tracing::info!(%term, "searching the catalog for a test track");
-                sender.oneshot_command(async move {
-                    CommandMsg::TestTrack(
-                        client
-                            .search_songs(&term, 1)
-                            .await
-                            .map_err(|err| format!("{err:#}")),
-                    )
+                }
+                tracing::info!(queue = songs.len(), start, "enqueuing from library");
+                self.send(Command::SetQueue {
+                    songs,
+                    start_position: start,
                 });
             }
         }
@@ -306,24 +399,17 @@ impl Component for AppModel {
                 // fetching the CDM (instant after the first run).
                 self.stage = Stage::InstallingWidevine;
             }
-            CommandMsg::TestTrack(Ok(tracks)) => match tracks.first() {
-                Some(track) => {
-                    tracing::info!(
-                        id = %track.id, title = %track.title, artist = %track.artist,
-                        "enqueuing test track"
-                    );
-                    // One setQueue with the whole list — the gapless rule
-                    // (rule 3), even for a list of one.
-                    self.send(Command::SetQueue {
-                        songs: tracks.iter().map(|t| t.id.0.clone()).collect(),
-                        start_position: 0,
-                    });
-                }
-                None => self.toast("Search returned no songs"),
-            },
-            CommandMsg::TestTrack(Err(err)) => {
-                tracing::warn!(%err, "catalog search failed");
-                self.toast(&format!("Search failed: {err}"));
+            CommandMsg::Library(Ok(tracks)) => {
+                self.loading_library = false;
+                let unplayable = tracks.iter().filter(|t| !t.playable()).count();
+                tracing::info!(tracks = tracks.len(), unplayable, "library loaded");
+                self.all_tracks = tracks;
+                self.rebuild_rows();
+            }
+            CommandMsg::Library(Err(err)) => {
+                self.loading_library = false;
+                tracing::warn!(%err, "library load failed");
+                self.toast(&format!("Couldn't load your library: {err}"));
             }
             CommandMsg::Artwork(path) => {
                 if path.is_none() {
@@ -358,6 +444,80 @@ impl Component for AppModel {
 }
 
 impl AppModel {
+    /// Tracks matching the current query, in library order.
+    ///
+    /// Filtering reads `all_tracks`, never the factory, so clearing a search
+    /// restores everything rather than whatever survived the last narrowing.
+    fn visible_tracks(&self) -> impl Iterator<Item = &Track> {
+        let needle = self.query.trim().to_lowercase();
+        self.all_tracks
+            .iter()
+            .filter(move |t| needle.is_empty() || matches(t, &needle))
+    }
+
+    /// Rebuild the visible rows from `all_tracks` + query.
+    ///
+    /// A full rebuild is honest here, unlike Pitwall's in-place reconcile: the
+    /// filter can change membership arbitrarily on every keystroke, and these
+    /// rows hold no state worth preserving (no popovers, no expanders).
+    fn rebuild_rows(&mut self) {
+        let visible: Vec<Track> = self.visible_tracks().cloned().collect();
+        let mut rows = self.library.guard();
+        rows.clear();
+        for (index, track) in visible.into_iter().enumerate() {
+            rows.push_back(TrackRowInit { track, index });
+        }
+    }
+
+    /// Tell the rows which one is playing, so the list shows a play marker.
+    fn mark_now_playing(&self) {
+        let current = self
+            .player
+            .now_playing
+            .as_ref()
+            .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()));
+        self.library.broadcast(TrackRowInput::NowPlaying(current));
+    }
+
+    fn load_library(&mut self, sender: &ComponentSender<Self>) {
+        let Some(tokens) = &self.tokens else {
+            self.toast("Not connected yet");
+            return;
+        };
+        // Built per request rather than cached: the developer token is
+        // re-harvested and can be replaced mid-session (rule 7), and a stale
+        // client 401s in a way that looks like a sign-in problem.
+        let client = Client::new(
+            tokens.developer_token.clone(),
+            tokens.music_user_token.clone(),
+            tokens.storefront.clone(),
+        );
+        self.loading_library = true;
+        tracing::info!("loading library");
+        sender.oneshot_command(async move {
+            CommandMsg::Library(
+                client
+                    .all_library_songs(LIBRARY_MAX)
+                    .await
+                    .map_err(|err| format!("{err:#}")),
+            )
+        });
+    }
+
+    fn showing_library(&self) -> bool {
+        matches!(self.stage, Stage::Ready) && !self.all_tracks.is_empty()
+    }
+
+    fn page(&self) -> &'static str {
+        if !self.showing_library() {
+            "status"
+        } else if self.library.is_empty() {
+            "no-results"
+        } else {
+            "library"
+        }
+    }
+
     /// Flatten `PlayerState` into what the bar renders, and push it down.
     ///
     /// Called after every event that could change it *and* on each tick, since
@@ -559,9 +719,22 @@ impl AppModel {
         // branch there and the bar silently goes stale.
         if metadata_changed {
             self.sync_artwork(sender);
+            self.mark_now_playing();
         }
         self.sync_tick(sender);
         self.push_snapshot();
+
+        // Load the library the moment we're able to, rather than making the
+        // user ask. Guarded on all three conditions so a later event — a
+        // reconnect, a token refresh — can't kick off a second load over the
+        // top of the first.
+        if matches!(self.stage, Stage::Ready)
+            && self.all_tracks.is_empty()
+            && !self.loading_library
+            && self.tokens.is_some()
+        {
+            self.load_library(sender);
+        }
     }
 
     fn icon(&self) -> &'static str {
@@ -661,4 +834,83 @@ fn respawn_sidecar(sender: &ComponentSender<AppModel>, delay: std::time::Duratio
             })
             .drop_on_shutdown()
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::music::types::TrackId;
+
+    fn track(title: &str, catalog: Option<&str>) -> Track {
+        Track {
+            id: TrackId(format!("i.{title}")),
+            catalog_id: catalog.map(str::to_owned),
+            title: title.into(),
+            artist: "Aitana".into(),
+            album: "Superestrella".into(),
+            duration_ms: 200_000,
+            track_number: 1,
+            artwork: None,
+        }
+    }
+
+    #[test]
+    fn clicking_a_row_enqueues_the_whole_visible_list() {
+        let a = track("a", Some("1"));
+        let b = track("b", Some("2"));
+        let c = track("c", Some("3"));
+        let visible = vec![&a, &b, &c];
+
+        // Rule 3: the whole list goes in, not just the clicked track — that is
+        // what lets MusicKit transition gaplessly.
+        let (songs, start) = queue_from(&visible, 1);
+        assert_eq!(songs, vec!["1", "2", "3"]);
+        assert_eq!(start, 1);
+    }
+
+    #[test]
+    fn unplayable_rows_shift_the_queue_position() {
+        // Row 3 is "d", but "b" cannot be streamed and so never enters the
+        // queue. Using the row index directly would start "c" instead.
+        let a = track("a", Some("1"));
+        let b = track("b", None);
+        let c = track("c", Some("3"));
+        let d = track("d", Some("4"));
+        let visible = vec![&a, &b, &c, &d];
+
+        let (songs, start) = queue_from(&visible, 3);
+        assert_eq!(songs, vec!["1", "3", "4"]);
+        assert_eq!(songs[start], "4", "must start the track that was clicked");
+    }
+
+    #[test]
+    fn a_list_with_nothing_playable_produces_no_queue() {
+        let a = track("a", None);
+        let visible = vec![&a];
+        let (songs, _) = queue_from(&visible, 0);
+        assert!(songs.is_empty(), "caller must toast rather than enqueue");
+    }
+
+    #[test]
+    fn a_row_past_the_last_playable_track_still_lands_in_range() {
+        // Clicking the last row when everything below it is unplayable must not
+        // produce a start position past the end of the queue.
+        let a = track("a", Some("1"));
+        let b = track("b", None);
+        let visible = vec![&a, &b];
+        let (songs, start) = queue_from(&visible, 1);
+        assert!(
+            start < songs.len(),
+            "start {start} out of range for {songs:?}"
+        );
+    }
+
+    #[test]
+    fn search_matches_title_artist_and_album_case_insensitively() {
+        let t = track("SUPERESTRELLA", Some("1"));
+        assert!(matches(&t, "superestrella"), "title");
+        assert!(matches(&t, "aitana"), "artist");
+        assert!(!matches(&t, "superstrella"), "not fuzzy, by design");
+        assert!(!matches(&t, "rosalia"));
+    }
 }

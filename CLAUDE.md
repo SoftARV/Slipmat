@@ -428,7 +428,10 @@ Playback engine first. One vertical slice, one PR each.
   a `file://` URL. Verified over `busctl`: properties read, and `PlayPause` /
   `Next` from the bus reach the sidecar.
 - **M4 — Queue view.** Native list, reorder, jump via `changeToMediaAtIndex`.
-- **M5 — Library.** Playlists / albums / songs, client-side instant search.
+- ✅ **M5 — Library.** Saved songs in a native list, type-to-find search,
+  click-to-play enqueuing the whole visible list. Verified against a real
+  library: 539 tracks over 6 pages, 4 correctly detected as unplayable.
+  Playlists and albums are still to come.
 - **M6 — Catalog.** Search, album and artist pages.
 - **M7 — Polish.** Preferences, shortcuts, About, icon, `.desktop`,
   `make install`, opt-in track-change notifications.
