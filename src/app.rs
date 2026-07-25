@@ -280,6 +280,26 @@ impl Component for AppModel {
                             },
                         },
 
+                        // Loading gets its own page rather than an empty list:
+                        // "nothing here yet" and "still fetching" look
+                        // identical otherwise, and the library takes a couple
+                        // of seconds on a cold start.
+                        add_named[Some("loading")] = &gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_halign: gtk::Align::Center,
+                            set_valign: gtk::Align::Center,
+                            set_spacing: 18,
+
+                            adw::Spinner {
+                                set_size_request: (42, 42),
+                            },
+
+                            gtk::Label {
+                                set_label: "Loading your library",
+                                add_css_class: "title-2",
+                            },
+                        },
+
                         add_named[Some("library")] = &gtk::ScrolledWindow {
                             set_vexpand: true,
 
@@ -640,7 +660,12 @@ impl AppModel {
     }
 
     fn page(&self) -> &'static str {
-        if !self.showing_library() {
+        // Only the *first* load takes over the screen. A reload with tracks
+        // already on show keeps the list up and just disables the refresh
+        // button — yanking the library away to show a spinner is worse.
+        if self.loading_library && self.all_tracks.is_empty() {
+            "loading"
+        } else if !self.showing_library() {
             "status"
         } else if self.library.is_empty() {
             "no-results"
