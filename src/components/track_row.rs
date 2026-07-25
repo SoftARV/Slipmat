@@ -26,6 +26,10 @@ pub struct TrackRow {
 pub enum TrackRowInput {
     /// The now-playing track changed; highlight or un-highlight this row.
     NowPlaying(Option<String>),
+    /// MusicKit has rejected these ids. Dim the row in place rather than
+    /// rebuilding the list, which would scroll the user back to the top
+    /// mid-playback.
+    MarkDead(std::rc::Rc<std::collections::HashSet<String>>),
 }
 
 #[derive(Debug)]
@@ -50,11 +54,18 @@ impl FactoryComponent for TrackRow {
 
     view! {
         adw::ActionRow {
-            set_title: &glib_escape(&self.track.title),
-            set_subtitle: &glib_escape(&self.subtitle()),
+            // AdwPreferencesRow parses title and subtitle as Pango markup by
+            // default, so a track called "Blood, Sweat & 3 Years" fails to
+            // render at all and warns. These are plain text — say so, rather
+            // than escaping into markup we never wanted.
+            set_use_markup: false,
+            set_title: &self.track.title,
+            set_subtitle: &self.subtitle(),
             set_activatable: true,
             // An unplayable track is shown, not hidden — it is in the library
             // and pretending otherwise is more confusing than dimming it.
+            // Watched, because a track can be discovered to be dead later.
+            #[watch]
             set_sensitive: self.track.playable(),
             #[watch]
             set_tooltip_text: self.tooltip(),
@@ -99,6 +110,13 @@ impl FactoryComponent for TrackRow {
             TrackRowInput::NowPlaying(catalog_id) => {
                 self.playing = catalog_id.is_some() && catalog_id == self.track.catalog_id;
             }
+            TrackRowInput::MarkDead(dead) => {
+                if let Some(id) = &self.track.catalog_id
+                    && dead.contains(id)
+                {
+                    self.track.catalog_id = None;
+                }
+            }
         }
     }
 }
@@ -117,13 +135,6 @@ impl TrackRow {
         (!self.track.playable())
             .then_some("Not available to stream — this track is only in your library")
     }
-}
-
-/// `adw::ActionRow` titles are Pango markup, so a stray `&` or `<` in a track
-/// name renders as broken markup or vanishes entirely. Real catalogue entries
-/// contain both ("Slade & Co", "<3").
-fn glib_escape(s: &str) -> String {
-    gtk::glib::markup_escape_text(s).to_string()
 }
 
 #[cfg(test)]
@@ -165,12 +176,5 @@ mod tests {
     fn unplayable_tracks_explain_themselves() {
         assert!(row(track("t", "a", "b", None)).tooltip().is_some());
         assert!(row(track("t", "a", "b", Some("123"))).tooltip().is_none());
-    }
-
-    #[test]
-    fn markup_characters_in_titles_are_escaped() {
-        // ActionRow titles are Pango markup; an unescaped `&` breaks the row.
-        assert_eq!(glib_escape("Slade & Co"), "Slade &amp; Co");
-        assert_eq!(glib_escape("<3"), "&lt;3");
     }
 }

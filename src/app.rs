@@ -103,10 +103,15 @@ fn queue_from(
     dead: &std::collections::HashSet<String>,
 ) -> (Vec<String>, Option<String>) {
     let alive = |id: &String| !dead.contains(id);
+    let mut seen = std::collections::HashSet::new();
     let songs: Vec<String> = visible
         .iter()
         .filter_map(|t| t.catalog_id.clone())
         .filter(alive)
+        // Deduplicate. MusicKit collapses repeats when it builds the queue, so
+        // sending the same id twice makes its queue shorter than ours and every
+        // position after the repeat refers to a different track than we meant.
+        .filter(|id| seen.insert(id.clone()))
         .collect();
     let start_id = visible
         .get(row..)
@@ -169,6 +174,10 @@ pub struct AppModel {
     /// `NOT_FOUND` can be retried without the offenders instead of making the
     /// user click again. An id rather than an index — see `queue_from`.
     last_queue: Option<(Vec<String>, Option<String>)>,
+    /// The track we asked to start on, held until MusicKit's own queue confirms
+    /// it. See `verify_start`: the queue MusicKit builds is not always the list
+    /// we sent, so the position we asked for is not always the track we meant.
+    pending_start: Option<String>,
     mpris: Mpris,
     /// Volume is the one piece of player state the sidecar never echoes back,
     /// so we hold it here to keep the bar and MPRIS agreeing.
@@ -399,6 +408,7 @@ impl Component for AppModel {
             loading_library: false,
             dead_ids: std::collections::HashSet::new(),
             last_queue: None,
+            pending_start: None,
             player: PlayerState::new(),
             tokens: None,
             sidecar: None,
@@ -459,6 +469,7 @@ impl Component for AppModel {
                 }
                 let start = start_index(&songs, start_id.as_ref());
                 tracing::info!(queue = songs.len(), start, "enqueuing from library");
+                self.pending_start = start_id.clone();
                 self.last_queue = Some((songs.clone(), start_id));
                 self.send(Command::SetQueue {
                     songs,
@@ -643,6 +654,7 @@ impl AppModel {
             "retrying queue without unresolvable tracks"
         );
         self.mark_dead_tracks_unplayable();
+        self.pending_start = wanted.clone();
         self.last_queue = Some((retry.clone(), wanted));
         self.send(Command::SetQueue {
             songs: retry,
@@ -654,18 +666,70 @@ impl AppModel {
     /// Reflect newly-discovered dead ids in the list, so the affected rows dim
     /// instead of looking playable and doing nothing.
     fn mark_dead_tracks_unplayable(&mut self) {
-        let mut changed = false;
         for track in &mut self.all_tracks {
             if let Some(id) = &track.catalog_id
                 && self.dead_ids.contains(id)
             {
                 track.catalog_id = None;
-                changed = true;
             }
         }
-        if changed {
-            self.rebuild_rows();
+        // Broadcast rather than rebuild. Rebuilding the factory recreates every
+        // row, which scrolls the list back to the top — jarring at the best of
+        // times, and this fires on the first play of a session, right as the
+        // user is looking at the row they just clicked.
+        self.library
+            .broadcast(TrackRowInput::MarkDead(std::rc::Rc::new(
+                self.dead_ids.clone(),
+            )));
+    }
+
+    /// Check that MusicKit actually landed on the track we asked for, and
+    /// correct it if not.
+    ///
+    /// `setQueue` takes a *position*, but the queue MusicKit builds is not
+    /// always the list we handed it — it drops repeats and anything it decides
+    /// it cannot use, and every position after such an item then refers to a
+    /// different track. Observed directly: 531 ids sent, `queue_len=530` back,
+    /// and playback one track further down than the row that was clicked.
+    ///
+    /// No amount of arithmetic on our side can fix that, because the
+    /// discrepancy happens inside MusicKit. So we check its own queue for the
+    /// id we wanted and jump if we are not on it — `changeToMediaAtIndex`, not
+    /// a second `setQueue`, so the queue is not rebuilt and gapless survives.
+    fn verify_start(&mut self) {
+        let Some(wanted) = self.pending_start.clone() else {
+            return;
+        };
+        if self.player.queue.is_empty() {
+            return; // queue hasn't arrived yet; try again on the next event
         }
+
+        // One shot either way: acting or giving up both clear the flag, so a
+        // correction can never bounce against MusicKit's own echo.
+        self.pending_start = None;
+
+        let id_of = |item: &crate::player::protocol::Item| {
+            item.catalog_id.clone().or_else(|| item.id.clone())
+        };
+        let Some(index) = self
+            .player
+            .queue
+            .iter()
+            .position(|item| id_of(item).as_deref() == Some(wanted.as_str()))
+        else {
+            tracing::debug!(%wanted, "chosen track is not in MusicKit's queue");
+            return;
+        };
+
+        if index == self.player.queue_position {
+            return; // already right
+        }
+        tracing::info!(
+            from = self.player.queue_position,
+            to = index,
+            "MusicKit started the wrong track; correcting"
+        );
+        self.send(Command::ChangeToIndex { index });
     }
 
     fn showing_library(&self) -> bool {
@@ -894,6 +958,9 @@ impl AppModel {
         }
         self.sync_tick(sender);
         self.push_snapshot();
+        // After the mirror has the new queue, confirm MusicKit put us on the
+        // track that was actually clicked.
+        self.verify_start();
 
         // Load the library the moment we're able to, rather than making the
         // user ask. Guarded on all three conditions so a later event — a
