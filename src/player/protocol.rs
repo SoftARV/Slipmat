@@ -50,6 +50,12 @@ pub enum Command {
     #[serde(rename = "changeToIndex")]
     ChangeToIndex { index: usize },
 
+    /// Drop one item from the loaded queue, by **MusicKit's** index. Also not a
+    /// `SetQueue`: rebuilding the queue to remove one track would restart
+    /// playback and lose the gapless buffer (rule 3).
+    #[serde(rename = "removeFromQueue")]
+    RemoveFromQueue { index: usize },
+
     #[serde(rename = "seek", rename_all = "camelCase")]
     Seek { position_ms: u64 },
     #[serde(rename = "setVolume")]

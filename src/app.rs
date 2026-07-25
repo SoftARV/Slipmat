@@ -15,15 +15,20 @@
 use std::path::PathBuf;
 
 use relm4::adw::prelude::*;
-use relm4::factory::FactoryVecDeque;
 use relm4::{
-    Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmWidgetExt,
-    adw, gtk,
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, adw, gtk,
 };
+
+use relm4::typed_view::list::TypedListView;
 
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
-use crate::components::track_row::{TrackRow, TrackRowInit, TrackRowInput, TrackRowOutput};
+use crate::components::queue_view::{QueueEntry, QueueView, QueueViewInput, QueueViewOutput};
+use crate::components::track_row::LibraryRowWidgets;
+use crate::components::track_row::{LibraryItem, apply_row_state};
+use crate::components::{
+    CurrentTrack, DeadTracks, RowRegistry, current_track, dead_tracks, row_registry,
+};
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
@@ -160,8 +165,21 @@ pub struct AppModel {
     restarts: u32,
     toaster: adw::ToastOverlay,
     now_playing: Controller<NowPlaying>,
-    /// The rows on screen — the filtered view.
-    library: FactoryVecDeque<TrackRow>,
+    queue_view: Controller<QueueView>,
+    /// The rows on screen — the filtered view. A `ListView`, so its cost is
+    /// the number of rows visible rather than the size of the library.
+    library: TypedListView<LibraryItem, gtk::NoSelection>,
+    /// Whether the queue sidebar is open.
+    show_queue: bool,
+    /// Which library row currently carries the play marker.
+    marked_playing: Option<String>,
+    /// Icons of the library rows currently on screen, so the marker can move
+    /// without editing the model — see `RowRegistry`.
+    library_icons: RowRegistry<LibraryRowWidgets>,
+    /// Who is playing. Shared with every library row; see `CurrentTrack`.
+    current_track: CurrentTrack,
+    /// Ids MusicKit refused, shared with every library row; see `DeadTracks`.
+    dead_rows: DeadTracks,
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
@@ -210,6 +228,14 @@ pub enum AppMsg {
     PlayFrom(usize),
     SearchChanged(String),
     ReloadLibrary,
+    ToggleQueue,
+    /// A library row was activated; the position is resolved immediately.
+    LibraryActivated(u32),
+    /// Act on a track in MusicKit's queue, by id. The position is resolved
+    /// against the live queue at send time — our row order can drift from
+    /// MusicKit's, and sending a stale position got INVALID_ARGUMENTS.
+    JumpTo(String),
+    RemoveFromQueue(String),
 }
 
 #[derive(Debug)]
@@ -285,8 +311,22 @@ impl Component for AppModel {
                         },
                     },
 
+                    // The queue lives beside the library, not on top of it:
+                    // an OverlaySplitView slides the sidebar in and moves the
+                    // main view rather than covering it with a modal.
                     #[wrap(Some)]
-                    set_content = &gtk::Stack {
+                    set_content = &adw::OverlaySplitView {
+                        set_sidebar_position: gtk::PackType::End,
+                        set_max_sidebar_width: 380.0,
+                        #[watch]
+                        set_show_sidebar: model.show_queue,
+
+                        #[wrap(Some)]
+                        #[local_ref]
+                        set_sidebar = queue_sidebar -> adw::ToolbarView {},
+
+                        #[wrap(Some)]
+                        set_content = &gtk::Stack {
                         add_named[Some("status")] = &adw::StatusPage {
                             #[watch]
                             set_icon_name: Some(model.icon()),
@@ -327,19 +367,22 @@ impl Component for AppModel {
                             },
                         },
 
-                        add_named[Some("library")] = &gtk::ScrolledWindow {
-                            set_vexpand: true,
+                        // The Clamp goes OUTSIDE the ScrolledWindow. Inside,
+                        // it breaks ListView's height allocation and the list
+                        // stops materialising rows partway down — which is why
+                        // scrolling to the bottom showed blanks while the queue
+                        // list, which has no Clamp, was fine.
+                        add_named[Some("library")] = &adw::Clamp {
+                            set_maximum_size: 800,
 
                             #[wrap(Some)]
-                            set_child = &adw::Clamp {
-                                set_maximum_size: 800,
+                            set_child = &gtk::ScrolledWindow {
+                                set_vexpand: true,
 
                                 #[local_ref]
-                                library_list -> gtk::ListBox {
-                                    set_selection_mode: gtk::SelectionMode::None,
-                                    set_valign: gtk::Align::Start,
-                                    set_margin_all: 12,
-                                    add_css_class: "boxed-list",
+                                library_list -> gtk::ListView {
+                                    set_single_click_activate: true,
+                                    add_css_class: "navigation-sidebar",
                                 },
                             },
                         },
@@ -354,9 +397,11 @@ impl Component for AppModel {
                             set_description: Some(&format!("Nothing in your library matches “{}”.", model.query)),
                         },
 
-                        // After the children — see the note on the title stack.
-                        #[watch]
-                        set_visible_child_name: model.page(),
+                            // After the children — see the note on the title
+                            // stack.
+                            #[watch]
+                            set_visible_child_name: model.page(),
+                        },
                     },
 
                     // The bar is present on every screen — it is the app.
@@ -387,6 +432,7 @@ impl Component for AppModel {
         let now_playing = NowPlaying::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
+                NowPlayingOutput::ShowQueue => AppMsg::ToggleQueue,
                 NowPlayingOutput::PlayPause => AppMsg::PlayPause,
                 NowPlayingOutput::Next => AppMsg::Next,
                 NowPlayingOutput::Previous => AppMsg::Previous,
@@ -394,19 +440,35 @@ impl Component for AppModel {
                 NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
             });
 
-        let library = FactoryVecDeque::builder()
-            .launch(gtk::ListBox::default())
+        let library: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
+        let activate = sender.clone();
+        library.view.connect_activate(move |_, position| {
+            activate.input(AppMsg::LibraryActivated(position));
+        });
+
+        let queue_view = QueueView::builder()
+            .launch(())
             .forward(sender.input_sender(), |out| match out {
-                TrackRowOutput::Activated(index) => AppMsg::PlayFrom(index),
+                QueueViewOutput::Jump(id) => AppMsg::JumpTo(id),
+                QueueViewOutput::Remove(id) => AppMsg::RemoveFromQueue(id),
             });
 
         let model = AppModel {
             stage: Stage::Starting,
+            queue_view,
             library,
+            show_queue: false,
+            marked_playing: None,
+            library_icons: row_registry(),
+            current_track: current_track(),
+            dead_rows: dead_tracks(),
+            // filled from `dead_ids` once the model exists (see below)
             all_tracks: Vec::new(),
             query: String::new(),
             loading_library: false,
-            dead_ids: std::collections::HashSet::new(),
+            // Seeded from the cache so the first play of a session does not
+            // have to rediscover them by failing a setQueue.
+            dead_ids: crate::unplayable::load(),
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
@@ -423,8 +485,12 @@ impl Component for AppModel {
         };
         let toaster = &model.toaster;
         let now_playing_bar = model.now_playing.widget();
-        let library_list = model.library.widget();
+        let library_list = &model.library.view;
+        let queue_sidebar = model.queue_view.widget();
         let widgets = view_output!();
+
+        // Rows read playability from here, so seed it before any are built.
+        *model.dead_rows.borrow_mut() = model.dead_ids.clone();
 
         start_sidecar(&sender);
 
@@ -460,6 +526,26 @@ impl Component for AppModel {
                 }
             }
             AppMsg::ReloadLibrary => self.load_library(&sender),
+            AppMsg::ToggleQueue => {
+                self.show_queue = !self.show_queue;
+                if self.show_queue {
+                    self.queue_view.emit(QueueViewInput::ScrollToPlaying);
+                }
+            }
+            AppMsg::LibraryActivated(position) => {
+                // The store is the visible list, so this position is the row
+                // index `queue_from` expects. Resolved here and now, never
+                // stored.
+                sender.input(AppMsg::PlayFrom(position as usize));
+            }
+            AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
+                Some(index) => self.send(Command::ChangeToIndex { index }),
+                None => self.toast("That track is no longer in the queue"),
+            },
+            AppMsg::RemoveFromQueue(id) => match self.queue_index_of(&id) {
+                Some(index) => self.send(Command::RemoveFromQueue { index }),
+                None => self.toast("That track is no longer in the queue"),
+            },
             AppMsg::PlayFrom(index) => {
                 let visible: Vec<&Track> = self.visible_tracks().collect();
                 let (songs, start_id) = queue_from(&visible, index, &self.dead_ids);
@@ -554,22 +640,77 @@ impl AppModel {
     /// filter can change membership arbitrarily on every keystroke, and these
     /// rows hold no state worth preserving (no popovers, no expanders).
     fn rebuild_rows(&mut self) {
+        // Rebuilding resets the scroll. It is legitimate on load and on a
+        // search change; anywhere else it is a bug, so say when it happens.
+        tracing::debug!(query = %self.query, "library: rebuilding rows");
         let visible: Vec<Track> = self.visible_tracks().cloned().collect();
-        let mut rows = self.library.guard();
-        rows.clear();
-        for (index, track) in visible.into_iter().enumerate() {
-            rows.push_back(TrackRowInit { track, index });
-        }
+        let playing = self.playing_catalog_id();
+        // The rows are built with the marker already set, so record that here
+        // or `mark_now_playing` will think it still needs applying.
+        self.marked_playing = playing.clone();
+        let registry = self.library_icons.clone();
+        // Rows are about to be discarded; none of their widgets are ours now.
+        registry.borrow_mut().clear();
+        // Rows read the marker from here at bind time, so it just has to be
+        // current before they are built.
+        let current = self.current_track.clone();
+        *current.borrow_mut() = playing.clone();
+        let dead = self.dead_rows.clone();
+        self.library.clear();
+        self.library.extend_from_iter(
+            visible.into_iter().map(|track| {
+                LibraryItem::new(track, registry.clone(), current.clone(), dead.clone())
+            }),
+        );
     }
 
     /// Tell the rows which one is playing, so the list shows a play marker.
-    fn mark_now_playing(&self) {
-        let current = self
-            .player
+    /// The catalog id of the track MusicKit is on, if any.
+    fn playing_catalog_id(&self) -> Option<String> {
+        self.player
             .now_playing
             .as_ref()
-            .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()));
-        self.library.broadcast(TrackRowInput::NowPlaying(current));
+            .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()))
+    }
+
+    /// Move the play marker in the library list.
+    ///
+    /// Only the two affected rows are touched — the one losing the marker and
+    /// the one gaining it — by replacing them in the store, which is what makes
+    /// `ListView` re-bind those rows. Mutating the item in place does nothing:
+    /// the store emits no change, so the widget is never told to update. That
+    /// is why the marker did not appear at all in the first virtualised
+    /// version.
+    fn mark_now_playing(&mut self) {
+        let current = self.playing_catalog_id();
+        if current == self.marked_playing {
+            return;
+        }
+        // The shared cell first, so any row bound from here on is correct...
+        *self.current_track.borrow_mut() = current.clone();
+        // ...then the two rows that are on screen right now, if they are.
+        if let Some(old) = self.marked_playing.take() {
+            self.set_row_playing(&old, false);
+        }
+        if let Some(new) = &current {
+            self.set_row_playing(new, true);
+        }
+        self.marked_playing = current;
+    }
+
+    /// Move the marker on one row **without touching the model**.
+    ///
+    /// Editing the store — even replacing a single item — makes `ListView`
+    /// re-measure, and the scroll jumps to the top. Intolerable for something
+    /// that fires on every track change. So: update the item's data silently,
+    /// so a later re-bind is correct, and update the widget directly if this
+    /// row happens to be on screen right now.
+    /// Repaint one row's marker. Touches a widget, never the model.
+    fn set_row_playing(&self, catalog_id: &str, playing: bool) {
+        if let Some(w) = self.library_icons.borrow().get(catalog_id) {
+            let playable = !self.dead_rows.borrow().contains(catalog_id);
+            apply_row_state(&w.icon, &w.root, playing, playable);
+        }
     }
 
     fn load_library(&mut self, sender: &ComponentSender<Self>) {
@@ -616,6 +757,10 @@ impl AppModel {
             .filter(|id| !self.dead_ids.contains(*id))
             .count();
         self.dead_ids.extend(dead);
+        if newly_dead > 0 {
+            // Remember them, so the next run starts already knowing.
+            crate::unplayable::save(&self.dead_ids);
+        }
 
         // Nothing new: the retry already happened and failed again. Stop, or we
         // loop forever on an error we cannot parse our way out of.
@@ -663,24 +808,27 @@ impl AppModel {
         true
     }
 
-    /// Reflect newly-discovered dead ids in the list, so the affected rows dim
-    /// instead of looking playable and doing nothing.
+    /// Reflect newly-refused tracks in the list **without rebuilding it**.
+    ///
+    /// This fires on the first play of a session — exactly when the user is
+    /// looking at the row they just clicked — so a rebuild here is what sent
+    /// the library back to the top, once per run. Rows consult the shared set
+    /// at bind, so updating it covers everything off screen; the rows that are
+    /// on screen are repainted directly.
+    ///
+    /// `all_tracks` keeps its catalog ids: playability is now a question for
+    /// `dead_rows`, and blanking the id would also lose the handle the queue
+    /// builder needs.
     fn mark_dead_tracks_unplayable(&mut self) {
-        for track in &mut self.all_tracks {
-            if let Some(id) = &track.catalog_id
-                && self.dead_ids.contains(id)
-            {
-                track.catalog_id = None;
+        *self.dead_rows.borrow_mut() = self.dead_ids.clone();
+
+        let playing = self.playing_catalog_id();
+        let registry = self.library_icons.borrow();
+        for id in &self.dead_ids {
+            if let Some(w) = registry.get(id) {
+                apply_row_state(&w.icon, &w.root, Some(id) == playing.as_ref(), false);
             }
         }
-        // Broadcast rather than rebuild. Rebuilding the factory recreates every
-        // row, which scrolls the list back to the top — jarring at the best of
-        // times, and this fires on the first play of a session, right as the
-        // user is looking at the row they just clicked.
-        self.library
-            .broadcast(TrackRowInput::MarkDead(std::rc::Rc::new(
-                self.dead_ids.clone(),
-            )));
     }
 
     /// Check that MusicKit actually landed on the track we asked for, and
@@ -732,6 +880,18 @@ impl AppModel {
         self.send(Command::ChangeToIndex { index });
     }
 
+    /// Where a track sits in MusicKit's queue *right now*.
+    ///
+    /// Resolved at send time rather than carried from the row, because our row
+    /// order and MusicKit's queue can drift — and a stale position does not
+    /// fail loudly, it removes or plays the wrong track, or gets rejected with
+    /// INVALID_ARGUMENTS once it runs off the end.
+    fn queue_index_of(&self, id: &str) -> Option<usize> {
+        self.player.queue.iter().position(|item| {
+            item.catalog_id.as_deref() == Some(id) || item.id.as_deref() == Some(id)
+        })
+    }
+
     fn showing_library(&self) -> bool {
         matches!(self.stage, Stage::Ready) && !self.all_tracks.is_empty()
     }
@@ -770,6 +930,31 @@ impl AppModel {
             active: item.is_some(),
         };
         self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));
+
+        // The queue dialog reads MusicKit's queue, not our library list. The
+        // playing track is identified by id rather than position: after a
+        // removal the positions shift, and marking by index put the indicator
+        // on whichever track slid into the old slot.
+        let queue_id = |item: &crate::player::protocol::Item| {
+            item.catalog_id
+                .clone()
+                .or_else(|| item.id.clone())
+                .unwrap_or_default()
+        };
+        self.queue_view.emit(QueueViewInput::Sync {
+            entries: self
+                .player
+                .queue
+                .iter()
+                .map(|item| QueueEntry {
+                    id: queue_id(item),
+                    title: item.title.clone(),
+                    artist: item.artist.clone(),
+                    duration_ms: item.duration_ms,
+                })
+                .collect(),
+            playing: item.map(queue_id),
+        });
 
         // Same state, second consumer. MPRIS diffs internally, so calling this
         // on every tick costs one property write and no bus traffic.
@@ -1018,7 +1203,14 @@ impl AppModel {
                 .player
                 .now_playing
                 .as_ref()
-                .map(|i| format!("{} — {}", i.artist, i.album))
+                // adw::StatusPage always parses its description as Pango
+                // markup — there is no use-markup to turn off — so a track like
+                // "Mercury - Acts 1 & 2" has to be escaped. It warns even while
+                // this page is behind the library, because #[watch] still runs.
+                .map(|i| {
+                    gtk::glib::markup_escape_text(&format!("{} — {}", i.artist, i.album))
+                        .to_string()
+                })
                 .unwrap_or_else(|| "Nothing playing".into()),
             _ => String::new(),
         }

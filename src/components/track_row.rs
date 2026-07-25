@@ -3,150 +3,218 @@
 
 //! One track in the library list.
 //!
-//! A `FactoryComponent` over `adw::ActionRow`, so the list is reconciled by
-//! index rather than rebuilt — the same discipline as Pitwall's run rows.
+//! A `RelmListItem` over `gtk::ListView`, **not** a factory over
+//! `gtk::ListBox`. A `ListBox` builds a real widget per row, so a 541-track
+//! library meant 541 live `AdwActionRow`s — each with its own labels, icon and
+//! button — and the whole app felt heavy. `ListView` recycles: it keeps roughly
+//! as many widgets as fit on screen and rebinds them as you scroll, so the cost
+//! stops depending on the size of the library.
+//!
+//! The consequence to keep in mind: widgets are **reused**. `bind` must set
+//! every property it cares about, because the widget it is handed was showing a
+//! different track a moment ago.
 
 use relm4::adw::prelude::*;
-use relm4::factory::FactoryComponent;
-use relm4::prelude::DynamicIndex;
-use relm4::{FactorySender, adw, gtk};
+use relm4::prelude::*;
+use relm4::typed_view::list::RelmListItem;
+use relm4::{gtk, view};
 
+use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
+
+/// The widgets a library row publishes while it is on screen.
+#[derive(Debug, Clone)]
+pub struct LibraryRowWidgets {
+    pub icon: gtk::Image,
+    pub root: gtk::Box,
+}
 use crate::music::types::Track;
 
-#[derive(Debug)]
-pub struct TrackRow {
-    pub track: Track,
-    /// Index in the *visible* list, which is what gets enqueued. Not the index
-    /// in the full library — filtering changes it.
-    index: usize,
-    playing: bool,
+/// Paint a row. Shared between the bind path and the live-update path so the
+/// two cannot drift into showing different things for the same state.
+pub fn apply_row_state(icon: &gtk::Image, root: &gtk::Box, playing: bool, playable: bool) {
+    let (name, classes) = row_icon(playing, playable);
+    icon.set_icon_name(Some(name));
+    icon.set_css_classes(classes);
+    // An unplayable track is shown, not hidden — it is in the library, and
+    // pretending otherwise is more confusing than dimming it.
+    root.set_sensitive(playable);
+    root.set_tooltip_text(if playable {
+        None
+    } else {
+        Some("Not available to stream — this track is only in your library")
+    });
+}
+
+/// Icon name and CSS classes for a row's leading indicator.
+pub fn row_icon(playing: bool, playable: bool) -> (&'static str, &'static [&'static str]) {
+    if playing {
+        ("media-playback-start-symbolic", &["accent"])
+    } else if !playable {
+        ("action-unavailable-symbolic", &["dim-label"])
+    } else {
+        ("audio-x-generic-symbolic", &["dim-label"])
+    }
 }
 
 #[derive(Debug, Clone)]
-pub enum TrackRowInput {
-    /// The now-playing track changed; highlight or un-highlight this row.
-    NowPlaying(Option<String>),
-    /// MusicKit has rejected these ids. Dim the row in place rather than
-    /// rebuilding the list, which would scroll the user back to the top
-    /// mid-playback.
-    MarkDead(std::rc::Rc<std::collections::HashSet<String>>),
-}
-
-#[derive(Debug)]
-pub enum TrackRowOutput {
-    /// Play the visible list starting here. The *whole* list is enqueued by
-    /// `app.rs`, not just this track — MusicKit owns the queue (rule 3).
-    Activated(usize),
-}
-
-pub struct TrackRowInit {
+pub struct LibraryItem {
     pub track: Track,
-    pub index: usize,
+    /// Who is playing, shared with every other row. Read at `bind`, never
+    /// stored per-item: a per-item flag has to be changed in the model, and any
+    /// model edit costs the scroll position (see `CurrentTrack`).
+    pub current: CurrentTrack,
+    pub subtitle: String,
+    /// Where this row publishes its icon while it is on screen, so the marker
+    /// can be moved without touching the model. See `RowRegistry`.
+    pub registry: RowRegistry<LibraryRowWidgets>,
+    /// Ids MusicKit has refused. Consulted at bind, so a track discovered to be
+    /// dead mid-session dims without the list being rebuilt.
+    pub dead: DeadTracks,
 }
 
-#[relm4::factory(pub)]
-impl FactoryComponent for TrackRow {
-    type Init = TrackRowInit;
-    type Input = TrackRowInput;
-    type Output = TrackRowOutput;
-    type CommandOutput = ();
-    type ParentWidget = gtk::ListBox;
-
-    view! {
-        adw::ActionRow {
-            // AdwPreferencesRow parses title and subtitle as Pango markup by
-            // default, so a track called "Blood, Sweat & 3 Years" fails to
-            // render at all and warns. These are plain text — say so, rather
-            // than escaping into markup we never wanted.
-            set_use_markup: false,
-            set_title: &self.track.title,
-            set_subtitle: &self.subtitle(),
-            set_activatable: true,
-            // An unplayable track is shown, not hidden — it is in the library
-            // and pretending otherwise is more confusing than dimming it.
-            // Watched, because a track can be discovered to be dead later.
-            #[watch]
-            set_sensitive: self.track.playable(),
-            #[watch]
-            set_tooltip_text: self.tooltip(),
-
-            add_prefix = &gtk::Image {
-                set_pixel_size: 16,
-                #[watch]
-                set_icon_name: Some(if self.playing {
-                    "media-playback-start-symbolic"
-                } else if !self.track.playable() {
-                    "action-unavailable-symbolic"
-                } else {
-                    "audio-x-generic-symbolic"
-                }),
-                #[watch]
-                set_css_classes: if self.playing { &["accent"] } else { &["dim-label"] },
-            },
-
-            add_suffix = &gtk::Label {
-                set_label: &self.track.duration_label(),
-                set_margin_start: 6,
-                add_css_class: "numeric",
-                add_css_class: "dim-label",
-            },
-
-            connect_activated[sender, index = self.index] => move |_| {
-                sender.output(TrackRowOutput::Activated(index)).ok();
-            },
+impl LibraryItem {
+    /// Streamable *and* not on the refused list.
+    pub fn playable(&self) -> bool {
+        match &self.track.catalog_id {
+            Some(id) => !self.dead.borrow().contains(id),
+            None => false,
         }
     }
 
-    fn init_model(init: Self::Init, _index: &DynamicIndex, _sender: FactorySender<Self>) -> Self {
-        Self {
-            track: init.track,
-            index: init.index,
-            playing: false,
-        }
-    }
-
-    fn update(&mut self, msg: Self::Input, _sender: FactorySender<Self>) {
-        match msg {
-            TrackRowInput::NowPlaying(catalog_id) => {
-                self.playing = catalog_id.is_some() && catalog_id == self.track.catalog_id;
-            }
-            TrackRowInput::MarkDead(dead) => {
-                if let Some(id) = &self.track.catalog_id
-                    && dead.contains(id)
-                {
-                    self.track.catalog_id = None;
-                }
-            }
-        }
-    }
-}
-
-impl TrackRow {
-    fn subtitle(&self) -> String {
-        match (self.track.artist.is_empty(), self.track.album.is_empty()) {
-            (false, false) => format!("{} — {}", self.track.artist, self.track.album),
-            (false, true) => self.track.artist.clone(),
-            (true, false) => self.track.album.clone(),
+    pub fn new(
+        track: Track,
+        registry: RowRegistry<LibraryRowWidgets>,
+        current: CurrentTrack,
+        dead: DeadTracks,
+    ) -> Self {
+        let subtitle = match (track.artist.is_empty(), track.album.is_empty()) {
+            (false, false) => format!("{} — {}", track.artist, track.album),
+            (false, true) => track.artist.clone(),
+            (true, false) => track.album.clone(),
             (true, true) => String::new(),
+        };
+        Self {
+            subtitle,
+            current,
+            track,
+            registry,
+            dead,
+        }
+    }
+}
+
+pub struct LibraryItemWidgets {
+    icon: gtk::Image,
+    title: gtk::Label,
+    subtitle: gtk::Label,
+    duration: gtk::Label,
+}
+
+impl RelmListItem for LibraryItem {
+    type Root = gtk::Box;
+    type Widgets = LibraryItemWidgets;
+
+    fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        view! {
+            root = gtk::Box {
+                set_orientation: gtk::Orientation::Horizontal,
+                set_spacing: 12,
+                set_margin_all: 8,
+
+                #[name = "icon"]
+                gtk::Image {
+                    set_pixel_size: 16,
+                    set_valign: gtk::Align::Center,
+                },
+
+                gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_valign: gtk::Align::Center,
+                    set_hexpand: true,
+                    set_spacing: 2,
+
+                    #[name = "title"]
+                    gtk::Label {
+                        set_xalign: 0.0,
+                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                        // Track names are plain text. Left as markup, anything
+                        // containing `&` fails to render entirely.
+                        set_use_markup: false,
+                    },
+
+                    #[name = "subtitle"]
+                    gtk::Label {
+                        set_xalign: 0.0,
+                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                        set_use_markup: false,
+                        add_css_class: "caption",
+                        add_css_class: "dim-label",
+                    },
+                },
+
+                #[name = "duration"]
+                gtk::Label {
+                    set_valign: gtk::Align::Center,
+                    add_css_class: "numeric",
+                    add_css_class: "dim-label",
+                },
+            }
+        }
+
+        (
+            root,
+            LibraryItemWidgets {
+                icon,
+                title,
+                subtitle,
+                duration,
+            },
+        )
+    }
+
+    fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
+        // Everything is set unconditionally: this widget was showing another
+        // track a moment ago, and anything left unset keeps that track's value.
+        widgets.title.set_label(&self.track.title);
+        widgets.subtitle.set_label(&self.subtitle);
+        widgets.duration.set_label(&self.track.duration_label());
+
+        let playable = self.playable();
+        let playing = self.track.catalog_id.is_some()
+            && self.current.borrow().as_deref() == self.track.catalog_id.as_deref();
+        apply_row_state(&widgets.icon, root, playing, playable);
+
+        // Publish this row's widgets while it is on screen.
+        if let Some(id) = &self.track.catalog_id {
+            self.registry.borrow_mut().insert(
+                id.clone(),
+                LibraryRowWidgets {
+                    icon: widgets.icon.clone(),
+                    root: root.clone(),
+                },
+            );
         }
     }
 
-    fn tooltip(&self) -> Option<&'static str> {
-        (!self.track.playable())
-            .then_some("Not available to stream — this track is only in your library")
+    fn unbind(&mut self, _widgets: &mut Self::Widgets, _root: &mut Self::Root) {
+        // The widget is about to be handed to another track.
+        if let Some(id) = &self.track.catalog_id {
+            self.registry.borrow_mut().remove(id);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::{current_track, dead_tracks, row_registry};
     use crate::music::types::TrackId;
 
-    fn track(title: &str, artist: &str, album: &str, catalog: Option<&str>) -> Track {
+    fn track(artist: &str, album: &str) -> Track {
         Track {
             id: TrackId("i.test".into()),
-            catalog_id: catalog.map(str::to_owned),
-            title: title.into(),
+            catalog_id: Some("1".into()),
+            title: "Title".into(),
             artist: artist.into(),
             album: album.into(),
             duration_ms: 200_000,
@@ -155,26 +223,47 @@ mod tests {
         }
     }
 
-    fn row(track: Track) -> TrackRow {
-        TrackRow {
-            track,
-            index: 0,
-            playing: false,
-        }
-    }
-
     #[test]
     fn subtitle_collapses_rather_than_showing_a_dangling_dash() {
-        let r = row(track("t", "Aitana", "Superestrella", None));
-        assert_eq!(r.subtitle(), "Aitana — Superestrella");
-        assert_eq!(row(track("t", "Aitana", "", None)).subtitle(), "Aitana");
-        assert_eq!(row(track("t", "", "Album", None)).subtitle(), "Album");
-        assert_eq!(row(track("t", "", "", None)).subtitle(), "");
-    }
-
-    #[test]
-    fn unplayable_tracks_explain_themselves() {
-        assert!(row(track("t", "a", "b", None)).tooltip().is_some());
-        assert!(row(track("t", "a", "b", Some("123"))).tooltip().is_none());
+        assert_eq!(
+            LibraryItem::new(
+                track("Aitana", "Superestrella"),
+                row_registry(),
+                current_track(),
+                dead_tracks()
+            )
+            .subtitle,
+            "Aitana — Superestrella"
+        );
+        assert_eq!(
+            LibraryItem::new(
+                track("Aitana", ""),
+                row_registry(),
+                current_track(),
+                dead_tracks()
+            )
+            .subtitle,
+            "Aitana"
+        );
+        assert_eq!(
+            LibraryItem::new(
+                track("", "Album"),
+                row_registry(),
+                current_track(),
+                dead_tracks()
+            )
+            .subtitle,
+            "Album"
+        );
+        assert_eq!(
+            LibraryItem::new(
+                track("", ""),
+                row_registry(),
+                current_track(),
+                dead_tracks()
+            )
+            .subtitle,
+            ""
+        );
     }
 }

@@ -388,6 +388,14 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
 - Rows are `adw::ActionRow` with artwork as prefix; activating a row sends
   `PlayTrack` with the **whole containing list** as the queue and the row's index
   as `start` — never a single-track queue (rule 3).
+- **Lists are `gtk::ListView` via relm4's `TypedListView`, never
+  `gtk::ListBox`.** A `ListBox` builds one real widget per row, so a
+  541-track library plus a 530-track queue meant over a thousand live
+  `AdwActionRow`s and the app felt heavy. `ListView` recycles — it keeps about
+  as many widgets as fit on screen. The consequence: `RelmListItem::bind` must
+  set **every** property it cares about, because the widget it is handed was
+  showing a different track a moment ago, and anything left unset keeps the old
+  value. Disconnect signal handlers in `unbind` or they stack up on reuse.
 - **Use libadwaita widgets, not raw GTK.** `adw::ActionRow`,
   `adw::PreferencesGroup`, `adw::AboutDialog`, `adw::StatusPage`,
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS
@@ -427,7 +435,10 @@ Playback engine first. One vertical slice, one PR each.
 - ✅ **M3 — MPRIS.** `org.mpris.MediaPlayer2.Tonearm`, bidirectional, artwork as
   a `file://` URL. Verified over `busctl`: properties read, and `PlayPause` /
   `Next` from the bus reach the sidecar.
-- **M4 — Queue view.** Native list, reorder, jump via `changeToMediaAtIndex`.
+- ✅ **M4 — Queue view.** MusicKit's queue as an `adw::OverlaySplitView`
+  sidebar: jump via `changeToMediaAtIndex`, remove in place. Drag-reorder is
+  deliberately not shipped — `queue.splice` is undocumented and the risk is to
+  the gapless buffer.
 - ✅ **M5 — Library.** Saved songs in a native list, type-to-find search,
   click-to-play enqueuing the whole visible list. Verified against a real
   library: 539 tracks over 6 pages, 4 correctly detected as unplayable.
@@ -441,6 +452,12 @@ Discord presence, podcasts, radio, multi-account, an equaliser, scrobbling,
 cross-platform. Downloads and anything decrypting are not "later", they are
 rule 1. When a change drifts, **name the cost and the direction** so it's a
 conscious choice — then build it if it genuinely helps on this one machine.
+
+## Known issues
+
+- **Removing a queue track scrolls the list to the top** (#6). Four approaches
+  tried and ruled out; the issue records them so they are not retried. Playing
+  and jumping are unaffected, and the library list no longer does it.
 
 ## Commands
 

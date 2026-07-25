@@ -87,6 +87,7 @@ pub enum NowPlayingInput {
     /// committing an outdated position.
     ScrubCommit(u64),
     VolumeChanged(f64),
+    ShowQueue,
     PlayPause,
     Next,
     Previous,
@@ -94,6 +95,7 @@ pub enum NowPlayingInput {
 
 #[derive(Debug)]
 pub enum NowPlayingOutput {
+    ShowQueue,
     PlayPause,
     Next,
     Previous,
@@ -242,6 +244,14 @@ impl SimpleComponent for NowPlaying {
                     connect_clicked => NowPlayingInput::Next,
                 },
 
+                gtk::Button {
+                    set_icon_name: "view-list-symbolic",
+                    set_tooltip_text: Some("Queue"),
+                    add_css_class: "flat",
+                    add_css_class: "circular",
+                    connect_clicked => NowPlayingInput::ShowQueue,
+                },
+
                 gtk::ScaleButton {
                     set_icons: &[
                         "audio-volume-muted-symbolic",
@@ -323,6 +333,9 @@ impl SimpleComponent for NowPlaying {
             NowPlayingInput::VolumeChanged(v) => {
                 self.volume = v;
                 let _ = sender.output(NowPlayingOutput::SetVolume(v));
+            }
+            NowPlayingInput::ShowQueue => {
+                let _ = sender.output(NowPlayingOutput::ShowQueue);
             }
             NowPlayingInput::PlayPause => {
                 let _ = sender.output(NowPlayingOutput::PlayPause);
