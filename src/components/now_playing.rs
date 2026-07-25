@@ -16,6 +16,14 @@ use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent, gtk
 
 use crate::music::types::format_duration;
 
+/// How long the slider must sit still before the seek is actually sent.
+///
+/// Dragging emits `change-value` continuously; seeking a DRM HLS stream on
+/// every one of those would force a re-buffer per pixel. Waiting for a short
+/// pause turns a drag into a single seek while still feeling immediate,
+/// because the elapsed label moves with the handle straight away.
+const SCRUB_COMMIT_MS: u64 = 250;
+
 /// Everything the bar needs, flattened out of `PlayerState` at the boundary.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Snapshot {
@@ -36,22 +44,27 @@ pub struct NowPlaying {
     snap: Snapshot,
     artwork: Option<PathBuf>,
     volume: f64,
-    /// True while the user is dragging the seek slider. State updates must not
-    /// yank the handle out from under them — the single most annoying bug a
-    /// music player can have.
+    /// True from the first slider movement until the debounce commits. State
+    /// updates must not yank the handle out from under the user — the single
+    /// most annoying bug a music player can have.
     scrubbing: bool,
+    /// Bumped on every slider movement. Only the timer carrying the current
+    /// generation is allowed to commit, which is how the debounce cancels
+    /// earlier timers without juggling `SourceId`s (removing an already-fired
+    /// source aborts the process).
+    scrub_gen: u64,
 }
 
 #[derive(Debug)]
 pub enum NowPlayingInput {
     Sync(Box<Snapshot>),
     ArtworkReady(Option<PathBuf>),
-    /// Pointer went down on the slider — stop syncing its value from state.
-    ScrubStarted,
     /// The slider moved, as a fraction 0.0–1.0 of the track.
     ScrubMoved(f64),
-    /// Pointer released — commit the seek.
-    ScrubEnded,
+    /// The debounce elapsed. Carries the generation it was scheduled for, so a
+    /// stale timer from earlier in the same drag is ignored rather than
+    /// committing an outdated position.
+    ScrubCommit(u64),
     VolumeChanged(f64),
     PlayPause,
     Next,
@@ -139,22 +152,17 @@ impl SimpleComponent for NowPlaying {
                     set_range: (0.0, 1.0),
                     set_increments: (0.01, 0.1),
 
-                    // `change-value` covers drags, keyboard steps and scroll.
-                    // While dragging it only moves the label; the seek is sent
-                    // on release, so a drag across the bar is one seek and not
-                    // one per pixel.
+                    // `change-value` covers drags, keyboard steps and scroll,
+                    // and is the ONLY input handler on this widget.
+                    //
+                    // Do not add a GestureClick here to detect drag start/end:
+                    // GtkGestureClick claims the event sequence on press, which
+                    // cancels GtkScale's own internal drag gesture and leaves
+                    // the slider completely unscrubbable. The commit is
+                    // debounced instead — see SCRUB_COMMIT_MS.
                     connect_change_value[sender] => move |_, _, value| {
                         sender.input(NowPlayingInput::ScrubMoved(value));
                         gtk::glib::Propagation::Proceed
-                    },
-
-                    add_controller = gtk::GestureClick {
-                        connect_pressed[sender] => move |_, _, _, _| {
-                            sender.input(NowPlayingInput::ScrubStarted);
-                        },
-                        connect_released[sender] => move |_, _, _, _| {
-                            sender.input(NowPlayingInput::ScrubEnded);
-                        },
                     },
                 },
 
@@ -238,6 +246,7 @@ impl SimpleComponent for NowPlaying {
             artwork: None,
             volume: 1.0,
             scrubbing: false,
+            scrub_gen: 0,
         };
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -247,22 +256,25 @@ impl SimpleComponent for NowPlaying {
         match msg {
             NowPlayingInput::Sync(snap) => self.snap = *snap,
             NowPlayingInput::ArtworkReady(path) => self.artwork = path,
-            NowPlayingInput::ScrubStarted => self.scrubbing = true,
             NowPlayingInput::ScrubMoved(fraction) => {
                 let Some(target) = self.fraction_to_ms(fraction) else {
                     return;
                 };
-                // Move the label immediately either way — waiting for the
+                // Move the label with the handle immediately — waiting for the
                 // sidecar's echo makes a seek feel like it didn't register.
                 self.snap.position_ms = target;
-                // A keyboard step or scroll produces no press/release pair, so
-                // there is no ScrubEnded coming: commit it now.
-                if !self.scrubbing {
-                    let _ = sender.output(NowPlayingOutput::Seek(target));
-                }
+                self.scrubbing = true;
+                self.scrub_gen = self.scrub_gen.wrapping_add(1);
+
+                let generation = self.scrub_gen;
+                let sender = sender.clone();
+                gtk::glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(SCRUB_COMMIT_MS),
+                    move || sender.input(NowPlayingInput::ScrubCommit(generation)),
+                );
             }
-            NowPlayingInput::ScrubEnded => {
-                if self.scrubbing {
+            NowPlayingInput::ScrubCommit(generation) => {
+                if self.should_commit(generation) {
                     self.scrubbing = false;
                     let _ = sender.output(NowPlayingOutput::Seek(self.snap.position_ms));
                 }
@@ -309,6 +321,14 @@ impl SimpleComponent for NowPlaying {
 }
 
 impl NowPlaying {
+    /// Whether a fired debounce timer is the one we're still waiting for.
+    ///
+    /// Anything older is a leftover from earlier in the same drag; committing
+    /// it would seek to a position the user already moved away from.
+    fn should_commit(&self, generation: u64) -> bool {
+        generation == self.scrub_gen && self.scrubbing
+    }
+
     /// `None` for a track with no known length — seeking into nothing.
     fn fraction_to_ms(&self, fraction: f64) -> Option<u64> {
         (self.snap.duration_ms > 0)
@@ -344,6 +364,7 @@ mod tests {
             artwork: None,
             volume: 1.0,
             scrubbing: false,
+            scrub_gen: 0,
         }
     }
 
@@ -361,6 +382,30 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(m.progress(), 1.0);
+    }
+
+    #[test]
+    fn only_the_newest_scrub_timer_commits() {
+        let mut m = model(Snapshot {
+            duration_ms: 200_000,
+            ..Default::default()
+        });
+        m.scrubbing = true;
+        m.scrub_gen = 7;
+
+        assert!(m.should_commit(7), "the current generation commits");
+        assert!(
+            !m.should_commit(6),
+            "a leftover timer must not seek to a position already moved away from"
+        );
+    }
+
+    #[test]
+    fn a_committed_scrub_does_not_commit_twice() {
+        let mut m = model(Snapshot::default());
+        m.scrub_gen = 3;
+        m.scrubbing = false; // already committed
+        assert!(!m.should_commit(3));
     }
 
     #[test]
