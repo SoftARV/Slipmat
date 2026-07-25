@@ -229,15 +229,28 @@ fn register_actions(window: &adw::ApplicationWindow, sender: &ComponentSender<Ap
 }
 
 /// One row in the navigation sidebar.
+///
+/// The icon name is checked against the theme. A name that does not exist
+/// renders as nothing at all — silently, with no warning — which is how
+/// `music-note-single-symbolic` shipped as an invisible icon.
 fn sidebar_row(label: &str, icon: &str) -> gtk::ListBoxRow {
-    let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    box_.set_margin_top(8);
-    box_.set_margin_bottom(8);
-    box_.set_margin_start(12);
-    box_.set_margin_end(12);
-    box_.append(&gtk::Image::from_icon_name(icon));
-    box_.append(&gtk::Label::new(Some(label)));
-    gtk::ListBoxRow::builder().child(&box_).build()
+    let resolved = gtk::gdk::Display::default()
+        .map(|display| gtk::IconTheme::for_display(&display))
+        .filter(|theme| theme.has_icon(icon))
+        .map(|_| icon)
+        .unwrap_or_else(|| {
+            tracing::warn!(icon, "icon missing from the theme; falling back");
+            "audio-x-generic-symbolic"
+        });
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.set_margin_top(8);
+    row.set_margin_bottom(8);
+    row.set_margin_start(12);
+    row.set_margin_end(12);
+    row.append(&gtk::Image::from_icon_name(resolved));
+    row.append(&gtk::Label::new(Some(label)));
+    gtk::ListBoxRow::builder().child(&row).build()
 }
 
 fn show_about(parent: &adw::ApplicationWindow) {
@@ -337,7 +350,12 @@ pub struct AppModel {
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
-    query: String,
+    /// One query per scope. They are genuinely different searches: filtering
+    /// your library by what you typed into Apple Music is meaningless, and
+    /// clearing the box to get your library back would throw away the catalog
+    /// search you were in the middle of.
+    library_query: String,
+    catalog_query: String,
     scope: SearchScope,
     /// Results of the last catalog search. Kept separate from `all_tracks` so
     /// switching back to Library does not have to reload anything.
@@ -513,28 +531,10 @@ impl Component for AppModel {
                                             set_margin_top: 6,
 
                                             gtk::Label {
-                                                set_label: "Library",
-                                                set_xalign: 0.0,
-                                                set_margin_start: 16,
-                                                set_margin_top: 6,
-                                                add_css_class: "heading",
-                                                add_css_class: "dim-label",
-                                            },
-
-                                            #[name = "nav_library"]
-                                            gtk::ListBox {
-                                                add_css_class: "navigation-sidebar",
-                                                set_selection_mode: gtk::SelectionMode::Single,
-                                                connect_row_activated[sender] => move |_, _| {
-                                                    sender.input(AppMsg::SetScope(SearchScope::Library));
-                                                },
-                                            },
-
-                                            gtk::Label {
                                                 set_label: "Apple Music",
                                                 set_xalign: 0.0,
                                                 set_margin_start: 16,
-                                                set_margin_top: 12,
+                                                set_margin_top: 6,
                                                 add_css_class: "heading",
                                                 add_css_class: "dim-label",
                                             },
@@ -545,6 +545,24 @@ impl Component for AppModel {
                                                 set_selection_mode: gtk::SelectionMode::Single,
                                                 connect_row_activated[sender] => move |_, _| {
                                                     sender.input(AppMsg::SetScope(SearchScope::Catalog));
+                                                },
+                                            },
+
+                                            gtk::Label {
+                                                set_label: "Library",
+                                                set_xalign: 0.0,
+                                                set_margin_start: 16,
+                                                set_margin_top: 12,
+                                                add_css_class: "heading",
+                                                add_css_class: "dim-label",
+                                            },
+
+                                            #[name = "nav_library"]
+                                            gtk::ListBox {
+                                                add_css_class: "navigation-sidebar",
+                                                set_selection_mode: gtk::SelectionMode::Single,
+                                                connect_row_activated[sender] => move |_, _| {
+                                                    sender.input(AppMsg::SetScope(SearchScope::Library));
                                                 },
                                             },
                                         },
@@ -564,6 +582,7 @@ impl Component for AppModel {
                                 set_child = &adw::ToolbarView {
                                     add_top_bar = &adw::HeaderBar {
                                         #[wrap(Some)]
+                                        #[name = "search_entry"]
                                         set_title_widget = &gtk::SearchEntry {
                                             set_width_request: 320,
                                             #[watch]
@@ -673,11 +692,11 @@ impl Component for AppModel {
                                             set_description: Some(&match model.scope {
                                                 SearchScope::Library => format!(
                                                     "Nothing in your library matches “{}”. Try searching Apple Music.",
-                                                    model.query
+                                                    model.query()
                                                 ),
                                                 SearchScope::Catalog => format!(
                                                     "Apple Music has nothing matching “{}”.",
-                                                    model.query
+                                                    model.query()
                                                 ),
                                             }),
                                         },
@@ -752,7 +771,8 @@ impl Component for AppModel {
             dead_rows: dead_tracks(),
             // filled from `dead_ids` once the model exists (see below)
             all_tracks: Vec::new(),
-            query: String::new(),
+            library_query: String::new(),
+            catalog_query: String::new(),
             scope: SearchScope::default(),
             catalog: Vec::new(),
             searching_catalog: false,
@@ -797,7 +817,7 @@ impl Component for AppModel {
         // Sidebar rows, added imperatively so each section is its own ListBox
         // and the two behave as one selection: picking a row in either clears
         // the other, which a single ListBox would do for free but two will not.
-        let songs = sidebar_row("Songs", "music-note-single-symbolic");
+        let songs = sidebar_row("Songs", "folder-music-symbolic");
         widgets.nav_library.append(&songs);
         widgets
             .nav_catalog
@@ -849,6 +869,31 @@ impl Component for AppModel {
         notify::clear(relm4::main_application().upcast_ref::<gtk::gio::Application>());
     }
 
+    /// Wraps `update` so the search box can be re-filled after a scope change.
+    ///
+    /// The entry is the one widget holding text the model also owns, and the
+    /// two must agree: switching scope swaps which query is live, and the box
+    /// has to show that scope's text rather than the one you left behind.
+    fn update_with_view(
+        &mut self,
+        widgets: &mut Self::Widgets,
+        msg: Self::Input,
+        sender: ComponentSender<Self>,
+        root: &Self::Root,
+    ) {
+        let scope_before = self.scope;
+        self.update(msg, sender.clone(), root);
+
+        if self.scope != scope_before {
+            // `set_text` fires `search-changed`, but `SearchChanged` returns
+            // early when the text already matches the active query — which it
+            // does by now, because `update` set it first. No loop.
+            widgets.search_entry.set_text(self.query());
+        }
+
+        self.update_view(widgets, sender);
+    }
+
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
@@ -872,10 +917,13 @@ impl Component for AppModel {
             }
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
-                if query == self.query {
+                if query == self.query() {
                     return;
                 }
-                self.query = query;
+                match self.scope {
+                    SearchScope::Library => self.library_query = query,
+                    SearchScope::Catalog => self.catalog_query = query,
+                }
 
                 match self.scope {
                     // Local filter: instant, every keystroke.
@@ -885,7 +933,7 @@ impl Component for AppModel {
                         let generation = self.search_gen;
 
                         self.catalog_exhausted = false;
-                        if self.query.trim().is_empty() {
+                        if self.catalog_query.trim().is_empty() {
                             self.catalog.clear();
                             self.searching_catalog = false;
                             self.rebuild_rows();
@@ -921,7 +969,7 @@ impl Component for AppModel {
                     SearchScope::Catalog => {
                         self.search_gen = self.search_gen.wrapping_add(1);
                         let generation = self.search_gen;
-                        if self.query.trim().is_empty() {
+                        if self.catalog_query.trim().is_empty() {
                             self.catalog.clear();
                             self.rebuild_rows();
                         } else {
@@ -1105,10 +1153,18 @@ impl AppModel {
     ///
     /// Filtering reads `all_tracks`, never the factory, so clearing a search
     /// restores everything rather than whatever survived the last narrowing.
+    /// The query for whichever scope is showing.
+    fn query(&self) -> &str {
+        match self.scope {
+            SearchScope::Library => &self.library_query,
+            SearchScope::Catalog => &self.catalog_query,
+        }
+    }
+
     fn visible_tracks(&self) -> Box<dyn Iterator<Item = &Track> + '_> {
         match self.scope {
             SearchScope::Library => {
-                let needle = self.query.trim().to_lowercase();
+                let needle = self.query().trim().to_lowercase();
                 Box::new(
                     self.all_tracks
                         .iter()
@@ -1135,7 +1191,7 @@ impl AppModel {
             tokens.music_user_token.clone(),
             tokens.storefront.clone(),
         );
-        let term = self.query.trim().to_owned();
+        let term = self.catalog_query.trim().to_owned();
         if term.is_empty() {
             return;
         }
@@ -1161,7 +1217,7 @@ impl AppModel {
     fn rebuild_rows(&mut self) {
         // Rebuilding resets the scroll. It is legitimate on load and on a
         // search change; anywhere else it is a bug, so say when it happens.
-        tracing::debug!(query = %self.query, "library: rebuilding rows");
+        tracing::debug!(query = %self.query(), "library: rebuilding rows");
         let visible: Vec<Track> = self.visible_tracks().cloned().collect();
         let playing = self.playing_catalog_id();
         // The rows are built with the marker already set, so record that here
@@ -1510,10 +1566,15 @@ impl AppModel {
         // Only the *first* load takes over the screen. A reload with tracks
         // already on show keeps the list up and just disables the refresh
         // button — yanking the library away to show a spinner is worse.
+        // Only ever take over the screen when there is nothing to show. Paging
+        // in more catalog results happens *below* a list the user is already
+        // reading, and replacing that list with a spinner mid-scroll is worse
+        // than a moment with no new rows.
         let first_library_load = self.loading_library && self.all_tracks.is_empty();
-        let catalog_in_flight = self.scope == SearchScope::Catalog && self.searching_catalog;
+        let first_catalog_page =
+            self.scope == SearchScope::Catalog && self.searching_catalog && self.catalog.is_empty();
 
-        if first_library_load || catalog_in_flight {
+        if first_library_load || first_catalog_page {
             "loading"
         } else if !self.showing_library() {
             "status"
