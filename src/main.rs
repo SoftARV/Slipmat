@@ -5,7 +5,9 @@ mod app;
 mod components;
 mod mpris;
 mod music;
+mod notify;
 mod player;
+mod settings;
 mod unplayable;
 
 use relm4::RelmApp;
@@ -27,7 +29,12 @@ fn main() {
     // init here.
     let app = RelmApp::new(APP_ID);
     setup_icon();
-    app.run::<app::AppModel>(());
+
+    // Load preferences and apply the colour scheme before the window is shown,
+    // so there is no flash of the wrong theme. The model owns them from here.
+    let settings = settings::Settings::load();
+    settings.apply_theme();
+    app.run::<app::AppModel>(settings);
 }
 
 /// Point GTK at our icon and name it as the default.
