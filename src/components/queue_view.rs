@@ -21,7 +21,7 @@ use relm4::prelude::*;
 use relm4::typed_view::list::{RelmListItem, TypedListView};
 use relm4::{Component, ComponentParts, ComponentSender, adw, gtk, view};
 
-use crate::components::{RowRegistry, row_registry};
+use crate::components::{CurrentTrack, RowRegistry, current_track, row_registry};
 use crate::music::types::format_duration;
 
 /// The widgets a queue row publishes while it is on screen.
@@ -44,7 +44,10 @@ pub struct QueueEntry {
 #[derive(Debug, Clone)]
 pub struct QueueItem {
     entry: QueueEntry,
-    playing: bool,
+    /// Who is playing, shared with every other row. Read at `bind`, never
+    /// stored per-item — a per-item flag has to be changed in the model, and
+    /// any model edit costs the scroll position (see `CurrentTrack`).
+    current: CurrentTrack,
     /// Cloned into every item so a row's remove button has somewhere to send.
     /// `setup` is a static function with no sender, and the button must know
     /// *which* track it belongs to — which is only known at bind time.
@@ -149,20 +152,16 @@ impl RelmListItem for QueueItem {
             .duration
             .set_label(&format_duration(self.entry.duration_ms));
 
-        widgets.icon.set_icon_name(Some(if self.playing {
-            "media-playback-start-symbolic"
-        } else {
-            "audio-x-generic-symbolic"
-        }));
-        widgets.icon.set_css_classes(if self.playing {
-            &["accent"]
-        } else {
-            &["dim-label"]
-        });
+        let playing = self.current.borrow().as_deref() == Some(self.entry.id.as_str());
+        apply_playing(&widgets.icon, &widgets.remove, playing);
 
-        // Removing the track you are listening to is a stop dressed up as an
-        // edit; skip is the button for that.
-        widgets.remove.set_sensitive(!self.playing);
+        self.registry.borrow_mut().insert(
+            self.entry.id.clone(),
+            QueueRowWidgets {
+                icon: widgets.icon.clone(),
+                remove: widgets.remove.clone(),
+            },
+        );
 
         if let Some(old) = widgets.handler.take() {
             widgets.remove.disconnect(old);
@@ -206,6 +205,7 @@ pub struct QueueView {
     shown: Vec<String>,
     playing: Option<String>,
     registry: RowRegistry<QueueRowWidgets>,
+    current: CurrentTrack,
 }
 
 #[derive(Debug)]
@@ -289,6 +289,7 @@ impl Component for QueueView {
             shown: Vec::new(),
             playing: None,
             registry: row_registry(),
+            current: current_track(),
         };
         let queue_list = &model.list.view;
         let widgets = view_output!();
@@ -363,17 +364,20 @@ impl QueueView {
                     now = ids.len(),
                     "queue: rebuilding rows"
                 );
-                let marker = playing.clone();
                 let registry = self.registry.clone();
                 // These rows are going away; none of their widgets are ours.
                 registry.borrow_mut().clear();
+                // Rows read the marker from here at bind time, so it only has
+                // to be current before they are built.
+                let current = self.current.clone();
+                *current.borrow_mut() = playing.clone();
                 self.list.clear();
                 self.list
                     .extend_from_iter(entries.into_iter().map(|entry| QueueItem {
-                        playing: Some(&entry.id) == marker.as_ref(),
                         entry,
                         sender: sender.clone(),
                         registry: registry.clone(),
+                        current: current.clone(),
                     }));
                 self.shown = ids;
                 self.count = self.shown.len();
@@ -388,6 +392,9 @@ impl QueueView {
         // an item in place does nothing — the store emits no change, so the row
         // is never told to re-bind.
         if playing != self.playing {
+            // The shared cell first, so any row bound from here on is right...
+            *self.current.borrow_mut() = playing.clone();
+            // ...then the two rows on screen right now, if they are.
             if let Some(old) = self.playing.take() {
                 self.set_row_playing(&old, false);
             }
@@ -398,18 +405,8 @@ impl QueueView {
         }
     }
 
-    /// Move the marker on one row **without touching the model**.
-    ///
-    /// Editing the store — even replacing a single item — makes `ListView`
-    /// re-measure and the scroll jumps to the top. So: update the data
-    /// silently, so a later re-bind is correct, and update the widget directly
-    /// if the row is on screen right now.
-    fn set_row_playing(&mut self, id: &str, playing: bool) {
-        if let Some(position) = self.list.find(|item| item.entry.id == id)
-            && let Some(item) = self.list.get(position)
-        {
-            item.borrow_mut().playing = playing;
-        }
+    /// Repaint one row's marker. Touches a widget, never the model.
+    fn set_row_playing(&self, id: &str, playing: bool) {
         if let Some(w) = self.registry.borrow().get(id) {
             apply_playing(&w.icon, &w.remove, playing);
         }

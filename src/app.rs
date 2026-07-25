@@ -25,7 +25,7 @@ use crate::components::artwork::{self, ART_SIZE};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
 use crate::components::queue_view::{QueueEntry, QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::{LibraryItem, row_icon};
-use crate::components::{RowRegistry, row_registry};
+use crate::components::{CurrentTrack, RowRegistry, current_track, row_registry};
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
@@ -173,6 +173,8 @@ pub struct AppModel {
     /// Icons of the library rows currently on screen, so the marker can move
     /// without editing the model — see `RowRegistry`.
     library_icons: RowRegistry<gtk::Image>,
+    /// Who is playing. Shared with every library row; see `CurrentTrack`.
+    current_track: CurrentTrack,
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
@@ -453,6 +455,7 @@ impl Component for AppModel {
             show_queue: false,
             marked_playing: None,
             library_icons: row_registry(),
+            current_track: current_track(),
             all_tracks: Vec::new(),
             query: String::new(),
             loading_library: false,
@@ -633,13 +636,16 @@ impl AppModel {
         let registry = self.library_icons.clone();
         // Rows are about to be discarded; none of their widgets are ours now.
         registry.borrow_mut().clear();
+        // Rows read the marker from here at bind time, so it just has to be
+        // current before they are built.
+        let current = self.current_track.clone();
+        *current.borrow_mut() = playing.clone();
         self.library.clear();
-        self.library
-            .extend_from_iter(visible.into_iter().map(|track| {
-                let mut item = LibraryItem::new(track, registry.clone());
-                item.playing = item.track.catalog_id.is_some() && item.track.catalog_id == playing;
-                item
-            }));
+        self.library.extend_from_iter(
+            visible
+                .into_iter()
+                .map(|track| LibraryItem::new(track, registry.clone(), current.clone())),
+        );
     }
 
     /// Tell the rows which one is playing, so the list shows a play marker.
@@ -664,6 +670,9 @@ impl AppModel {
         if current == self.marked_playing {
             return;
         }
+        // The shared cell first, so any row bound from here on is correct...
+        *self.current_track.borrow_mut() = current.clone();
+        // ...then the two rows that are on screen right now, if they are.
         if let Some(old) = self.marked_playing.take() {
             self.set_row_playing(&old, false);
         }
@@ -680,15 +689,8 @@ impl AppModel {
     /// that fires on every track change. So: update the item's data silently,
     /// so a later re-bind is correct, and update the widget directly if this
     /// row happens to be on screen right now.
-    fn set_row_playing(&mut self, catalog_id: &str, playing: bool) {
-        if let Some(position) = self
-            .library
-            .find(|item| item.track.catalog_id.as_deref() == Some(catalog_id))
-            && let Some(item) = self.library.get(position)
-        {
-            item.borrow_mut().playing = playing;
-        }
-
+    /// Repaint one row's marker. Touches a widget, never the model.
+    fn set_row_playing(&self, catalog_id: &str, playing: bool) {
         if let Some(icon) = self.library_icons.borrow().get(catalog_id) {
             // Only a playable row can be the current track.
             let (name, classes) = row_icon(playing, true);
@@ -1178,7 +1180,14 @@ impl AppModel {
                 .player
                 .now_playing
                 .as_ref()
-                .map(|i| format!("{} — {}", i.artist, i.album))
+                // adw::StatusPage always parses its description as Pango
+                // markup — there is no use-markup to turn off — so a track like
+                // "Mercury - Acts 1 & 2" has to be escaped. It warns even while
+                // this page is behind the library, because #[watch] still runs.
+                .map(|i| {
+                    gtk::glib::markup_escape_text(&format!("{} — {}", i.artist, i.album))
+                        .to_string()
+                })
                 .unwrap_or_else(|| "Nothing playing".into()),
             _ => String::new(),
         }

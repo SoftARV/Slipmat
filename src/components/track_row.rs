@@ -19,7 +19,7 @@ use relm4::prelude::*;
 use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
-use crate::components::RowRegistry;
+use crate::components::{CurrentTrack, RowRegistry};
 use crate::music::types::Track;
 
 /// Icon name and CSS classes for a row's leading indicator.
@@ -36,14 +36,10 @@ pub fn row_icon(playing: bool, playable: bool) -> (&'static str, &'static [&'sta
 #[derive(Debug, Clone)]
 pub struct LibraryItem {
     pub track: Track,
-    /// Whether this is the track currently playing.
-    ///
-    /// A plain field. An earlier version used relm4's `BoolBinding` on the
-    /// assumption that changing it would repaint the row — it does not, unless
-    /// a widget property is actually bound to it, which nothing was. The marker
-    /// simply never appeared. Changing this now means replacing the item in the
-    /// store, which is what makes `ListView` re-bind the row.
-    pub playing: bool,
+    /// Who is playing, shared with every other row. Read at `bind`, never
+    /// stored per-item: a per-item flag has to be changed in the model, and any
+    /// model edit costs the scroll position (see `CurrentTrack`).
+    pub current: CurrentTrack,
     pub subtitle: String,
     /// Where this row publishes its icon while it is on screen, so the marker
     /// can be moved without touching the model. See `RowRegistry`.
@@ -51,7 +47,7 @@ pub struct LibraryItem {
 }
 
 impl LibraryItem {
-    pub fn new(track: Track, registry: RowRegistry<gtk::Image>) -> Self {
+    pub fn new(track: Track, registry: RowRegistry<gtk::Image>, current: CurrentTrack) -> Self {
         let subtitle = match (track.artist.is_empty(), track.album.is_empty()) {
             (false, false) => format!("{} — {}", track.artist, track.album),
             (false, true) => track.artist.clone(),
@@ -60,7 +56,7 @@ impl LibraryItem {
         };
         Self {
             subtitle,
-            playing: false,
+            current,
             track,
             registry,
         }
@@ -143,7 +139,9 @@ impl RelmListItem for LibraryItem {
         widgets.subtitle.set_label(&self.subtitle);
         widgets.duration.set_label(&self.track.duration_label());
 
-        let (icon, classes) = row_icon(self.playing, self.track.playable());
+        let playing = self.current.borrow().as_deref() == self.track.catalog_id.as_deref()
+            && self.track.catalog_id.is_some();
+        let (icon, classes) = row_icon(playing, self.track.playable());
         widgets.icon.set_icon_name(Some(icon));
         widgets.icon.set_css_classes(classes);
 
@@ -175,7 +173,7 @@ impl RelmListItem for LibraryItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::row_registry;
+    use crate::components::{current_track, row_registry};
     use crate::music::types::TrackId;
 
     fn track(artist: &str, album: &str) -> Track {
@@ -194,17 +192,25 @@ mod tests {
     #[test]
     fn subtitle_collapses_rather_than_showing_a_dangling_dash() {
         assert_eq!(
-            LibraryItem::new(track("Aitana", "Superestrella"), row_registry()).subtitle,
+            LibraryItem::new(
+                track("Aitana", "Superestrella"),
+                row_registry(),
+                current_track()
+            )
+            .subtitle,
             "Aitana — Superestrella"
         );
         assert_eq!(
-            LibraryItem::new(track("Aitana", ""), row_registry()).subtitle,
+            LibraryItem::new(track("Aitana", ""), row_registry(), current_track()).subtitle,
             "Aitana"
         );
         assert_eq!(
-            LibraryItem::new(track("", "Album"), row_registry()).subtitle,
+            LibraryItem::new(track("", "Album"), row_registry(), current_track()).subtitle,
             "Album"
         );
-        assert_eq!(LibraryItem::new(track("", ""), row_registry()).subtitle, "");
+        assert_eq!(
+            LibraryItem::new(track("", ""), row_registry(), current_track()).subtitle,
+            ""
+        );
     }
 }
