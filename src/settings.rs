@@ -65,6 +65,8 @@ impl Theme {
 pub enum Section {
     #[default]
     Library,
+    Albums,
+    Artists,
     Catalog,
 }
 
@@ -72,6 +74,8 @@ impl Section {
     fn as_str(self) -> &'static str {
         match self {
             Self::Library => "library",
+            Self::Albums => "albums",
+            Self::Artists => "artists",
             Self::Catalog => "catalog",
         }
     }
@@ -79,6 +83,8 @@ impl Section {
     fn parse(s: &str) -> Self {
         match s {
             "catalog" => Self::Catalog,
+            "albums" => Self::Albums,
+            "artists" => Self::Artists,
             _ => Self::Library,
         }
     }
@@ -213,7 +219,12 @@ mod tests {
 
     #[test]
     fn section_round_trips_and_falls_back() {
-        for section in [Section::Library, Section::Catalog] {
+        for section in [
+            Section::Library,
+            Section::Albums,
+            Section::Artists,
+            Section::Catalog,
+        ] {
             assert_eq!(Section::parse(section.as_str()), section);
         }
         // A hand-edited or future-version ini must not break startup.

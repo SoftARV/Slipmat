@@ -258,6 +258,19 @@ invent, and no other local process can drive your player. Chromium logs to
 stderr; **stdout carries protocol only** — anything that prints to stdout in the
 sidecar corrupts the channel.
 
+### Where the ids come from, and why it matters
+
+Apple has **two** id spaces and they are not interchangeable — a library id
+(`l.…` for albums, `r.…` for artists) 404s against `/catalog`, and a catalog id
+404s against `/me/library`. Every `Album` and `Artist` therefore carries a
+`library: bool` set **at the parse site** by whichever client method fetched it,
+never sniffed from the id's shape later. `PageKind` has separate variants for
+the two, so the compiler asks which one you have before a page can be opened.
+
+The same distinction already existed one level down: a library *song*'s own id
+is not playable, and its `playParams.catalogId` is. That is why `Track` carries
+both.
+
 ### Sidecar rules learned the hard way
 
 M1 took five rounds to get audio out, and every failure was silent. These are
@@ -443,9 +456,16 @@ Playback engine first. One vertical slice, one PR each.
   click-to-play enqueuing the whole visible list. Verified against a real
   library: 539 tracks over 6 pages, 4 correctly detected as unplayable.
   Playlists and albums are still to come.
-- 🚧 **M6 — Catalog.** Search across the whole Apple Music catalog, with a
-  Library/Apple Music toggle in the header. Album and artist pages are still
-  to come — they need an `adw::NavigationView` the app does not have yet.
+- ✅ **M6 — Catalog.** Search across the whole Apple Music catalog from the
+  sidebar, paginated as you scroll. Results mix artists and albums above the
+  songs; either pushes a detail page (`adw::NavigationView`) you can play from
+  and drill through — artist → album → track.
+- ✅ **M8 — Library browsing.** Albums and Artists as `gtk::GridView` tiles in
+  the sidebar, alongside Songs. Covers are fetched lazily as tiles bind and
+  cached to disk; clicking one pushes the same detail page the catalog uses,
+  pointed at `/me/library` instead of `/catalog`. Library artists carry no
+  artwork of their own, so the portrait is pulled from the catalog twin with
+  `include=catalog` — free, on the request we were already making.
 - ✅ **M7 — Polish.** Preferences (theme, notifications), keyboard shortcuts,
   About, the app icon, `.desktop`, `make install`, and opt-in track-change
   notifications.
@@ -455,6 +475,35 @@ Discord presence, podcasts, radio, multi-account, an equaliser, scrobbling,
 cross-platform. Downloads and anything decrypting are not "later", they are
 rule 1. When a change drifts, **name the cost and the direction** so it's a
 conscious choice — then build it if it genuinely helps on this one machine.
+
+### Lists, and where they live
+
+There are now three kinds of list, and they share their state deliberately:
+
+| List | Registry | Model |
+| --- | --- | --- |
+| Results (library or catalog) | `AppModel::library_icons` | `TypedListView`, **virtualised** |
+| Queue sidebar | `QueueView`'s own | `TypedListView`, virtualised |
+| Album / artist page | the page's own | `TypedListView`, **not** virtualised |
+| Albums grid | `AppModel::album_art_widgets` | `TypedGridView`, virtualised |
+| Artists grid | `AppModel::artist_art_widgets` | `TypedGridView`, virtualised |
+
+`CurrentTrack` and `DeadTracks` are shared by all of them; the widget registry
+is **per list**. It is keyed by catalog id, so one shared registry would have
+the same song on a page and in the results behind it overwrite each other's
+entry — the marker would land on whichever bound last. `set_row_playing` asks
+every registry instead.
+
+The grids' registries hold `gtk::Image`s rather than row widgets, and they are
+keyed by the **artwork's** cache key rather than by a catalog id — a tile that
+requested a cover has very likely been recycled onto a different album by the
+time the file lands, so the arrival is delivered to whichever tile is showing
+that artwork *now*, or to none. The disk cache (`AppModel::tile_art`) is shared
+across both grids, because it is keyed by the image itself.
+
+A pushed page is not virtualised on purpose: its list sits in a `Box` under the
+header so the header scrolls with the content, which means GTK asks the list for
+its full height. An album is a dozen tracks. That is the right trade.
 
 ## Known issues
 

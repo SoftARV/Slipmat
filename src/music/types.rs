@@ -101,37 +101,150 @@ impl Artwork {
     }
 }
 
-/// A playlist or album as shown in the library list.
-#[derive(Debug, Clone)]
-pub struct Collection {
+/// An album, as a search result or a page header.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Album {
     pub id: String,
     pub name: String,
-    pub subtitle: String,
-    pub kind: CollectionKind,
+    pub artist: String,
     pub artwork: Option<Artwork>,
+    /// `2024`, or empty when Apple did not say.
+    pub year: String,
+    pub track_count: u32,
+    /// True when `id` is a **library** id (`l.…`) rather than a catalog one.
+    /// They are not interchangeable: a library id 404s against
+    /// `/catalog/…/albums` and vice versa. Set explicitly by whichever client
+    /// method parsed it, never sniffed from the id's shape.
+    pub library: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CollectionKind {
-    Album,
-    Playlist,
+/// An artist, as a search result or a page header.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Artist {
+    pub id: String,
+    pub name: String,
+    pub artwork: Option<Artwork>,
+    /// Apple's genre list, joined — "Pop, Latin".
+    pub genres: String,
+    /// As [`Album::library`]. A library artist has no artwork of its own —
+    /// Apple returns only a name for `/me/library/artists` — so the client asks
+    /// for the catalog twin inline and copies its portrait across. See
+    /// [`LibraryArtistResource`].
+    pub library: bool,
 }
 
 // --- Apple's wire shapes. Private: they never escape this module. ------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Response<T> {
     #[serde(default = "Vec::new")]
     pub data: Vec<T>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Resource<A> {
     pub id: String,
     pub attributes: Option<A>,
 }
 
+/// An album with its `include=tracks` relationship attached.
 #[derive(Debug, Deserialize)]
+pub(crate) struct AlbumResource {
+    pub id: String,
+    pub attributes: Option<AlbumAttributes>,
+    pub relationships: Option<AlbumRelationships>,
+}
+
+impl AlbumResource {
+    pub fn into_album(self) -> Resource<AlbumAttributes> {
+        Resource {
+            id: self.id,
+            attributes: self.attributes,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AlbumRelationships {
+    pub tracks: Option<Response<Resource<SongAttributes>>>,
+}
+
+/// An artist with its `include=albums` relationship attached.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ArtistResource {
+    pub id: String,
+    pub attributes: Option<ArtistAttributes>,
+    pub relationships: Option<ArtistRelationships>,
+}
+
+impl ArtistResource {
+    pub fn into_artist(self) -> Resource<ArtistAttributes> {
+        Resource {
+            id: self.id,
+            attributes: self.attributes,
+        }
+    }
+}
+
+/// A **library** artist, with its catalog counterpart pulled in.
+///
+/// Apple returns only a name for `/me/library/artists` — no artwork, no genres.
+/// The picture the web player shows comes from the *catalog* artist, which is
+/// reachable as a relationship on the library one, so asking for it inline
+/// costs no extra requests.
+#[derive(Debug, Deserialize)]
+pub(crate) struct LibraryArtistResource {
+    pub id: String,
+    pub attributes: Option<ArtistAttributes>,
+    pub relationships: Option<LibraryArtistRelationships>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LibraryArtistRelationships {
+    pub catalog: Option<Response<Resource<ArtistAttributes>>>,
+}
+
+impl From<LibraryArtistResource> for Artist {
+    fn from(res: LibraryArtistResource) -> Self {
+        // The catalog twin, when Apple honoured `include=catalog`.
+        let catalog = res
+            .relationships
+            .and_then(|r| r.catalog)
+            .and_then(|c| c.data.into_iter().next())
+            .map(Artist::from);
+
+        let mut artist = Artist::from(Resource {
+            // The **library** id: it is what the library artist page is opened
+            // with. The catalog twin's id would 404 there.
+            id: res.id,
+            attributes: res.attributes,
+        });
+        artist.library = true;
+
+        if let Some(catalog) = catalog {
+            // Name stays the library's — it is what the user's own library
+            // calls this artist. Everything the library does not carry comes
+            // from the catalog.
+            artist.artwork = catalog.artwork;
+            artist.genres = catalog.genres;
+            if artist.name.is_empty() {
+                artist.name = catalog.name;
+            }
+        }
+        artist
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ArtistRelationships {
+    pub albums: Option<Response<Resource<AlbumAttributes>>>,
+    /// Only ever present on a **library** artist asked with `include=catalog`
+    /// — that is where the portrait lives. Absent on a catalog artist, which
+    /// already has its own artwork.
+    pub catalog: Option<Response<Resource<ArtistAttributes>>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SongAttributes {
     #[serde(default)]
@@ -153,7 +266,7 @@ pub(crate) struct SongAttributes {
 /// For a catalog resource `id` is the catalog id. For a library resource `id`
 /// is the library id and `catalog_id` holds the streamable equivalent — the
 /// distinction that makes library playback work at all.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PlayParams {
     #[serde(default)]
@@ -163,7 +276,77 @@ pub(crate) struct PlayParams {
     pub is_library: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AlbumAttributes {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub artist_name: String,
+    pub artwork: Option<ArtworkAttributes>,
+    /// `"2024-03-15"` or `"2024"` — we only ever want the year.
+    #[serde(default)]
+    pub release_date: String,
+    #[serde(default)]
+    pub track_count: u32,
+}
+
+impl From<Resource<AlbumAttributes>> for Album {
+    fn from(res: Resource<AlbumAttributes>) -> Self {
+        let a = res.attributes;
+        Album {
+            id: res.id,
+            name: a.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+            artist: a
+                .as_ref()
+                .map(|a| a.artist_name.clone())
+                .unwrap_or_default(),
+            // Apple gives a full date, a bare year, or nothing at all.
+            year: a
+                .as_ref()
+                .map(|a| a.release_date.chars().take(4).collect())
+                .unwrap_or_default(),
+            track_count: a.as_ref().map(|a| a.track_count).unwrap_or(0),
+            // Catalog unless a library method says otherwise.
+            library: false,
+            artwork: a
+                .and_then(|a| a.artwork)
+                .filter(|art| !art.url.is_empty())
+                .map(|art| Artwork::new(art.url)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArtistAttributes {
+    #[serde(default)]
+    pub name: String,
+    pub artwork: Option<ArtworkAttributes>,
+    #[serde(default)]
+    pub genre_names: Vec<String>,
+}
+
+impl From<Resource<ArtistAttributes>> for Artist {
+    fn from(res: Resource<ArtistAttributes>) -> Self {
+        let a = res.attributes;
+        Artist {
+            id: res.id,
+            name: a.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+            genres: a
+                .as_ref()
+                .map(|a| a.genre_names.join(", "))
+                .unwrap_or_default(),
+            library: false,
+            artwork: a
+                .and_then(|a| a.artwork)
+                .filter(|art| !art.url.is_empty())
+                .map(|art| Artwork::new(art.url)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ArtworkAttributes {
     #[serde(default)]
     pub url: String,
@@ -206,6 +389,37 @@ impl From<Resource<SongAttributes>> for Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_album_keeps_only_the_year_from_a_release_date() {
+        // Apple sends a full date, a bare year, or nothing.
+        let raw = r#"{"data":[{"id":"1","attributes":{"name":"Fragile","artistName":"Yes",
+            "releaseDate":"1971-11-26","trackCount":9}}]}"#;
+        let parsed: Response<Resource<AlbumAttributes>> = serde_json::from_str(raw).unwrap();
+        let album = Album::from(parsed.data.into_iter().next().unwrap());
+        assert_eq!(album.year, "1971");
+        assert_eq!(album.track_count, 9);
+        assert_eq!(album.artist, "Yes");
+    }
+
+    #[test]
+    fn an_album_with_no_attributes_at_all_is_survivable() {
+        let parsed: Response<Resource<AlbumAttributes>> =
+            serde_json::from_str(r#"{"data":[{"id":"1"}]}"#).unwrap();
+        let album = Album::from(parsed.data.into_iter().next().unwrap());
+        assert_eq!(album.id, "1");
+        assert_eq!(album.year, "");
+        assert!(album.artwork.is_none());
+    }
+
+    #[test]
+    fn artist_genres_are_joined_for_display() {
+        let raw = r#"{"data":[{"id":"9","attributes":{"name":"Aitana",
+            "genreNames":["Pop","Latin"]}}]}"#;
+        let parsed: Response<Resource<ArtistAttributes>> = serde_json::from_str(raw).unwrap();
+        let artist = Artist::from(parsed.data.into_iter().next().unwrap());
+        assert_eq!(artist.genres, "Pop, Latin");
+    }
 
     #[test]
     fn artwork_template_substitution() {
@@ -300,4 +514,57 @@ mod tests {
             "no attributes at all must be survivable"
         );
     }
+}
+
+#[test]
+fn a_library_artist_keeps_its_own_id_and_takes_the_catalog_portrait() {
+    // The library id is what opens the library artist page; the catalog
+    // twin's id would 404 there. Only the things the library does not
+    // carry — artwork, genres — come across.
+    let resource = LibraryArtistResource {
+        id: "r.abc".into(),
+        attributes: Some(ArtistAttributes {
+            name: "Aitana".into(),
+            artwork: None,
+            genre_names: Vec::new(),
+        }),
+        relationships: Some(LibraryArtistRelationships {
+            catalog: Some(Response {
+                data: vec![Resource {
+                    id: "1234".into(),
+                    attributes: Some(ArtistAttributes {
+                        name: "Aitana".into(),
+                        artwork: Some(ArtworkAttributes {
+                            url: "https://example.test/{w}x{h}bb.jpg".into(),
+                        }),
+                        genre_names: vec!["Pop".into(), "Latin".into()],
+                    }),
+                }],
+            }),
+        }),
+    };
+
+    let artist = Artist::from(resource);
+    assert_eq!(artist.id, "r.abc", "the library id opens the library page");
+    assert!(artist.library);
+    assert!(artist.artwork.is_some(), "portrait comes from the catalog");
+    assert_eq!(artist.genres, "Pop, Latin");
+}
+
+#[test]
+fn a_library_artist_without_a_catalog_twin_still_parses() {
+    // `include=catalog` is honoured today and might not be tomorrow. No
+    // portrait is a placeholder, not a failure.
+    let artist = Artist::from(LibraryArtistResource {
+        id: "r.abc".into(),
+        attributes: Some(ArtistAttributes {
+            name: "Aitana".into(),
+            artwork: None,
+            genre_names: Vec::new(),
+        }),
+        relationships: None,
+    });
+    assert_eq!(artist.name, "Aitana");
+    assert!(artist.artwork.is_none());
+    assert!(artist.library);
 }

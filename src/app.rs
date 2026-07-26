@@ -20,19 +20,24 @@ use relm4::{
     adw, gtk,
 };
 
+use relm4::typed_view::grid::TypedGridView;
 use relm4::typed_view::list::TypedListView;
 
 use crate::components::artwork::{self, ART_SIZE};
+use crate::components::detail_page::{DetailPage, PageKind, RowState};
+use crate::components::grid_item::{
+    ArtCache, ArtRegistry, ArtRequest, GridItem, Tile, art_cache, art_registry,
+};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Snapshot};
 use crate::components::queue_view::{QueueEntry, QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::LibraryRowWidgets;
-use crate::components::track_row::{LibraryItem, apply_row_state};
+use crate::components::track_row::{Entry, LibraryItem, apply_row_state};
 use crate::components::{
     CurrentTrack, DeadTracks, RowRegistry, current_track, dead_tracks, row_registry,
 };
 use crate::mpris::{Mpris, MprisState};
 use crate::music::client::Client;
-use crate::music::types::{Artwork, Track};
+use crate::music::types::{Album, Artist, Artwork, Track};
 use crate::notify;
 use crate::player::protocol::{Command, Event, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
@@ -56,9 +61,83 @@ const SEARCH_DEBOUNCE_MS: u64 = 350;
 /// than a choice. More than that means paging with an offset.
 const CATALOG_LIMIT: u32 = 25;
 
+/// Tile covers are fetched at twice their drawn size, so they stay sharp on a
+/// HiDPI screen without paying for the 512px the Now Playing bar needs.
+const TILE_ART: u32 = 320;
+
+/// How many artists and albums to show above the songs. Enough to be a way in,
+/// few enough that the songs are still visible without scrolling.
+const CATALOG_BROWSE_ROWS: usize = 3;
+
 /// Stop paging here. Nobody scrolls 400 search results, and an unbounded list
 /// is an unbounded number of requests.
 const CATALOG_MAX: usize = 200;
+
+/// Which sidebar section is showing.
+///
+/// This is the single source of truth for the content pane. `SearchScope` is
+/// derived from it rather than stored alongside — two overlapping states for
+/// "where am I" is how the sidebar came to show Search selected while the
+/// library list was on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    Search,
+    #[default]
+    Songs,
+    Albums,
+    Artists,
+}
+
+impl View {
+    /// Sidebar row order — the contract `connect_row_selected` reads, and the
+    /// only place the mapping lives.
+    fn from_row(index: i32) -> Self {
+        match index {
+            0 => Self::Search,
+            2 => Self::Albums,
+            3 => Self::Artists,
+            _ => Self::Songs,
+        }
+    }
+
+    fn row(self) -> i32 {
+        match self {
+            Self::Search => 0,
+            Self::Songs => 1,
+            Self::Albums => 2,
+            Self::Artists => 3,
+        }
+    }
+
+    fn scope(self) -> SearchScope {
+        match self {
+            Self::Search => SearchScope::Catalog,
+            _ => SearchScope::Library,
+        }
+    }
+}
+
+impl From<Section> for View {
+    fn from(section: Section) -> Self {
+        match section {
+            Section::Library => Self::Songs,
+            Section::Albums => Self::Albums,
+            Section::Artists => Self::Artists,
+            Section::Catalog => Self::Search,
+        }
+    }
+}
+
+impl From<View> for Section {
+    fn from(view: View) -> Self {
+        match view {
+            View::Songs => Self::Library,
+            View::Albums => Self::Albums,
+            View::Artists => Self::Artists,
+            View::Search => Self::Catalog,
+        }
+    }
+}
 
 /// Which set of music the search box is searching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -130,15 +209,17 @@ fn unresolvable_ids(detail: &str) -> Vec<String> {
 /// If the clicked track itself can't be streamed, this starts on the first one
 /// after it that can — which is what a person expects from clicking a dead row.
 fn queue_from(
-    visible: &[&Track],
+    visible: &[Entry],
     row: usize,
     dead: &std::collections::HashSet<String>,
 ) -> (Vec<String>, Option<String>) {
     let alive = |id: &String| !dead.contains(id);
     let mut seen = std::collections::HashSet::new();
+    // Album and artist rows have no catalog id, so they drop out here. A queue
+    // built from a mixed result list is the songs in it, in order.
     let songs: Vec<String> = visible
         .iter()
-        .filter_map(|t| t.catalog_id.clone())
+        .filter_map(|e| e.catalog_id().map(str::to_owned))
         .filter(alive)
         // Deduplicate. MusicKit collapses repeats when it builds the queue, so
         // sending the same id twice makes its queue shorter than ours and every
@@ -149,7 +230,7 @@ fn queue_from(
         .get(row..)
         .unwrap_or(&[])
         .iter()
-        .filter_map(|t| t.catalog_id.clone())
+        .filter_map(|e| e.catalog_id().map(str::to_owned))
         .find(alive);
     (songs, start_id)
 }
@@ -360,10 +441,56 @@ pub struct AppModel {
     /// search you were in the middle of.
     library_query: String,
     catalog_query: String,
-    scope: SearchScope,
-    /// Results of the last catalog search. Kept separate from `all_tracks` so
-    /// switching back to Library does not have to reload anything.
-    catalog: Vec<Track>,
+    /// Which sidebar section is showing. `scope()` derives the search scope
+    /// from it; never store both.
+    view: View,
+    /// The user's library albums and artists, loaded on first visit rather than
+    /// at startup — launching should not wait on three collections.
+    albums: Vec<Album>,
+    artists: Vec<Artist>,
+    album_grid: TypedGridView<GridItem, gtk::NoSelection>,
+    artist_grid: TypedGridView<GridItem, gtk::NoSelection>,
+    loading_albums: bool,
+    loading_artists: bool,
+    /// Tile artwork already on disk. Shared between the grids on purpose: it
+    /// is keyed by the artwork itself, so a cover fetched for one is a cover
+    /// the other gets for free.
+    tile_art: ArtCache,
+    /// Which widget is showing which artwork — **one registry per grid**, for
+    /// the same reason the row registries are per list: a shared one would have
+    /// the two grids overwrite each other's entries, and clearing it for a
+    /// rebuild of one would silently unregister the other's tiles.
+    album_art_widgets: ArtRegistry,
+    artist_art_widgets: ArtRegistry,
+    /// Fetches already in flight, so a tile rebinding twice while scrolling
+    /// does not queue the same download again.
+    tile_art_pending: std::collections::HashSet<String>,
+    /// Handed to every tile: "fetch this cover." An `Rc<dyn Fn>` rather than a
+    /// sender because `bind` runs deep inside GTK's factory and has no access
+    /// to the component — this is the same shape as the detail pages' click
+    /// callbacks.
+    tile_art_request: ArtRequest,
+    /// Results of the last catalog search — songs, albums and artists mixed.
+    /// Kept separate from `all_tracks` so switching back to Library does not
+    /// have to reload anything.
+    catalog: Vec<Entry>,
+    /// Album and artist pages, innermost last. Not a widget mirror: the pages
+    /// are pushed into a `NavigationView`, and this is what lets a click on one
+    /// find the page it came from — **by id, never by depth**, because a stack
+    /// that moved between the click and the handler is exactly the class of bug
+    /// that produced the wrong song four times over.
+    pages: Vec<DetailPage>,
+    /// Never reused, never reset. A popped page's id must not come back and
+    /// collect a response meant for it.
+    next_page_id: u64,
+    /// The navigation stack for the content pane. Held because pages are pushed
+    /// from `update`, not declared in the view.
+    nav: adw::NavigationView,
+
+    /// How many songs are in `catalog`. Paging appends songs only, so this is
+    /// the offset for the next page — the album and artist rows above them
+    /// would otherwise skew it.
+    catalog_songs: usize,
     searching_catalog: bool,
     /// How many catalog results we already hold, and whether Apple has run out.
     /// Together these decide whether scrolling to the end fetches more.
@@ -424,7 +551,13 @@ pub enum AppMsg {
     SearchChanged(String),
     /// The debounce elapsed for this generation; run the catalog search.
     RunCatalogSearch(u64),
-    SetScope(SearchScope),
+    SetView(View),
+    /// A grid tile was activated. The position is resolved against the grid
+    /// immediately, never stored.
+    AlbumActivated(u32),
+    ArtistActivated(u32),
+    /// A tile is on screen and its cover is not on disk yet.
+    NeedTileArt(String, Artwork),
     ToggleSidebar,
     /// The results list is near its end; fetch the next page if there is one.
     LoadMoreCatalog,
@@ -437,6 +570,19 @@ pub enum AppMsg {
     ToggleQueue,
     /// A library row was activated; the position is resolved immediately.
     LibraryActivated(u32),
+    /// A row on a pushed page was clicked. Carries the page's id so it can be
+    /// resolved against the live stack rather than a remembered depth.
+    DetailActivated {
+        page: u64,
+        row: usize,
+    },
+    /// Play everything on a page, from the top.
+    PlayPage(u64),
+    /// Push an album or artist page — catalog or library, which the `PageKind`
+    /// carries so the fetch knows which endpoint to ask.
+    OpenPage(PageKind),
+    /// The navigation view popped a page — drop the state behind it.
+    PagePopped(u64),
     /// Act on a track in MusicKit's queue, by id. The position is resolved
     /// against the live queue at send time — our row order can drift from
     /// MusicKit's, and sending a stale position got INVALID_ARGUMENTS.
@@ -458,11 +604,36 @@ pub enum CommandMsg {
         /// Where this page started, so a first page replaces and a later page
         /// appends.
         offset: usize,
-        result: Result<Vec<Track>, String>,
+        result: Result<crate::music::client::SearchResults, String>,
     },
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
     /// cosmetic and must not become a toast.
     Artwork(Option<PathBuf>),
+    /// An album page's contents. Tagged with the page id: by the time this
+    /// lands the user may have gone back, and filling a page that is no longer
+    /// on the stack is at best wasted work.
+    AlbumPage {
+        page: u64,
+        result: Result<(Album, Vec<Track>), String>,
+    },
+    /// An artist page's contents.
+    ArtistPage {
+        page: u64,
+        result: Result<(Artist, Vec<Album>), String>,
+    },
+    /// A page's header art is on disk, or could not be fetched.
+    PageArtwork {
+        page: u64,
+        path: Option<PathBuf>,
+    },
+    /// The user's library albums / artists.
+    LibraryAlbums(Result<Vec<Album>, String>),
+    LibraryArtists(Result<Vec<Artist>, String>),
+    /// A grid tile's cover is on disk, or could not be fetched.
+    TileArt {
+        key: String,
+        path: Option<PathBuf>,
+    },
 }
 
 #[relm4::component(pub)]
@@ -550,11 +721,8 @@ impl Component for AppModel {
                                                 set_selection_mode: gtk::SelectionMode::Single,
                                                 connect_row_selected[sender] => move |_, row| {
                                                     if let Some(row) = row {
-                                                        sender.input(AppMsg::SetScope(
-                                                            match row.index() {
-                                                                0 => SearchScope::Catalog,
-                                                                _ => SearchScope::Library,
-                                                            },
+                                                        sender.input(AppMsg::SetView(
+                                                            View::from_row(row.index()),
                                                         ));
                                                     }
                                                 },
@@ -577,7 +745,7 @@ impl Component for AppModel {
                                                     },
                                                 },
 
-                                                // Index 1 — Library.
+                                                // Index 1 — Library / Songs.
                                                 gtk::ListBoxRow {
                                                     #[wrap(Some)]
                                                     set_child = &gtk::Box {
@@ -608,13 +776,68 @@ impl Component for AppModel {
                                                         },
                                                     },
                                                 },
+
+                                                // Index 2 — Albums.
+                                                gtk::ListBoxRow {
+                                                    #[wrap(Some)]
+                                                    set_child = &gtk::Box {
+                                                        set_spacing: 12,
+                                                        set_margin_all: 8,
+
+                                                        gtk::Image {
+                                                            set_icon_name: Some(icon("media-optical-symbolic")),
+                                                        },
+                                                        gtk::Label {
+                                                            set_label: "Albums",
+                                                            set_hexpand: true,
+                                                            set_xalign: 0.0,
+                                                        },
+                                                        adw::Spinner {
+                                                            set_size_request: (16, 16),
+                                                            #[watch]
+                                                            set_visible: model.loading_albums,
+                                                        },
+                                                    },
+                                                },
+
+                                                // Index 3 — Artists.
+                                                gtk::ListBoxRow {
+                                                    #[wrap(Some)]
+                                                    set_child = &gtk::Box {
+                                                        set_spacing: 12,
+                                                        set_margin_all: 8,
+
+                                                        gtk::Image {
+                                                            set_icon_name: Some(icon("avatar-default-symbolic")),
+                                                        },
+                                                        gtk::Label {
+                                                            set_label: "Artists",
+                                                            set_hexpand: true,
+                                                            set_xalign: 0.0,
+                                                        },
+                                                        adw::Spinner {
+                                                            set_size_request: (16, 16),
+                                                            #[watch]
+                                                            set_visible: model.loading_artists,
+                                                        },
+                                                    },
+                                                },
                                             },
                                     },
                                 },
                             },
 
                             #[wrap(Some)]
-                            set_content = &adw::ToolbarView {
+                            #[local_ref]
+                            set_content = nav_view -> adw::NavigationView {
+                                add = &adw::NavigationPage {
+                                    set_title: "Tonearm",
+                                    // The root page. Albums and artists push on
+                                    // top of it; nothing ever pops it.
+                                    set_tag: Some("results"),
+
+                                    #[wrap(Some)]
+                                    set_child = &adw::ToolbarView {
                                     add_top_bar = &adw::HeaderBar {
                                         // The sidebar's own header carries the
                                         // start-side window controls while it
@@ -645,9 +868,11 @@ impl Component for AppModel {
                                         set_title_widget = &gtk::SearchEntry {
                                             set_width_request: 320,
                                             #[watch]
-                                            set_placeholder_text: Some(match model.scope {
-                                                SearchScope::Library => "Search your library",
-                                                SearchScope::Catalog => "Search Apple Music",
+                                            set_placeholder_text: Some(match model.view {
+                                                View::Songs => "Search your library",
+                                                View::Albums => "Search albums",
+                                                View::Artists => "Search artists",
+                                                View::Search => "Search Apple Music",
                                             }),
                                             connect_search_changed[sender] => move |entry| {
                                                 sender.input(AppMsg::SearchChanged(entry.text().into()));
@@ -667,7 +892,7 @@ impl Component for AppModel {
                                             set_tooltip_text: Some("Reload library"),
                                             add_css_class: "flat",
                                             #[watch]
-                                            set_visible: model.scope == SearchScope::Library,
+                                            set_visible: model.view == View::Songs,
                                             #[watch]
                                             set_sensitive: !model.loading_library,
                                             connect_clicked => AppMsg::ReloadLibrary,
@@ -712,10 +937,11 @@ impl Component for AppModel {
                                             gtk::Label {
                                                 add_css_class: "title-2",
                                                 #[watch]
-                                                set_label: if model.searching_catalog {
-                                                    "Searching Apple Music"
-                                                } else {
-                                                    "Loading your library"
+                                                set_label: match model.view {
+                                                    View::Search => "Searching Apple Music",
+                                                    View::Albums => "Loading your albums",
+                                                    View::Artists => "Loading your artists",
+                                                    View::Songs => "Loading your library",
                                                 },
                                             },
                                         },
@@ -741,6 +967,34 @@ impl Component for AppModel {
                                             },
                                         },
 
+                                        // Grids scroll as themselves: unlike the
+                                        // detail pages there is no header above
+                                        // them, so the GridView can be the
+                                        // scrollable child and stay virtualised.
+                                        add_named[Some("albums")] = &gtk::ScrolledWindow {
+                                            set_vexpand: true,
+                                            set_hscrollbar_policy: gtk::PolicyType::Never,
+
+                                            #[local_ref]
+                                            album_grid -> gtk::GridView {
+                                                set_single_click_activate: true,
+                                                set_max_columns: 12,
+                                                set_margin_all: 12,
+                                            },
+                                        },
+
+                                        add_named[Some("artists")] = &gtk::ScrolledWindow {
+                                            set_vexpand: true,
+                                            set_hscrollbar_policy: gtk::PolicyType::Never,
+
+                                            #[local_ref]
+                                            artist_grid -> gtk::GridView {
+                                                set_single_click_activate: true,
+                                                set_max_columns: 12,
+                                                set_margin_all: 12,
+                                            },
+                                        },
+
                                         // An empty search box is not a failed
                                         // search. Telling someone that Apple
                                         // Music has nothing matching "" is
@@ -760,12 +1014,20 @@ impl Component for AppModel {
                                             set_icon_name: Some("system-search-symbolic"),
                                             set_title: "No matches",
                                             #[watch]
-                                            set_description: Some(&match model.scope {
-                                                SearchScope::Library => format!(
+                                            set_description: Some(&match model.view {
+                                                View::Songs => format!(
                                                     "Nothing in your library matches “{}”. Try searching Apple Music.",
                                                     model.query()
                                                 ),
-                                                SearchScope::Catalog => format!(
+                                                View::Albums => format!(
+                                                    "No album in your library matches “{}”.",
+                                                    model.query()
+                                                ),
+                                                View::Artists => format!(
+                                                    "No artist in your library matches “{}”.",
+                                                    model.query()
+                                                ),
+                                                View::Search => format!(
                                                     "Apple Music has nothing matching “{}”.",
                                                     model.query()
                                                 ),
@@ -778,8 +1040,10 @@ impl Component for AppModel {
                                         #[watch]
                                         set_visible_child_name: model.page(),
                                     },
+                                    },
                                 },
                             },
+                        },
                     },
 
                     // The bar spans the full width under both panes — it is
@@ -829,10 +1093,37 @@ impl Component for AppModel {
                 QueueViewOutput::Remove(id) => AppMsg::RemoveFromQueue(id),
             });
 
-        let starting_scope = match settings.section {
-            Section::Library => SearchScope::Library,
-            Section::Catalog => SearchScope::Catalog,
-        };
+        // Popping is the user's business (back button, swipe, Escape), so the
+        // stack is told about it rather than driving it. Resolving by tag keeps
+        // the id-not-index rule intact even here.
+        let nav = adw::NavigationView::new();
+        let popped = sender.clone();
+        nav.connect_popped(move |_, page| {
+            if let Some(id) = page.tag().and_then(|t| t.parse::<u64>().ok()) {
+                popped.input(AppMsg::PagePopped(id));
+            }
+        });
+
+        let album_grid: TypedGridView<GridItem, gtk::NoSelection> = TypedGridView::new();
+        let activate = sender.clone();
+        album_grid
+            .view
+            .connect_activate(move |_, position| activate.input(AppMsg::AlbumActivated(position)));
+
+        let artist_grid: TypedGridView<GridItem, gtk::NoSelection> = TypedGridView::new();
+        let activate = sender.clone();
+        artist_grid
+            .view
+            .connect_activate(move |_, position| activate.input(AppMsg::ArtistActivated(position)));
+
+        // Tiles call this from `bind`, deep inside GTK's factory, where there
+        // is no component to reach. It turns "I need this cover" into an
+        // ordinary message, so the fetch itself still happens as a Command off
+        // the GTK thread (rule 8).
+        let art_sender = sender.clone();
+        let tile_art_request: ArtRequest = std::rc::Rc::new(move |key, art| {
+            art_sender.input(AppMsg::NeedTileArt(key, art));
+        });
 
         let model = AppModel {
             stage: Stage::Starting,
@@ -848,8 +1139,23 @@ impl Component for AppModel {
             all_tracks: Vec::new(),
             library_query: String::new(),
             catalog_query: String::new(),
-            scope: starting_scope,
+            view: View::from(settings.section),
+            albums: Vec::new(),
+            artists: Vec::new(),
+            album_grid,
+            artist_grid,
+            loading_albums: false,
+            loading_artists: false,
+            tile_art: art_cache(),
+            album_art_widgets: art_registry(),
+            artist_art_widgets: art_registry(),
+            tile_art_pending: std::collections::HashSet::new(),
+            tile_art_request,
             catalog: Vec::new(),
+            catalog_songs: 0,
+            pages: Vec::new(),
+            next_page_id: 1,
+            nav,
             searching_catalog: false,
             catalog_exhausted: false,
             search_gen: 0,
@@ -886,6 +1192,9 @@ impl Component for AppModel {
         let toaster = &model.toaster;
         let now_playing_bar = model.now_playing.widget();
         let library_list = &model.library.view;
+        let nav_view = &model.nav;
+        let album_grid = &model.album_grid.view;
+        let artist_grid = &model.artist_grid.view;
         let queue_sidebar = model.queue_view.widget();
         let widgets = view_output!();
 
@@ -910,13 +1219,9 @@ impl Component for AppModel {
         });
 
         // Open on the section we were last in. Selecting fires `row-selected`,
-        // which posts SetScope — harmless, since the model is already on that
-        // scope and SetScope returns early when unchanged.
-        let start_row = match model.scope {
-            SearchScope::Catalog => 0,
-            SearchScope::Library => 1,
-        };
-        if let Some(row) = widgets.nav_list.row_at_index(start_row) {
+        // which posts SetView — harmless, since the model is already on that
+        // view and SetView returns early when unchanged.
+        if let Some(row) = widgets.nav_list.row_at_index(model.view.row()) {
             widgets.nav_list.select_row(Some(&row));
         }
 
@@ -963,10 +1268,10 @@ impl Component for AppModel {
         sender: ComponentSender<Self>,
         root: &Self::Root,
     ) {
-        let scope_before = self.scope;
+        let view_before = self.view;
         self.update(msg, sender.clone(), root);
 
-        if self.scope != scope_before {
+        if self.view != view_before {
             // `set_text` fires `search-changed`, but `SearchChanged` returns
             // early when the text already matches the active query — which it
             // does by now, because `update` set it first. No loop.
@@ -1002,19 +1307,25 @@ impl Component for AppModel {
                 if query == self.query() {
                     return;
                 }
-                match self.scope {
+                // Typing into the search field is a request to see results, and
+                // results are on the root page.
+                self.pop_to_results();
+                match self.scope() {
                     SearchScope::Library => self.library_query = query,
                     SearchScope::Catalog => self.catalog_query = query,
                 }
 
-                match self.scope {
-                    // Local filter: instant, every keystroke.
-                    SearchScope::Library => self.rebuild_rows(),
-                    SearchScope::Catalog => {
+                match self.view {
+                    // Local filters: instant, every keystroke.
+                    View::Songs => self.rebuild_rows(),
+                    View::Albums => self.rebuild_albums(),
+                    View::Artists => self.rebuild_artists(),
+                    View::Search => {
                         self.search_gen = self.search_gen.wrapping_add(1);
                         let generation = self.search_gen;
 
                         self.catalog_exhausted = false;
+                        self.catalog_songs = 0;
                         if self.catalog_query.trim().is_empty() {
                             self.catalog.clear();
                             self.searching_catalog = false;
@@ -1039,21 +1350,31 @@ impl Component for AppModel {
                 }
                 self.run_catalog_search(&sender, generation, 0);
             }
-            AppMsg::SetScope(scope) => {
-                if scope == self.scope {
+            AppMsg::SetView(view) => {
+                if view == self.view {
                     return;
                 }
-                self.scope = scope;
-                self.settings.section = match scope {
-                    SearchScope::Library => Section::Library,
-                    SearchScope::Catalog => Section::Catalog,
-                };
+                self.view = view;
+                // Switching section means switching what the content pane is
+                // about, so any album or artist pushed on top of it is now
+                // showing the wrong thing sitting over the right thing.
+                self.pop_to_results();
+                self.settings.section = Section::from(view);
                 self.settings.save();
-                // Switching scope re-reads whichever set is now showing; the
-                // other is kept, so switching back is instant.
-                match scope {
-                    SearchScope::Library => self.rebuild_rows(),
-                    SearchScope::Catalog => {
+
+                // Whichever section is now showing re-reads; the others keep
+                // what they had, so switching back is instant.
+                match view {
+                    View::Songs => self.rebuild_rows(),
+                    View::Albums => {
+                        self.rebuild_albums();
+                        self.load_albums(&sender);
+                    }
+                    View::Artists => {
+                        self.rebuild_artists();
+                        self.load_artists(&sender);
+                    }
+                    View::Search => {
                         self.search_gen = self.search_gen.wrapping_add(1);
                         let generation = self.search_gen;
                         if self.catalog_query.trim().is_empty() {
@@ -1065,20 +1386,48 @@ impl Component for AppModel {
                     }
                 }
             }
+            AppMsg::AlbumActivated(position) => {
+                if let Some(item) = self.album_grid.get(position)
+                    && let Tile::Album(album) = &item.borrow().tile
+                {
+                    sender.input(AppMsg::OpenPage(PageKind::album(album)));
+                }
+            }
+            AppMsg::ArtistActivated(position) => {
+                if let Some(item) = self.artist_grid.get(position)
+                    && let Tile::Artist(artist) = &item.borrow().tile
+                {
+                    sender.input(AppMsg::OpenPage(PageKind::artist(artist)));
+                }
+            }
+            AppMsg::NeedTileArt(key, art) => {
+                // Scrolling rebinds the same tile repeatedly; one request each.
+                if !self.tile_art_pending.insert(key.clone()) {
+                    return;
+                }
+                sender.oneshot_command(async move {
+                    CommandMsg::TileArt {
+                        key,
+                        path: artwork::fetch(art, TILE_ART).await.ok(),
+                    }
+                });
+            }
             AppMsg::LoadMoreCatalog => {
                 // Guarded on all four conditions: only in catalog scope, only
                 // when a page is not already in flight, only while Apple still
                 // has more, and only up to a ceiling. Scroll events arrive in
                 // bursts, so without these one flick would queue several
                 // identical requests.
-                if self.scope == SearchScope::Catalog
+                if self.scope() == SearchScope::Catalog
                     && !self.searching_catalog
                     && !self.catalog_exhausted
                     && !self.catalog.is_empty()
-                    && self.catalog.len() < CATALOG_MAX
+                    && self.catalog_songs < CATALOG_MAX
                 {
                     let generation = self.search_gen;
-                    let offset = self.catalog.len();
+                    // Songs only — the browse rows above them are not part of
+                    // Apple's song pagination.
+                    let offset = self.catalog_songs;
                     self.run_catalog_search(&sender, generation, offset);
                 }
             }
@@ -1102,15 +1451,62 @@ impl Component for AppModel {
             }
             AppMsg::ToggleQueue => {
                 self.show_queue = !self.show_queue;
+                self.sync_page_controls();
                 if self.show_queue {
                     self.queue_view.emit(QueueViewInput::ScrollToPlaying);
                 }
             }
             AppMsg::LibraryActivated(position) => {
-                // The store is the visible list, so this position is the row
-                // index `queue_from` expects. Resolved here and now, never
-                // stored.
-                sender.input(AppMsg::PlayFrom(position as usize));
+                // Catalog results mix songs with albums and artists. A song
+                // plays; the other two are doors, and clicking one walks
+                // through it. Resolved against the list as it is right now,
+                // never against a remembered snapshot.
+                match self.visible_entries().get(position as usize) {
+                    Some(Entry::Album(album)) => {
+                        sender.input(AppMsg::OpenPage(PageKind::album(album)))
+                    }
+                    Some(Entry::Artist(artist)) => {
+                        sender.input(AppMsg::OpenPage(PageKind::artist(artist)))
+                    }
+                    // The store is the visible list, so this position is the
+                    // row index `queue_from` expects.
+                    Some(Entry::Song(_)) => sender.input(AppMsg::PlayFrom(position as usize)),
+                    None => {}
+                }
+            }
+            AppMsg::OpenPage(kind) => self.push_page(kind, &sender),
+            AppMsg::PagePopped(id) => {
+                // The page owns its own row registry, so dropping it takes the
+                // stale widget handles with it. Nothing to clean up by hand.
+                self.pages.retain(|p| p.id != id);
+                tracing::debug!(id, depth = self.pages.len(), "page popped");
+            }
+            AppMsg::DetailActivated { page, row } => {
+                let Some(page) = self.pages.iter().find(|p| p.id == page) else {
+                    // Popped between the click and here. Nothing to do, and
+                    // certainly nothing to guess at.
+                    return;
+                };
+                match page.entries.get(row) {
+                    Some(Entry::Album(album)) => {
+                        sender.input(AppMsg::OpenPage(PageKind::album(album)))
+                    }
+                    Some(Entry::Artist(artist)) => {
+                        sender.input(AppMsg::OpenPage(PageKind::artist(artist)))
+                    }
+                    Some(Entry::Song(_)) => {
+                        let entries = page.entries.clone();
+                        self.play_entries(&entries, row);
+                    }
+                    None => {}
+                }
+            }
+            AppMsg::PlayPage(id) => {
+                let Some(page) = self.pages.iter().find(|p| p.id == id) else {
+                    return;
+                };
+                let entries = page.entries.clone();
+                self.play_entries(&entries, 0);
             }
             AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
                 Some(index) => self.send(Command::ChangeToIndex { index }),
@@ -1121,20 +1517,8 @@ impl Component for AppModel {
                 None => self.toast("That track is no longer in the queue"),
             },
             AppMsg::PlayFrom(index) => {
-                let visible: Vec<&Track> = self.visible_tracks().collect();
-                let (songs, start_id) = queue_from(&visible, index, &self.dead_ids);
-                if songs.is_empty() {
-                    self.toast("Nothing here can be streamed");
-                    return;
-                }
-                let start = start_index(&songs, start_id.as_ref());
-                tracing::info!(queue = songs.len(), start, "enqueuing from library");
-                self.pending_start = start_id.clone();
-                self.last_queue = Some((songs.clone(), start_id));
-                self.send(Command::SetQueue {
-                    songs,
-                    start_position: start,
-                });
+                let visible = self.visible_entries();
+                self.play_entries(&visible, index);
             }
         }
     }
@@ -1146,6 +1530,93 @@ impl Component for AppModel {
         _root: &Self::Root,
     ) {
         match msg {
+            CommandMsg::AlbumPage { page, result } => {
+                let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
+                    // Navigated back while this was in flight.
+                    return;
+                };
+                match result {
+                    Ok((album, tracks)) => {
+                        tracing::info!(page, tracks = tracks.len(), album = %album.name, "album loaded");
+                        let art = album.artwork.clone();
+                        target.show_album(&album, tracks.into_iter().map(Entry::Song).collect());
+                        self.fetch_page_art(page, art, &sender);
+                    }
+                    Err(err) => {
+                        tracing::warn!(page, %err, "album page failed");
+                        target.fail(&err);
+                    }
+                }
+            }
+            CommandMsg::ArtistPage { page, result } => {
+                let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
+                    return;
+                };
+                match result {
+                    Ok((artist, albums)) => {
+                        tracing::info!(page, albums = albums.len(), artist = %artist.name, "artist loaded");
+                        let art = artist.artwork.clone();
+                        target.show_artist(&artist, albums.into_iter().map(Entry::Album).collect());
+                        self.fetch_page_art(page, art, &sender);
+                    }
+                    Err(err) => {
+                        tracing::warn!(page, %err, "artist page failed");
+                        target.fail(&err);
+                    }
+                }
+            }
+            CommandMsg::LibraryAlbums(result) => {
+                self.loading_albums = false;
+                match result {
+                    Ok(albums) => {
+                        tracing::info!(albums = albums.len(), "library albums loaded");
+                        self.albums = albums;
+                        self.rebuild_albums();
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "library albums failed");
+                        self.toast(&err);
+                    }
+                }
+            }
+            CommandMsg::LibraryArtists(result) => {
+                self.loading_artists = false;
+                match result {
+                    Ok(artists) => {
+                        tracing::info!(artists = artists.len(), "library artists loaded");
+                        self.artists = artists;
+                        self.rebuild_artists();
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "library artists failed");
+                        self.toast(&err);
+                    }
+                }
+            }
+            CommandMsg::TileArt { key, path } => {
+                self.tile_art_pending.remove(&key);
+                let Some(path) = path else {
+                    // Cosmetic. The tile keeps its placeholder.
+                    return;
+                };
+                // Cache first, so a tile that binds later reads it straight off
+                // disk instead of asking again...
+                self.tile_art.borrow_mut().insert(key.clone(), path.clone());
+                // ...then paint whichever tile is showing this artwork *now*.
+                // Recycling means it may not be the one that asked, and may be
+                // none at all if it scrolled away — both are correct.
+                for registry in [&self.album_art_widgets, &self.artist_art_widgets] {
+                    if let Some(image) = registry.borrow().get(&key) {
+                        image.set_from_file(Some(&path));
+                    }
+                }
+            }
+            CommandMsg::PageArtwork { page, path } => {
+                if let (Some(path), Some(target)) = (path, self.pages.iter().find(|p| p.id == page))
+                {
+                    target.set_artwork(&path);
+                }
+            }
             CommandMsg::Spawned(handle) => {
                 self.sidecar = Some(handle);
                 // The process is up; Chromium's component updater is now
@@ -1172,16 +1643,45 @@ impl Component for AppModel {
                 }
                 self.searching_catalog = false;
                 match result {
-                    Ok(tracks) => {
-                        // A short page means Apple has no more to give.
-                        self.catalog_exhausted = tracks.len() < CATALOG_LIMIT as usize;
-                        if offset == 0 {
-                            self.catalog = tracks;
+                    Ok(found) => {
+                        // A short page of songs means Apple has no more.
+                        self.catalog_exhausted = found.songs.len() < CATALOG_LIMIT as usize;
+                        self.catalog_songs = if offset == 0 {
+                            found.songs.len()
                         } else {
-                            self.catalog.extend(tracks);
+                            self.catalog_songs + found.songs.len()
+                        };
+
+                        if offset == 0 {
+                            // Artists and albums first: they are the way into
+                            // browsing, and burying them under 25 songs makes
+                            // them invisible. Trimmed, because the point is a
+                            // door rather than an exhaustive list.
+                            self.catalog = found
+                                .artists
+                                .into_iter()
+                                .take(CATALOG_BROWSE_ROWS)
+                                .map(Entry::Artist)
+                                .chain(
+                                    found
+                                        .albums
+                                        .into_iter()
+                                        .take(CATALOG_BROWSE_ROWS)
+                                        .map(Entry::Album),
+                                )
+                                .chain(found.songs.into_iter().map(Entry::Song))
+                                .collect();
+                        } else {
+                            // Later pages append songs only. Paging returns
+                            // artists and albums again, and adding them would
+                            // duplicate rows already on screen.
+                            self.catalog
+                                .extend(found.songs.into_iter().map(Entry::Song));
                         }
+
                         tracing::info!(
-                            held = self.catalog.len(),
+                            rows = self.catalog.len(),
+                            songs = self.catalog_songs,
                             exhausted = self.catalog_exhausted,
                             "catalog results"
                         );
@@ -1246,26 +1746,34 @@ impl AppModel {
     /// Filtering reads `all_tracks`, never the factory, so clearing a search
     /// restores everything rather than whatever survived the last narrowing.
     /// The query for whichever scope is showing.
+    /// Which set of music the search box is searching, derived from the
+    /// section. Not stored: see [`View`].
+    fn scope(&self) -> SearchScope {
+        self.view.scope()
+    }
+
     fn query(&self) -> &str {
-        match self.scope {
+        match self.scope() {
             SearchScope::Library => &self.library_query,
             SearchScope::Catalog => &self.catalog_query,
         }
     }
 
-    fn visible_tracks(&self) -> Box<dyn Iterator<Item = &Track> + '_> {
-        match self.scope {
+    /// What the results list shows, in order.
+    fn visible_entries(&self) -> Vec<Entry> {
+        match self.scope() {
             SearchScope::Library => {
                 let needle = self.query().trim().to_lowercase();
-                Box::new(
-                    self.all_tracks
-                        .iter()
-                        .filter(move |t| needle.is_empty() || matches(t, &needle)),
-                )
+                self.all_tracks
+                    .iter()
+                    .filter(|t| needle.is_empty() || matches(t, &needle))
+                    .cloned()
+                    .map(Entry::Song)
+                    .collect()
             }
             // Apple already ranked these; filtering them again locally would
             // only throw away results that matched for reasons we cannot see.
-            SearchScope::Catalog => Box::new(self.catalog.iter()),
+            SearchScope::Catalog => self.catalog.clone(),
         }
     }
 
@@ -1294,7 +1802,7 @@ impl AppModel {
                 generation,
                 offset,
                 result: client
-                    .search_songs(&term, CATALOG_LIMIT, offset)
+                    .search(&term, CATALOG_LIMIT, offset)
                     .await
                     .map_err(|err| format!("{err:#}")),
             }
@@ -1310,7 +1818,7 @@ impl AppModel {
         // Rebuilding resets the scroll. It is legitimate on load and on a
         // search change; anywhere else it is a bug, so say when it happens.
         tracing::debug!(query = %self.query(), "library: rebuilding rows");
-        let visible: Vec<Track> = self.visible_tracks().cloned().collect();
+        let visible = self.visible_entries();
         let playing = self.playing_catalog_id();
         // The rows are built with the marker already set, so record that here
         // or `mark_now_playing` will think it still needs applying.
@@ -1418,11 +1926,252 @@ impl AppModel {
     /// so a later re-bind is correct, and update the widget directly if this
     /// row happens to be on screen right now.
     /// Repaint one row's marker. Touches a widget, never the model.
+    ///
+    /// Every list gets asked, not just the results one. The same song can be on
+    /// an album page and in the search results underneath it, and a marker that
+    /// only lands on whichever was built last is a marker you cannot trust.
     fn set_row_playing(&self, catalog_id: &str, playing: bool) {
-        if let Some(w) = self.library_icons.borrow().get(catalog_id) {
-            let playable = !self.dead_rows.borrow().contains(catalog_id);
-            apply_row_state(&w.icon, &w.root, playing, playable);
+        let playable = !self.dead_rows.borrow().contains(catalog_id);
+        let lists =
+            std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
+        for registry in lists {
+            if let Some(w) = registry.borrow().get(catalog_id) {
+                apply_row_state(&w.icon, &w.root, playing, playable);
+            }
         }
+    }
+
+    /// Enqueue a list and start at `row`, per rule 3: the whole thing goes to
+    /// MusicKit in one `setQueue`, and the starting track is named by id.
+    ///
+    /// Shared by the results list and every pushed page — one enqueue path, so
+    /// a fix to it cannot land on one list and miss the other.
+    fn play_entries(&mut self, entries: &[Entry], row: usize) {
+        let (songs, start_id) = queue_from(entries, row, &self.dead_ids);
+        if songs.is_empty() {
+            self.toast("Nothing here can be streamed");
+            return;
+        }
+        let start = start_index(&songs, start_id.as_ref());
+        tracing::info!(queue = songs.len(), start, "enqueuing");
+        self.pending_start = start_id.clone();
+        self.last_queue = Some((songs.clone(), start_id));
+        self.send(Command::SetQueue {
+            songs,
+            start_position: start,
+        });
+    }
+
+    /// Push an album or artist page and ask Apple to fill it.
+    ///
+    /// The page appears immediately with a spinner rather than after the
+    /// request lands: a click that does nothing for a second reads as a click
+    /// that did not register, and the second click pushes it twice.
+    fn push_page(&mut self, kind: PageKind, sender: &ComponentSender<Self>) {
+        let Some(tokens) = &self.tokens else {
+            self.toast("Not connected yet");
+            return;
+        };
+        let client = Client::new(
+            tokens.developer_token.clone(),
+            tokens.music_user_token.clone(),
+            tokens.storefront.clone(),
+        );
+
+        let id = self.next_page_id;
+        self.next_page_id += 1;
+
+        let activate = sender.clone();
+        let play = sender.clone();
+        let page = DetailPage::new(
+            id,
+            kind.heading(),
+            RowState {
+                current: self.current_track.clone(),
+                dead: self.dead_rows.clone(),
+            },
+            move |row| activate.input(AppMsg::DetailActivated { page: id, row }),
+            move || play.input(AppMsg::PlayPage(id)),
+        );
+        page.set_end_controls(!self.show_queue);
+        self.nav.push(page.widget());
+        self.pages.push(page);
+
+        let catalog_id = kind.id().to_owned();
+        tracing::info!(page = id, kind = ?kind, "opening page");
+        match kind {
+            PageKind::Album(_) => sender.oneshot_command(async move {
+                CommandMsg::AlbumPage {
+                    page: id,
+                    result: client
+                        .album(&catalog_id)
+                        .await
+                        .map_err(|err| format!("{err:#}")),
+                }
+            }),
+            PageKind::LibraryAlbum(_) => sender.oneshot_command(async move {
+                CommandMsg::AlbumPage {
+                    page: id,
+                    result: client
+                        .library_album(&catalog_id)
+                        .await
+                        .map_err(|err| format!("{err:#}")),
+                }
+            }),
+            PageKind::Artist(_) => sender.oneshot_command(async move {
+                CommandMsg::ArtistPage {
+                    page: id,
+                    result: client
+                        .artist_albums(&catalog_id)
+                        .await
+                        .map_err(|err| format!("{err:#}")),
+                }
+            }),
+            PageKind::LibraryArtist(_) => sender.oneshot_command(async move {
+                CommandMsg::ArtistPage {
+                    page: id,
+                    result: client
+                        .library_artist_albums(&catalog_id)
+                        .await
+                        .map_err(|err| format!("{err:#}")),
+                }
+            }),
+        }
+    }
+
+    /// Load the library's albums, once. Revisiting the section is instant.
+    fn load_albums(&mut self, sender: &ComponentSender<Self>) {
+        if self.loading_albums || !self.albums.is_empty() {
+            return;
+        }
+        let Some(client) = self.client() else { return };
+        self.loading_albums = true;
+        tracing::info!("loading library albums");
+        sender.oneshot_command(async move {
+            CommandMsg::LibraryAlbums(
+                client
+                    .all_library_albums(LIBRARY_MAX)
+                    .await
+                    .map_err(|err| format!("{err:#}")),
+            )
+        });
+    }
+
+    fn load_artists(&mut self, sender: &ComponentSender<Self>) {
+        if self.loading_artists || !self.artists.is_empty() {
+            return;
+        }
+        let Some(client) = self.client() else { return };
+        self.loading_artists = true;
+        tracing::info!("loading library artists");
+        sender.oneshot_command(async move {
+            CommandMsg::LibraryArtists(
+                client
+                    .all_library_artists(LIBRARY_MAX)
+                    .await
+                    .map_err(|err| format!("{err:#}")),
+            )
+        });
+    }
+
+    /// Rebuild the album grid from `albums` + the query.
+    fn rebuild_albums(&mut self) {
+        let needle = self.library_query.trim().to_lowercase();
+        let tiles: Vec<Tile> = self
+            .albums
+            .iter()
+            .filter(|a| {
+                needle.is_empty()
+                    || a.name.to_lowercase().contains(&needle)
+                    || a.artist.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .map(Tile::Album)
+            .collect();
+        self.album_grid.clear();
+        self.album_art_widgets.borrow_mut().clear();
+        let items = self.grid_items(tiles, &self.album_art_widgets);
+        self.album_grid.extend_from_iter(items);
+    }
+
+    fn rebuild_artists(&mut self) {
+        let needle = self.library_query.trim().to_lowercase();
+        let tiles: Vec<Tile> = self
+            .artists
+            .iter()
+            .filter(|a| needle.is_empty() || a.name.to_lowercase().contains(&needle))
+            .cloned()
+            .map(Tile::Artist)
+            .collect();
+        self.artist_grid.clear();
+        self.artist_art_widgets.borrow_mut().clear();
+        let items = self.grid_items(tiles, &self.artist_art_widgets);
+        self.artist_grid.extend_from_iter(items);
+    }
+
+    /// Wrap tiles with the shared artwork cache and the "fetch this" callback.
+    fn grid_items(&self, tiles: Vec<Tile>, registry: &ArtRegistry) -> Vec<GridItem> {
+        tiles
+            .into_iter()
+            .map(|tile| {
+                GridItem::new(
+                    tile,
+                    self.tile_art.clone(),
+                    registry.clone(),
+                    self.tile_art_request.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// An API client for the current tokens, or `None` if we have none yet.
+    ///
+    /// Built per request rather than cached: the developer token is re-harvested
+    /// and can be replaced mid-session (rule 7).
+    fn client(&self) -> Option<Client> {
+        let tokens = self.tokens.as_ref()?;
+        Some(Client::new(
+            tokens.developer_token.clone(),
+            tokens.music_user_token.clone(),
+            tokens.storefront.clone(),
+        ))
+    }
+
+    /// Return to the results list, dropping whatever was pushed over it.
+    ///
+    /// Cheap when there is nothing to do, so callers do not have to check.
+    fn pop_to_results(&mut self) {
+        if self.pages.is_empty() {
+            return;
+        }
+        tracing::debug!(depth = self.pages.len(), "returning to results");
+        // `connect_popped` fires per page and empties `self.pages` for us —
+        // clearing it here as well would be a second source of truth for the
+        // same thing.
+        self.nav.pop_to_tag("results");
+    }
+
+    /// Keep the pushed pages' headers agreeing with the root about who owns the
+    /// window controls. When the queue is open it is the rightmost pane, so the
+    /// controls belong to its header — a page that still draws them puts a
+    /// second close button in the middle of the window.
+    fn sync_page_controls(&self) {
+        for page in &self.pages {
+            page.set_end_controls(!self.show_queue);
+        }
+    }
+
+    /// Fetch a page's header art, once we know what it is.
+    fn fetch_page_art(&self, page: u64, art: Option<Artwork>, sender: &ComponentSender<Self>) {
+        let Some(art) = art else { return };
+        sender.oneshot_command(async move {
+            // A missing cover is cosmetic — `None` and the page keeps its
+            // placeholder, exactly as the Now Playing bar does.
+            CommandMsg::PageArtwork {
+                page,
+                path: artwork::fetch(art, ART_SIZE).await.ok(),
+            }
+        });
     }
 
     fn load_library(&mut self, sender: &ComponentSender<Self>) {
@@ -1650,40 +2399,82 @@ impl AppModel {
         dialog.present(Some(parent));
     }
 
+    /// Is there anything for the content pane to show?
+    ///
+    /// Asked per section, not globally. The Albums grid being empty says
+    /// nothing about whether the Songs list has 500 tracks in it, and a global
+    /// answer is how "Loading your library" ended up covering the Apple Music
+    /// pane.
     fn showing_library(&self) -> bool {
-        matches!(self.stage, Stage::Ready) && !self.all_tracks.is_empty()
+        if !matches!(self.stage, Stage::Ready) {
+            return false;
+        }
+        match self.view {
+            View::Albums => !self.albums.is_empty() || self.loading_albums,
+            View::Artists => !self.artists.is_empty() || self.loading_artists,
+            _ => !self.all_tracks.is_empty(),
+        }
     }
 
     fn page(&self) -> &'static str {
-        // Only the *first* load takes over the screen. A reload with tracks
-        // already on show keeps the list up and just disables the refresh
-        // button — yanking the library away to show a spinner is worse.
-        // Only ever take over the screen when there is nothing to show. Paging
-        // in more catalog results happens *below* a list the user is already
-        // reading, and replacing that list with a spinner mid-scroll is worse
-        // than a moment with no new rows.
-        // Scoped to the Library section on purpose. The library loads at
-        // startup whichever section you are in, and taking over the Apple
-        // Music pane to say "Loading your library" reads as the whole app
-        // being stuck. The sidebar spinner covers that case instead.
-        let first_library_load = self.scope == SearchScope::Library
-            && self.loading_library
-            && self.all_tracks.is_empty();
-        let first_catalog_page =
-            self.scope == SearchScope::Catalog && self.searching_catalog && self.catalog.is_empty();
+        // Only the *first* load takes over the screen. A reload with content
+        // already on show keeps it up and just disables the refresh button —
+        // yanking the list away to show a spinner is worse. Paging in more
+        // catalog results happens *below* a list the user is already reading,
+        // and replacing that mid-scroll is worse than a moment with no new
+        // rows.
+        //
+        // Each section answers for itself. The library loads at startup
+        // whichever section you are in, and taking over the Apple Music pane to
+        // say "Loading your library" reads as the whole app being stuck; the
+        // sidebar spinners cover that instead.
+        if !self.showing_library() {
+            // A dead sidecar or a signed-out session outranks everything: no
+            // section has anything to show.
+            return "status";
+        }
 
-        if first_library_load || first_catalog_page {
-            "loading"
-        } else if !self.showing_library() {
-            "status"
-        } else if self.scope == SearchScope::Catalog && self.catalog_query.trim().is_empty() {
-            // Nothing typed yet: invite a search rather than report a failed
-            // one.
-            "search-prompt"
-        } else if self.library.is_empty() {
-            "no-results"
-        } else {
-            "library"
+        match self.view {
+            View::Songs => {
+                if self.loading_library && self.all_tracks.is_empty() {
+                    "loading"
+                } else if self.library.is_empty() {
+                    "no-results"
+                } else {
+                    "library"
+                }
+            }
+            View::Albums => {
+                if self.loading_albums && self.albums.is_empty() {
+                    "loading"
+                } else if self.album_grid.is_empty() {
+                    "no-results"
+                } else {
+                    "albums"
+                }
+            }
+            View::Artists => {
+                if self.loading_artists && self.artists.is_empty() {
+                    "loading"
+                } else if self.artist_grid.is_empty() {
+                    "no-results"
+                } else {
+                    "artists"
+                }
+            }
+            View::Search => {
+                if self.searching_catalog && self.catalog.is_empty() {
+                    "loading"
+                } else if self.catalog_query.trim().is_empty() {
+                    // Nothing typed yet: invite a search rather than report a
+                    // failed one.
+                    "search-prompt"
+                } else if self.library.is_empty() {
+                    "no-results"
+                } else {
+                    "library"
+                }
+            }
         }
     }
 
@@ -1944,6 +2735,16 @@ impl AppModel {
         {
             self.load_library(sender);
         }
+
+        // The grids load on first visit rather than at startup — but if the app
+        // opened straight into one of them, this *is* the first visit, and the
+        // `SetView` that would normally trigger it never fires (the view was
+        // already correct before the tokens arrived).
+        match self.view {
+            View::Albums => self.load_albums(sender),
+            View::Artists => self.load_artists(sender),
+            _ => {}
+        }
     }
 
     fn icon(&self) -> &'static str {
@@ -2055,7 +2856,12 @@ fn respawn_sidecar(sender: &ComponentSender<AppModel>, delay: std::time::Duratio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::music::types::TrackId;
+    use crate::music::types::{Album, Artist, TrackId};
+
+    /// A song row, as the results list holds it.
+    fn song(title: &str, catalog: Option<&str>) -> Entry {
+        Entry::Song(track(title, catalog))
+    }
 
     fn track(title: &str, catalog: Option<&str>) -> Track {
         Track {
@@ -2076,12 +2882,11 @@ mod tests {
 
     #[test]
     fn clicking_a_row_enqueues_the_whole_visible_list() {
-        let (a, b, c) = (
-            track("a", Some("1")),
-            track("b", Some("2")),
-            track("c", Some("3")),
-        );
-        let visible = vec![&a, &b, &c];
+        let visible = vec![
+            song("a", Some("1")),
+            song("b", Some("2")),
+            song("c", Some("3")),
+        ];
 
         // Rule 3: the whole list goes in, not just the clicked track.
         let (songs, start_id) = queue_from(&visible, 1, &dead(&[]));
@@ -2093,9 +2898,12 @@ mod tests {
     fn unplayable_rows_do_not_shift_the_chosen_track() {
         // Row 3 is "d", but "b" cannot be streamed so never enters the queue.
         // Carrying an index through that filter is what started the wrong song.
-        let (a, b) = (track("a", Some("1")), track("b", None));
-        let (c, d) = (track("c", Some("3")), track("d", Some("4")));
-        let visible = vec![&a, &b, &c, &d];
+        let visible = vec![
+            song("a", Some("1")),
+            song("b", None),
+            song("c", Some("3")),
+            song("d", Some("4")),
+        ];
 
         let (songs, start_id) = queue_from(&visible, 3, &dead(&[]));
         assert_eq!(songs, vec!["1", "3", "4"]);
@@ -2106,12 +2914,11 @@ mod tests {
     fn known_dead_ids_never_reach_the_queue_and_do_not_shift_it() {
         // "2" was rejected by MusicKit on an earlier play. Clicking "c" must
         // still start "c", not the track above or below it.
-        let (a, b, c) = (
-            track("a", Some("1")),
-            track("b", Some("2")),
-            track("c", Some("3")),
-        );
-        let visible = vec![&a, &b, &c];
+        let visible = vec![
+            song("a", Some("1")),
+            song("b", Some("2")),
+            song("c", Some("3")),
+        ];
 
         let (songs, start_id) = queue_from(&visible, 2, &dead(&["2"]));
         assert_eq!(songs, vec!["1", "3"], "dead id must not be sent");
@@ -2120,12 +2927,11 @@ mod tests {
 
     #[test]
     fn clicking_a_dead_row_starts_the_next_streamable_track() {
-        let (a, b, c) = (
-            track("a", Some("1")),
-            track("b", Some("2")),
-            track("c", Some("3")),
-        );
-        let visible = vec![&a, &b, &c];
+        let visible = vec![
+            song("a", Some("1")),
+            song("b", Some("2")),
+            song("c", Some("3")),
+        ];
 
         // Click "b", which is dead: the sensible result is "c", not the top.
         let (songs, start_id) = queue_from(&visible, 1, &dead(&["2"]));
@@ -2133,16 +2939,114 @@ mod tests {
     }
 
     #[test]
+    fn the_sidebar_row_order_round_trips() {
+        // `connect_row_selected` reads a row index and `row()` writes one back
+        // when restoring the last section. If those two ever disagree the app
+        // opens with one section selected and another one showing — which is
+        // exactly the bug this pins down.
+        for view in [View::Search, View::Songs, View::Albums, View::Artists] {
+            assert_eq!(View::from_row(view.row()), view);
+        }
+    }
+
+    #[test]
+    fn an_unknown_sidebar_row_falls_back_to_songs() {
+        assert_eq!(View::from_row(99), View::Songs);
+        assert_eq!(View::from_row(-1), View::Songs);
+    }
+
+    #[test]
+    fn the_view_round_trips_through_the_persisted_section() {
+        for view in [View::Search, View::Songs, View::Albums, View::Artists] {
+            assert_eq!(View::from(Section::from(view)), view);
+        }
+    }
+
+    #[test]
+    fn only_search_looks_at_the_catalog() {
+        assert_eq!(View::Search.scope(), SearchScope::Catalog);
+        for view in [View::Songs, View::Albums, View::Artists] {
+            assert_eq!(view.scope(), SearchScope::Library);
+        }
+    }
+
+    #[test]
+    fn a_page_asks_the_collection_its_id_came_from() {
+        // Library ids 404 against /catalog and vice versa, so the flag set at
+        // parse time — not the id's shape — decides the endpoint.
+        let mut album = Album {
+            id: "1234".into(),
+            name: "Superestrella".into(),
+            artist: "Aitana".into(),
+            artwork: None,
+            year: "2020".into(),
+            track_count: 12,
+            library: false,
+        };
+        assert_eq!(PageKind::album(&album), PageKind::Album("1234".into()));
+        album.library = true;
+        album.id = "l.1234".into();
+        assert_eq!(
+            PageKind::album(&album),
+            PageKind::LibraryAlbum("l.1234".into())
+        );
+
+        let mut artist = Artist {
+            id: "9".into(),
+            name: "Aitana".into(),
+            artwork: None,
+            genres: String::new(),
+            library: false,
+        };
+        assert_eq!(PageKind::artist(&artist), PageKind::Artist("9".into()));
+        artist.library = true;
+        artist.id = "r.9".into();
+        assert_eq!(
+            PageKind::artist(&artist),
+            PageKind::LibraryArtist("r.9".into())
+        );
+    }
+
+    #[test]
+    fn album_and_artist_rows_are_not_enqueued() {
+        // Catalog results mix browse rows in above the songs. They are doors,
+        // not tracks: they must never take a slot in the queue, and the row
+        // index must not shift because of them.
+        let visible = vec![
+            Entry::Artist(Artist {
+                id: "a1".into(),
+                name: "Aitana".into(),
+                artwork: None,
+                genres: String::new(),
+                library: false,
+            }),
+            Entry::Album(Album {
+                id: "al1".into(),
+                name: "Superestrella".into(),
+                artist: "Aitana".into(),
+                artwork: None,
+                year: "2020".into(),
+                library: false,
+                track_count: 12,
+            }),
+            song("a", Some("1")),
+            song("b", Some("2")),
+        ];
+
+        let (songs, start_id) = queue_from(&visible, 3, &dead(&[]));
+        assert_eq!(songs, vec!["1", "2"], "browse rows are not tracks");
+        assert_eq!(songs[start_index(&songs, start_id.as_ref())], "2");
+    }
+
+    #[test]
     fn a_list_with_nothing_playable_produces_no_queue() {
-        let a = track("a", None);
-        let (songs, _) = queue_from(&[&a], 0, &dead(&[]));
+        let (songs, _) = queue_from(&[song("a", None)], 0, &dead(&[]));
         assert!(songs.is_empty(), "caller must toast rather than enqueue");
     }
 
     #[test]
     fn clicking_past_the_last_streamable_track_falls_back_to_the_top() {
-        let (a, b) = (track("a", Some("1")), track("b", None));
-        let visible = vec![&a, &b];
+        let visible = vec![song("a", Some("1")), song("b", None)];
         let (songs, start_id) = queue_from(&visible, 1, &dead(&[]));
         // Nothing streamable at or after the click: play from the start rather
         // than not play at all.

@@ -5,6 +5,8 @@
 //! components receive plain data from `app.rs` and emit intent back (rule 9).
 
 pub mod artwork;
+pub mod detail_page;
+pub mod grid_item;
 pub mod now_playing;
 pub mod queue_view;
 pub mod track_row;
