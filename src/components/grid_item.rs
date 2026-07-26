@@ -137,6 +137,8 @@ impl RelmGridItem for GridItem {
     type Widgets = GridItemWidgets;
 
     fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        crate::components::count_widget("grid-tile");
+
         view! {
             root = gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,

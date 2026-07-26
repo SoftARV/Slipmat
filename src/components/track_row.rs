@@ -167,6 +167,8 @@ impl RelmListItem for LibraryItem {
     type Widgets = LibraryItemWidgets;
 
     fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        crate::components::count_widget("track-row");
+
         view! {
             root = gtk::Box {
                 set_orientation: gtk::Orientation::Horizontal,
