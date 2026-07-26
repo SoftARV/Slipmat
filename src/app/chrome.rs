@@ -237,21 +237,6 @@ impl AppModel {
             .css_classes(["caption", "dim-label"])
             .build();
 
-        // A way out of the app, on the one screen that otherwise has none.
-        //
-        // This dialog blocks deliberately — signed out, every control behind it
-        // is a control that cannot work — but `can_close(false)` also stops the
-        // window's own close button, so without this the gate was a dead end
-        // for anyone who did not want to sign in right now. Plain, not
-        // destructive: quitting is ordinary, and colouring it red would suggest
-        // it throws something away.
-        let quit = gtk::Button::builder()
-            .label("Quit")
-            .halign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
-        quit.connect_clicked(|_| relm4::main_application().quit());
-
         let column = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .halign(gtk::Align::Center)
@@ -259,13 +244,46 @@ impl AppModel {
             .build();
         column.append(&button);
         column.append(&note);
-        column.append(&quit);
         page.set_child(Some(&column));
 
+        // A way out of the app, on the one screen that otherwise has none:
+        // `can_close(false)` stops the window's own close button too, so
+        // without this the gate is a dead end for anyone who does not want to
+        // sign in right now.
+        //
+        // In the corner rather than under the call to action. Below Sign In it
+        // sat in the reading order as if it were the second step, and it is not
+        // a step at all — it is the way out. Flat, and not destructive:
+        // quitting is ordinary, and red would imply it discards something.
+        let quit = gtk::Button::builder()
+            .label("Quit")
+            .css_classes(["flat"])
+            .build();
+        quit.connect_clicked(|_| relm4::main_application().quit());
+
+        // The bar exists only to hold that button — the dialog cannot be
+        // closed, so there are no window controls to show and no title to
+        // repeat above the status page's own.
+        let header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .css_classes(["flat"])
+            .build();
+        header.set_title_widget(Some(&gtk::Label::new(None)));
+        header.pack_end(&quit);
+
+        let view = adw::ToolbarView::builder().content(&page).build();
+        view.add_top_bar(&header);
+
+        // **Width only.** A fixed `content_height` was what made this scroll:
+        // `adw::StatusPage` puts its content in a scrolled window, so any
+        // height smaller than the natural one produces a scrollbar — and 420
+        // was smaller, on a dialog with a heading, two short paragraphs and a
+        // button. Left unset, the dialog takes the height its content asks for
+        // and there is nothing to scroll.
         let dialog = adw::Dialog::builder()
-            .child(&page)
+            .child(&view)
             .content_width(480)
-            .content_height(420)
             // No escape, no click-outside: there is nothing behind this worth
             // reaching until there is a session.
             .can_close(false)
