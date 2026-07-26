@@ -569,6 +569,41 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   set **every** property it cares about, because the widget it is handed was
   showing a different track a moment ago, and anything left unset keeps the old
   value. Disconnect signal handlers in `unbind` or they stack up on reuse.
+- **A `#[watch]` on a control that also reports user changes is a two-way
+  binding, and it will cycle unless you break it.** This one froze a desktop
+  hard enough to need a forced power-off, so it is worth understanding rather
+  than pattern-matching.
+
+  GTK emits `value-changed` for a programmatic `set_value` exactly as it does
+  for a drag — a widget cannot tell you which it was. And relm4 runs
+  `update_view` after **every** message, including the one the widget just
+  sent. So the sequence is: user moves the slider → the handler fires → the
+  very next view update writes the *old* model value back into the widget →
+  GTK emits for that → the two values ping-pong through the reducer forever.
+  Each lap was one sidecar command, one MPRIS property change on the bus and
+  one journal line; it managed 5,721 of them.
+
+  Two halves fix it, and **both** are needed. Adopt the value into the model
+  in the handler, so the following view update writes back what the widget
+  already holds; and ignore an incoming value equal to the one held, which is
+  what a programmatic set arrives as. `now_playing::volume_is_new` is the
+  guard, with the reasoning next to it.
+
+  Note that "it only emits when the value actually changed" is **true and not
+  sufficient** — that was the reasoning that shipped the bug. The stale write
+  *is* a change.
+
+  Neither clippy nor the test suite can see this: the cycle only exists once
+  GTK, `update_view` and the reducer are wired together. Verify a two-way
+  control by counting what reaches the sidecar —
+
+  ```bash
+  RUST_LOG=tonearm=info cargo run 2>&1 | grep -c "dispatch setVolume"
+  ```
+
+  One command per change, then silence. Anything that keeps climbing is this
+  bug. Log to a **file, not the journal** while testing, or a regression takes
+  journald down with it.
 - **The app stylesheet is `style.rs`, and it is the sanctioned CSS.** An accent
   colour is not a widget: libadwaita 1.6 exposes it only as CSS variables
   (`--accent-bg-color` and friends), so a `CssProvider` is the only route.
@@ -751,6 +786,12 @@ its full height. An album is a dozen tracks. That is the right trade.
 - **Removing a queue track scrolls the list to the top** (#6). Four approaches
   tried and ruled out; the issue records them so they are not retried. Playing
   and jumping are unaffected, and the library list no longer does it.
+- **Nothing stands between a runaway reducer and the session** (#37). The
+  sidecar journals every dispatch, commands are not coalesced, and there is no
+  rate ceiling — so a message loop costs a disk write and a bus round trip per
+  lap. That is why the binding bug above reached the compositor instead of
+  staying an app bug. Rule 6 says a dead sidecar must not look healthy; this is
+  the same argument reversed.
 
 ## Commands
 
