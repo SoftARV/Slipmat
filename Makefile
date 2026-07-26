@@ -75,12 +75,22 @@ dev-install:
 		$(DATADIR)/icons/hicolor/scalable/apps/$(APPID).svg
 	install -Dm644 data/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg \
 		$(DATADIR)/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg
-	@for sz in $(ICON_SIZES); do \
-		if [ -f data/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png ]; then \
-			install -Dm644 data/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png \
-				$(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png; \
-		fi; \
-	done
+	@# Raster sizes, rendered from the same SVG the app installs so the two
+	@# can never drift. GTK resolves the SVG on its own, but the shell, the
+	@# notification daemon and anything reading the icon theme without an SVG
+	@# loader all want PNGs — and this loop used to look for files that were
+	@# never in the tree, so it silently installed none.
+	@if command -v rsvg-convert >/dev/null 2>&1; then \
+		for sz in $(ICON_SIZES); do \
+			install -d $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps; \
+			rsvg-convert -w $${sz} -h $${sz} \
+				data/icons/hicolor/scalable/apps/$(APPID).svg \
+				-o $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png; \
+		done; \
+		echo "Rendered PNG icons: $(ICON_SIZES)"; \
+	else \
+		echo "rsvg-convert not found — installing the SVG only."; \
+	fi
 	@if [ -f $(DATADIR)/icons/hicolor/index.theme ]; then \
 		touch $(DATADIR)/icons/hicolor; \
 		gtk-update-icon-cache -q -t -f $(DATADIR)/icons/hicolor; \
