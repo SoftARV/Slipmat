@@ -156,7 +156,11 @@ pub fn set_accent(accent: Accent) {
 
          /* Padding rather than a margin on the widget: the tint is a
             background, and a margin would leave an untinted frame around it. */
-         .np-bar {{ padding: 10px; }}"
+         .np-bar {{ padding: 10px; }}
+
+         /* Same reason. A GridView draws its own background, so insetting it
+            with a margin shows a band of the window around every grid. */
+         .tile-grid {{ padding: 12px; }}"
     );
 
     BASE.with(|p| p.load_from_string(&css));

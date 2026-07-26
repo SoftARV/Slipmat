@@ -905,7 +905,13 @@ impl Component for AppModel {
                                             album_grid -> gtk::GridView {
                                                 set_single_click_activate: true,
                                                 set_max_columns: 12,
-                                                set_margin_all: 12,
+                                                // Padding via `.tile-grid`,
+                                                // not a margin: a GridView
+                                                // draws its own `.view`
+                                                // background, and a margin
+                                                // leaves a strip of the window
+                                                // showing all the way round it.
+                                                add_css_class: "tile-grid",
                                             },
                                         },
 
@@ -917,7 +923,13 @@ impl Component for AppModel {
                                             artist_grid -> gtk::GridView {
                                                 set_single_click_activate: true,
                                                 set_max_columns: 12,
-                                                set_margin_all: 12,
+                                                // Padding via `.tile-grid`,
+                                                // not a margin: a GridView
+                                                // draws its own `.view`
+                                                // background, and a margin
+                                                // leaves a strip of the window
+                                                // showing all the way round it.
+                                                add_css_class: "tile-grid",
                                             },
                                         },
 
@@ -929,7 +941,13 @@ impl Component for AppModel {
                                             playlist_grid -> gtk::GridView {
                                                 set_single_click_activate: true,
                                                 set_max_columns: 12,
-                                                set_margin_all: 12,
+                                                // Padding via `.tile-grid`,
+                                                // not a margin: a GridView
+                                                // draws its own `.view`
+                                                // background, and a margin
+                                                // leaves a strip of the window
+                                                // showing all the way round it.
+                                                add_css_class: "tile-grid",
                                             },
                                         },
 
