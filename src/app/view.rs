@@ -105,27 +105,17 @@ pub enum SortBy {
     Title,
     Artist,
     Album,
-    /// Newest first — the only ones that descend, because "recently added,
-    /// oldest first" is not a thing anybody wants.
-    RecentlyAdded,
     Year,
 }
 
 impl SortBy {
-    pub(super) const ALL: [Self; 5] = [
-        Self::Title,
-        Self::Artist,
-        Self::Album,
-        Self::RecentlyAdded,
-        Self::Year,
-    ];
+    pub(super) const ALL: [Self; 4] = [Self::Title, Self::Artist, Self::Album, Self::Year];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Title => "Title",
             Self::Artist => "Artist",
             Self::Album => "Album",
-            Self::RecentlyAdded => "Recently Added",
             Self::Year => "Year",
         }
     }
@@ -136,7 +126,6 @@ impl SortBy {
             Self::Title => "title",
             Self::Artist => "artist",
             Self::Album => "album",
-            Self::RecentlyAdded => "recent",
             Self::Year => "year",
         }
     }
@@ -145,10 +134,18 @@ impl SortBy {
         match s {
             "artist" => Self::Artist,
             "album" => Self::Album,
-            "recent" => Self::RecentlyAdded,
             "year" => Self::Year,
             _ => Self::Title,
         }
+    }
+
+    /// Which way round this sort reads *naturally*, before the user flips it.
+    ///
+    /// Alphabetical wants A–Z; dates want newest first. Folding that in here
+    /// means the direction toggle always means the same thing on screen — the
+    /// arrow points the way the list actually runs.
+    pub(super) fn descends_by_default(self) -> bool {
+        matches!(self, Self::Year)
     }
 
     /// Order two tracks. Every arm falls back to title, so the list is stable —
@@ -165,10 +162,9 @@ impl SortBy {
                 // sorted by title is not an album.
                 .then_with(|| a.track_number.cmp(&b.track_number))
                 .then_with(by_title),
-            // Descending. Empty sorts last rather than first: something Apple
-            // gave no date for is not the newest thing you own.
-            Self::RecentlyAdded => b.date_added.cmp(&a.date_added).then_with(by_title),
-            Self::Year => b.year.cmp(&a.year).then_with(by_title),
+            // Ascending here; `descends_by_default` flips it for display, so
+            // Year reads newest-first without this arm knowing about direction.
+            Self::Year => a.year.cmp(&b.year).then_with(by_title),
         }
     }
 }
@@ -228,6 +224,8 @@ mod tests {
             title: title.into(),
             artist: String::new(),
             album: album.into(),
+            favorite: false,
+            in_library: false,
             date_added: added.into(),
             year: year.into(),
             duration_ms: 0,
@@ -246,16 +244,43 @@ mod tests {
         assert_eq!(SortBy::parse(""), SortBy::Title);
     }
 
+    /// What the list actually shows: the comparator, then the natural
+    /// direction. Mirrors `visible_entries`.
+    fn displayed(sort: SortBy, reversed: bool, v: &mut [Track]) -> Vec<String> {
+        v.sort_by(|a, b| sort.compare(a, b));
+        if sort.descends_by_default() != reversed {
+            v.reverse();
+        }
+        v.iter().map(|t| t.title.clone()).collect()
+    }
+
     #[test]
-    fn recently_added_puts_the_newest_first_and_the_undated_last() {
-        let mut v = [
-            track("old", "", 0, "2020-01-01T00:00:00Z", ""),
+    fn year_reads_newest_first_and_flips_on_request() {
+        let mut v = vec![
+            track("old", "", 0, "", "1999"),
             track("undated", "", 0, "", ""),
-            track("new", "", 0, "2026-07-01T00:00:00Z", ""),
+            track("new", "", 0, "", "2026"),
         ];
-        v.sort_by(|a, b| SortBy::RecentlyAdded.compare(a, b));
-        let order: Vec<&str> = v.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(order, ["new", "old", "undated"]);
+        // Years read newest-first without anyone asking, and something Apple
+        // gave no year for is not the newest thing you own.
+        assert_eq!(
+            displayed(SortBy::Year, false, &mut v),
+            ["new", "old", "undated"]
+        );
+        assert_eq!(
+            displayed(SortBy::Year, true, &mut v),
+            ["undated", "old", "new"]
+        );
+    }
+
+    #[test]
+    fn alphabetical_reads_a_to_z_without_asking() {
+        // The opposite default from dates, which is the whole point of
+        // `descends_by_default`: Reverse Order always means "the other way
+        // from how this list naturally reads".
+        let mut v = vec![track("Zebra", "", 0, "", ""), track("Apple", "", 0, "", "")];
+        assert_eq!(displayed(SortBy::Title, false, &mut v), ["Apple", "Zebra"]);
+        assert_eq!(displayed(SortBy::Title, true, &mut v), ["Zebra", "Apple"]);
     }
 
     #[test]

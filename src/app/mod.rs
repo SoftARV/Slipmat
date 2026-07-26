@@ -134,6 +134,10 @@ pub enum Stage {
 pub struct AppModel {
     stage: Stage,
     player: PlayerState,
+    /// The last track MusicKit reported, kept so the bar can hold it through a
+    /// queue reload — see `push_snapshot::showing`.
+    last_item: Option<crate::player::protocol::Item>,
+
     /// Kept for the row context menu, whose GTK actions outlive the `update`
     /// call that built them.
     menu_sender: ComponentSender<AppModel>,
@@ -191,6 +195,8 @@ pub struct AppModel {
     view: View,
     /// How the Songs list is ordered. Applied in `visible_entries`.
     sort: SortBy,
+    /// Whether the user flipped the sort's natural direction.
+    sort_reversed: bool,
     /// The user's library albums and artists, loaded on first visit rather than
     /// at startup — launching should not wait on three collections.
     albums: Vec<Album>,
@@ -282,6 +288,34 @@ pub struct AppModel {
     notify_when_art_lands: Option<String>,
 }
 
+/// Something we can ask Apple to do to the user's account.
+///
+/// Both answer 202 Accepted with an empty body — "acceptable, may not have
+/// completed" — so neither can be treated as done, only as sent. That is why
+/// nothing here toggles a checkbox: showing state would mean reading it back,
+/// and a star that lies is worse than no star.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryAction {
+    AddToLibrary,
+    Favorite,
+}
+
+impl LibraryAction {
+    fn sent(self) -> &'static str {
+        match self {
+            Self::AddToLibrary => "Adding to your library…",
+            Self::Favorite => "Favouriting…",
+        }
+    }
+
+    fn done(self) -> &'static str {
+        match self {
+            Self::AddToLibrary => "Sent to your library",
+            Self::Favorite => "Favourited",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum AppMsg {
     SignIn,
@@ -298,12 +332,18 @@ pub enum AppMsg {
     SetShuffle(bool),
     SetRepeat(Repeat),
     SetSort(SortBy),
+    ToggleSortDirection,
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
     /// Grow the queue MusicKit already holds, without rebuilding it.
     Enqueue {
         catalog_id: String,
         next: bool,
+    },
+    /// Write to the user's Apple Music account: save a track, or star it.
+    LibraryWrite {
+        catalog_id: String,
+        action: LibraryAction,
     },
     /// Repaint the seek bar from the interpolated position.
     Tick,
@@ -323,11 +363,14 @@ pub enum AppMsg {
     ToggleSidebar,
     /// The results list is near its end; fetch the next page if there is one.
     LoadMoreCatalog,
-    ReloadLibrary,
+    /// Re-fetch one library section. There is no section-less "reload": each
+    /// is fetched separately, so a single one could not know which you meant.
+    ReloadSection(View),
     ShowPreferences,
     ShowShortcuts,
     ShowAbout,
     SetTheme(u32),
+    SetAccent(crate::style::Accent),
     SetNotifyTrackChange(bool),
     ToggleQueue,
     /// A library row was activated; the position is resolved immediately.
@@ -373,7 +416,13 @@ pub enum CommandMsg {
     },
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
     /// cosmetic and must not become a toast.
-    Artwork(Option<PathBuf>),
+    Artwork {
+        path: Option<PathBuf>,
+        /// A colour taken from that cover, for the Now Playing bar. Carried
+        /// here rather than in its own message because the two are read from
+        /// one decode and must be applied together.
+        tint: Option<(u8, u8, u8)>,
+    },
     /// An album page's contents. Tagged with the page id: by the time this
     /// lands the user may have gone back, and filling a page that is no longer
     /// on the stack is at best wasted work.
@@ -400,6 +449,13 @@ pub enum CommandMsg {
     LibraryAlbums(Result<Vec<Album>, String>),
     LibraryArtists(Result<Vec<Artist>, String>),
     LibraryPlaylists(Result<Vec<Playlist>, String>),
+    /// A library write came back. `Ok` means Apple **accepted** it, not that
+    /// it is done — see `Client::add_to_library`.
+    LibraryWritten {
+        catalog_id: String,
+        action: LibraryAction,
+        result: Result<(), String>,
+    },
     /// A grid tile's cover is on disk, or could not be fetched.
     TileArt {
         key: String,
@@ -428,7 +484,15 @@ impl Component for AppModel {
                     #[wrap(Some)]
                     set_content = &adw::OverlaySplitView {
                         set_sidebar_position: gtk::PackType::End,
+                        // The split view owns the sidebar's width, not the
+                        // sidebar. Its child used to carry a 340px
+                        // width_request, which the collapse animation then had
+                        // to violate on every frame — hence GTK warning that a
+                        // GtkRevealer was being measured smaller than its
+                        // minimum every time the queue closed.
+                        set_min_sidebar_width: 300.0,
                         set_max_sidebar_width: 380.0,
+                        set_sidebar_width_fraction: 0.28,
                         #[watch]
                         set_show_sidebar: model.show_queue,
 
@@ -542,8 +606,39 @@ impl Component for AppModel {
                                                         // window.
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: model.loading_library,
+                                                        },
+
+                                                        // Per section, because
+                                                        // each is fetched
+                                                        // separately and a
+                                                        // single "reload"
+                                                        // cannot know which one
+                                                        // you meant. Swaps with
+                                                        // the spinner rather
+                                                        // than sitting beside
+                                                        // it.
+                                                        gtk::Button {
+                                                            set_icon_name: "view-refresh-symbolic",
+                                                            set_tooltip_text: Some("Reload"),
+                                                            add_css_class: "flat",
+                                                            add_css_class: "circular",
+                                                            // Exactly the
+                                                            // spinner's 16px,
+                                                            // in the spinner's
+                                                            // place: the row
+                                                            // must not change
+                                                            // height depending
+                                                            // on whether it is
+                                                            // loading.
+                                                            add_css_class: "row-action",
+                                                            set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
+                                                            #[watch]
+                                                            set_visible: !(model.loading_library),
+                                                            connect_clicked => AppMsg::ReloadSection(View::Songs),
                                                         },
                                                     },
                                                 },
@@ -565,8 +660,39 @@ impl Component for AppModel {
                                                         },
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: model.loading_albums,
+                                                        },
+
+                                                        // Per section, because
+                                                        // each is fetched
+                                                        // separately and a
+                                                        // single "reload"
+                                                        // cannot know which one
+                                                        // you meant. Swaps with
+                                                        // the spinner rather
+                                                        // than sitting beside
+                                                        // it.
+                                                        gtk::Button {
+                                                            set_icon_name: "view-refresh-symbolic",
+                                                            set_tooltip_text: Some("Reload"),
+                                                            add_css_class: "flat",
+                                                            add_css_class: "circular",
+                                                            // Exactly the
+                                                            // spinner's 16px,
+                                                            // in the spinner's
+                                                            // place: the row
+                                                            // must not change
+                                                            // height depending
+                                                            // on whether it is
+                                                            // loading.
+                                                            add_css_class: "row-action",
+                                                            set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
+                                                            #[watch]
+                                                            set_visible: !(model.loading_albums),
+                                                            connect_clicked => AppMsg::ReloadSection(View::Albums),
                                                         },
                                                     },
                                                 },
@@ -588,8 +714,39 @@ impl Component for AppModel {
                                                         },
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: model.loading_artists,
+                                                        },
+
+                                                        // Per section, because
+                                                        // each is fetched
+                                                        // separately and a
+                                                        // single "reload"
+                                                        // cannot know which one
+                                                        // you meant. Swaps with
+                                                        // the spinner rather
+                                                        // than sitting beside
+                                                        // it.
+                                                        gtk::Button {
+                                                            set_icon_name: "view-refresh-symbolic",
+                                                            set_tooltip_text: Some("Reload"),
+                                                            add_css_class: "flat",
+                                                            add_css_class: "circular",
+                                                            // Exactly the
+                                                            // spinner's 16px,
+                                                            // in the spinner's
+                                                            // place: the row
+                                                            // must not change
+                                                            // height depending
+                                                            // on whether it is
+                                                            // loading.
+                                                            add_css_class: "row-action",
+                                                            set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
+                                                            #[watch]
+                                                            set_visible: !(model.loading_artists),
+                                                            connect_clicked => AppMsg::ReloadSection(View::Artists),
                                                         },
                                                     },
                                                 },
@@ -611,8 +768,39 @@ impl Component for AppModel {
                                                         },
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: model.loading_playlists,
+                                                        },
+
+                                                        // Per section, because
+                                                        // each is fetched
+                                                        // separately and a
+                                                        // single "reload"
+                                                        // cannot know which one
+                                                        // you meant. Swaps with
+                                                        // the spinner rather
+                                                        // than sitting beside
+                                                        // it.
+                                                        gtk::Button {
+                                                            set_icon_name: "view-refresh-symbolic",
+                                                            set_tooltip_text: Some("Reload"),
+                                                            add_css_class: "flat",
+                                                            add_css_class: "circular",
+                                                            // Exactly the
+                                                            // spinner's 16px,
+                                                            // in the spinner's
+                                                            // place: the row
+                                                            // must not change
+                                                            // height depending
+                                                            // on whether it is
+                                                            // loading.
+                                                            add_css_class: "row-action",
+                                                            set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
+                                                            #[watch]
+                                                            set_visible: !(model.loading_playlists),
+                                                            connect_clicked => AppMsg::ReloadSection(View::Playlists),
                                                         },
                                                     },
                                                 },
@@ -674,14 +862,6 @@ impl Component for AppModel {
                                             },
                                         },
 
-                                        pack_end = &gtk::ToggleButton {
-                                            set_icon_name: "view-list-symbolic",
-                                            set_tooltip_text: Some("Queue"),
-                                            #[watch]
-                                            set_active: model.show_queue,
-                                            connect_clicked => AppMsg::ToggleQueue,
-                                        },
-
                                         // Only in Songs: the grids have their
                                         // own natural order and sorting them
                                         // is a different question.
@@ -694,16 +874,6 @@ impl Component for AppModel {
                                             set_visible: model.view == View::Songs,
                                         },
 
-                                        pack_end = &gtk::Button {
-                                            set_icon_name: "view-refresh-symbolic",
-                                            set_tooltip_text: Some("Reload library"),
-                                            add_css_class: "flat",
-                                            #[watch]
-                                            set_visible: model.view == View::Songs,
-                                            #[watch]
-                                            set_sensitive: !model.loading_library,
-                                            connect_clicked => AppMsg::ReloadLibrary,
-                                        },
                                     },
 
                                     #[wrap(Some)]
@@ -787,7 +957,13 @@ impl Component for AppModel {
                                             album_grid -> gtk::GridView {
                                                 set_single_click_activate: true,
                                                 set_max_columns: 12,
-                                                set_margin_all: 12,
+                                                // Padding via `.tile-grid`,
+                                                // not a margin: a GridView
+                                                // draws its own `.view`
+                                                // background, and a margin
+                                                // leaves a strip of the window
+                                                // showing all the way round it.
+                                                add_css_class: "tile-grid",
                                             },
                                         },
 
@@ -799,7 +975,13 @@ impl Component for AppModel {
                                             artist_grid -> gtk::GridView {
                                                 set_single_click_activate: true,
                                                 set_max_columns: 12,
-                                                set_margin_all: 12,
+                                                // Padding via `.tile-grid`,
+                                                // not a margin: a GridView
+                                                // draws its own `.view`
+                                                // background, and a margin
+                                                // leaves a strip of the window
+                                                // showing all the way round it.
+                                                add_css_class: "tile-grid",
                                             },
                                         },
 
@@ -811,7 +993,13 @@ impl Component for AppModel {
                                             playlist_grid -> gtk::GridView {
                                                 set_single_click_activate: true,
                                                 set_max_columns: 12,
-                                                set_margin_all: 12,
+                                                // Padding via `.tile-grid`,
+                                                // not a margin: a GridView
+                                                // draws its own `.view`
+                                                // background, and a margin
+                                                // leaves a strip of the window
+                                                // showing all the way round it.
+                                                add_css_class: "tile-grid",
                                             },
                                         },
 
@@ -904,6 +1092,7 @@ impl Component for AppModel {
                 NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
                 NowPlayingOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
                 NowPlayingOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
+                NowPlayingOutput::ToggleQueue => AppMsg::ToggleQueue,
             });
 
         let library: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
@@ -980,6 +1169,7 @@ impl Component for AppModel {
             catalog_query: String::new(),
             view: View::from(settings.section),
             sort: SortBy::parse(&settings.sort),
+            sort_reversed: settings.sort_reversed,
             albums: Vec::new(),
             artists: Vec::new(),
             playlists: Vec::new(),
@@ -1010,6 +1200,7 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
+            last_item: None,
             menu_sender: sender.clone(),
             last_command: std::cell::RefCell::new(None),
             progress_mark: std::cell::Cell::new((0, 0)),
@@ -1070,11 +1261,20 @@ impl Component for AppModel {
         // a stateful action rather than hand-managed across five items.
         {
             let menu = gtk::gio::Menu::new();
+
+            // Its own section, because reversing is a different question from
+            // choosing a key — and it stays put while the radio list changes.
+            let direction = gtk::gio::Menu::new();
+            direction.append(Some("_Reverse Order"), Some("sort.reverse"));
+            menu.append_section(None, &direction);
+
+            let keys = gtk::gio::Menu::new();
             for option in SortBy::ALL {
                 let item = gtk::gio::MenuItem::new(Some(option.label()), None);
                 item.set_action_and_target_value(Some("sort.by"), Some(&option.id().to_variant()));
-                menu.append_item(&item);
+                keys.append_item(&item);
             }
+            menu.prepend_section(None, &keys);
             widgets.sort_button.set_menu_model(Some(&menu));
 
             // A stateful action gives the popover its radio dots for free, and
@@ -1094,6 +1294,25 @@ impl Component for AppModel {
             });
             let group = gtk::gio::SimpleActionGroup::new();
             group.add_action(&action);
+
+            // Stateful, so the menu draws its own checkmark rather than us
+            // rebuilding the model every time it flips.
+            let reverse = gtk::gio::SimpleAction::new_stateful(
+                "reverse",
+                None,
+                &model.sort_reversed.to_variant(),
+            );
+            let rev_sender = sender.clone();
+            reverse.connect_activate(move |action, _| {
+                let now = !action
+                    .state()
+                    .and_then(|s| s.get::<bool>())
+                    .unwrap_or(false);
+                action.set_state(&now.to_variant());
+                rev_sender.input(AppMsg::ToggleSortDirection);
+            });
+            group.add_action(&reverse);
+
             widgets
                 .sort_button
                 .insert_action_group("sort", Some(&group));
@@ -1324,7 +1543,7 @@ impl Component for AppModel {
                     self.run_catalog_search(&sender, generation, offset);
                 }
             }
-            AppMsg::ReloadLibrary => self.load_library(&sender),
+            AppMsg::ReloadSection(view) => self.reload(view, &sender),
             AppMsg::ShowPreferences => self.show_preferences(&sender, root),
             AppMsg::ShowShortcuts => show_shortcuts(root),
             AppMsg::ShowAbout => show_about(root),
@@ -1345,6 +1564,8 @@ impl Component for AppModel {
             AppMsg::ToggleQueue => {
                 self.show_queue = !self.show_queue;
                 self.sync_page_controls();
+                // The bar's toggle reads this from the snapshot, so push one.
+                self.push_snapshot();
                 if self.show_queue {
                     self.queue_view.emit(QueueViewInput::ScrollToPlaying);
                 }
@@ -1414,6 +1635,13 @@ impl Component for AppModel {
                 Some(index) => self.send(Command::RemoveFromQueue { index }),
                 None => self.toast("That track is no longer in the queue"),
             },
+            AppMsg::SetAccent(accent) => {
+                self.settings.accent = accent.id().into();
+                self.settings.save();
+                // Live: the provider is replaced, and every widget already
+                // referencing the accent variables repaints itself.
+                crate::style::set_accent(accent);
+            }
             AppMsg::SetSort(sort) => {
                 if sort == self.sort {
                     return;
@@ -1426,17 +1654,56 @@ impl Component for AppModel {
                 // the user was looking at no longer exists in that order.
                 self.rebuild_rows();
             }
+            AppMsg::LibraryWrite { catalog_id, action } => {
+                let Some(client) = self.client() else {
+                    self.toast("Not connected yet");
+                    return;
+                };
+                // Said out loud before the request goes out: these are
+                // fire-and-forget, and a click with no feedback at all reads as
+                // a click that did not register.
+                self.toast(action.sent());
+                tracing::info!(?action, "library write");
+                sender.oneshot_command(async move {
+                    let result = match action {
+                        LibraryAction::AddToLibrary => {
+                            client.add_to_library("songs", &catalog_id).await
+                        }
+                        LibraryAction::Favorite => {
+                            client.add_to_favorites("songs", &catalog_id).await
+                        }
+                    };
+                    CommandMsg::LibraryWritten {
+                        catalog_id,
+                        action,
+                        result: result.map_err(|err| format!("{err:#}")),
+                    }
+                });
+            }
+            AppMsg::ToggleSortDirection => {
+                self.sort_reversed = !self.sort_reversed;
+                self.settings.sort_reversed = self.sort_reversed;
+                self.settings.save();
+                self.rebuild_rows();
+            }
             AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
             AppMsg::Enqueue { catalog_id, next } => {
+                let songs = vec![catalog_id];
                 if self.player.queue.is_empty() {
-                    // Nothing to insert into. `playNext` on an empty queue is a
-                    // silent no-op in MusicKit — exactly the class of failure
-                    // this project keeps refusing to ship.
-                    self.toast("Play something first, then add to the queue");
+                    // Nothing to insert into: `playNext` on an empty queue is a
+                    // silent no-op in MusicKit. Start the queue instead —
+                    // "add to queue" with no queue plainly means "make one",
+                    // and refusing was a worse answer than doing it.
+                    tracing::info!("starting a queue from one track");
+                    self.pending_start = songs.first().cloned();
+                    self.last_queue = Some((songs.clone(), songs.first().cloned()));
+                    self.send(Command::SetQueue {
+                        songs,
+                        start_position: 0,
+                    });
                     return;
                 }
                 tracing::info!(next, "enqueueing one track");
-                let songs = vec![catalog_id];
                 self.send(if next {
                     Command::PlayNext { songs }
                 } else {
@@ -1570,6 +1837,29 @@ impl Component for AppModel {
                     }
                 }
             }
+            CommandMsg::LibraryWritten {
+                catalog_id,
+                action,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // "Sent", not "added": Apple's 202 means accepted, and the
+                    // change may still be in flight on their side.
+                    self.toast(action.done());
+                    // The star, however, we can move now. `inFavorites` is only
+                    // re-read on a library reload, and making someone reload to
+                    // see their own click is absurd — so mirror it locally and
+                    // repaint just that row.
+                    match action {
+                        LibraryAction::Favorite => self.set_favorite(&catalog_id, true),
+                        LibraryAction::AddToLibrary => {}
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(?action, %err, "library write failed");
+                    self.toast(&err);
+                }
+            },
             CommandMsg::TileArt { key, path } => {
                 self.tile_art_pending.remove(&key);
                 let Some(path) = path else {
@@ -1679,12 +1969,16 @@ impl Component for AppModel {
                 tracing::warn!(%err, "library load failed");
                 self.toast(&format!("Couldn't load your library: {err}"));
             }
-            CommandMsg::Artwork(path) => {
+            CommandMsg::Artwork { path, tint } => {
                 if path.is_none() {
                     // Cosmetic. The bar falls back to a generic icon.
                     tracing::debug!("artwork unavailable");
                 }
                 self.art_path = path.clone();
+                // Recolour the bar from the cover that just landed. Read off
+                // the GTK thread alongside the fetch, so this is only the CSS
+                // swap.
+                crate::style::set_bar_tint(tint);
                 self.now_playing.emit(NowPlayingInput::ArtworkReady(path));
 
                 // A notification was held back for this track so it would not
@@ -1740,8 +2034,30 @@ impl AppModel {
     /// `ListView` recycles the widget under it while it is open.
     fn show_row_menu(&self, req: RowMenuRequest) {
         let menu = gtk::gio::Menu::new();
-        menu.append(Some("Play _Next"), Some("row.play-next"));
-        menu.append(Some("Add to _Queue"), Some("row.play-later"));
+
+        let queue = gtk::gio::Menu::new();
+        queue.append(Some("Play _Next"), Some("row.play-next"));
+        queue.append(Some("Add to _Queue"), Some("row.play-later"));
+        menu.append_section(None, &queue);
+
+        // A second section, because these leave the app and change the user's
+        // account — a different kind of act from reordering a queue.
+        //
+        // Each item appears only when it would do something. Offering "Add to
+        // Library" for a track read *out of* the library, or "Favourite" for
+        // one already starred, is a menu that lies about the state of things.
+        let account = gtk::gio::Menu::new();
+        if !req.in_library {
+            account.append(Some("Add to _Library"), Some("row.add-to-library"));
+        }
+        // No "remove" counterpart: Apple rejects the DELETE for this token with
+        // "Insufficient Permissions". See `Client` — favouriting is add-only.
+        if !req.favorite {
+            account.append(Some("_Favourite"), Some("row.favorite"));
+        }
+        if account.n_items() > 0 {
+            menu.append_section(None, &account);
+        }
 
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_has_arrow(false);
@@ -1764,12 +2080,84 @@ impl AppModel {
             });
             actions.add_action(&action);
         }
+
+        for (name, what) in [
+            ("add-to-library", LibraryAction::AddToLibrary),
+            ("favorite", LibraryAction::Favorite),
+        ] {
+            let action = gtk::gio::SimpleAction::new(name, None);
+            let id = req.catalog_id.clone();
+            let sender = self.menu_sender.clone();
+            action.connect_activate(move |_, _| {
+                sender.input(AppMsg::LibraryWrite {
+                    catalog_id: id.clone(),
+                    action: what,
+                });
+            });
+            actions.add_action(&action);
+        }
         popover.insert_action_group("row", Some(&actions));
 
         // Unparent on close, or it leaks and keeps the row widget alive after
-        // the list has recycled it out from under us.
-        popover.connect_closed(|p| p.unparent());
+        // the list has recycled it out from under us — but **not during** the
+        // close.
+        //
+        // GTK closes a PopoverMenu *before* activating the item you clicked. So
+        // unparenting here tore down the action group a moment before the
+        // action fired, and every menu item silently did nothing: no command
+        // left Rust, and the sidecar logged nothing because nothing was sent.
+        // Deferring to an idle lets the activation land first.
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            gtk::glib::idle_add_local_once(move || p.unparent());
+        });
         popover.popup();
+    }
+
+    /// Record a favourite locally and repaint the row, without rebuilding the
+    /// list — a rebuild would throw away the scroll position, and this is the
+    /// same discipline as the play marker.
+    fn set_favorite(&mut self, catalog_id: &str, on: bool) {
+        for track in &mut self.all_tracks {
+            if track.catalog_id.as_deref() == Some(catalog_id) {
+                track.favorite = on;
+            }
+        }
+        for page in &mut self.pages {
+            page.set_favorite(catalog_id, on);
+        }
+        // Every list, for the same reason `set_row_playing` asks every list:
+        // the track may be on a page and in the results behind it.
+        let lists =
+            std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
+        for registry in lists {
+            if let Some(w) = registry.borrow().get(catalog_id) {
+                w.star.set_visible(on);
+            }
+        }
+    }
+
+    /// Throw away a section's cache and fetch it again.
+    ///
+    /// Each loader returns early when it already holds data — that is what
+    /// makes revisiting a section instant — so a reload has to clear first or
+    /// it does nothing at all.
+    fn reload(&mut self, view: View, sender: &ComponentSender<Self>) {
+        match view {
+            View::Songs | View::Search => self.load_library(sender),
+            View::Albums => {
+                self.albums.clear();
+                self.load_albums(sender);
+            }
+            View::Artists => {
+                self.artists.clear();
+                self.load_artists(sender);
+            }
+            View::Playlists => {
+                self.playlists.clear();
+                self.load_playlists(sender);
+            }
+        }
     }
 
     fn toast(&self, text: &str) {
@@ -1787,6 +2175,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            favorite: false,
+            in_library: false,
             date_added: String::new(),
             year: String::new(),
             artist: "Aitana".into(),

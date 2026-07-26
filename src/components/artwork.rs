@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use relm4::gtk::gdk_pixbuf;
 
 use crate::music::types::Artwork;
 
@@ -74,6 +75,174 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// A colour to tint the Now Playing bar with, taken from a cover.
+///
+/// Runs off the GTK thread (rule 8): decoding even a small JPEG is
+/// milliseconds, and it happens on every track change.
+pub fn tint(path: &Path) -> Option<(u8, u8, u8)> {
+    // 32x32 is plenty. The question is "what colour is this sleeve", not "what
+    // is in it", and scaling down also averages out JPEG noise.
+    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(path, 32, 32, false).ok()?;
+    let channels = pixbuf.n_channels() as usize;
+    let rowstride = pixbuf.rowstride() as usize;
+    let bytes = pixbuf.read_pixel_bytes();
+
+    let mut pixels = Vec::with_capacity(1024);
+    for y in 0..pixbuf.height() as usize {
+        for x in 0..pixbuf.width() as usize {
+            let i = y * rowstride + x * channels;
+            match (bytes.get(i), bytes.get(i + 1), bytes.get(i + 2)) {
+                (Some(&r), Some(&g), Some(&b)) => pixels.push((r, g, b)),
+                _ => break,
+            }
+        }
+    }
+    dominant(&pixels)
+}
+
+/// The colour a sleeve *reads* as.
+///
+/// Not the average — averaging album art gives mud, because most of a sleeve is
+/// background. And not the single most saturated pixel either, which was the
+/// first attempt: one stray red pixel outvoted a cover that was mostly pink and
+/// teal, because an argmax over 1024 pixels is decided by noise.
+///
+/// So: bin by hue, weight each pixel by how colourful it is, and take the
+/// heaviest **window of three adjacent bins**. That answers "which colour is
+/// there most of", and the window keeps red — which straddles 0° — from
+/// splitting its vote across the first and last bin and losing to nothing.
+///
+/// The hue comes back from the image; the saturation and lightness are given a
+/// floor. A tint has to be legible as a colour on a dark bar, and the pooled
+/// average of a hue includes every washed-out pixel that happens to share it —
+/// which is how an orange sleeve first came back as off-white.
+pub(crate) fn dominant(pixels: &[(u8, u8, u8)]) -> Option<(u8, u8, u8)> {
+    /// 20° each. Fine enough to separate red from orange, coarse enough that a
+    /// gradient across one hue still lands in one bin.
+    const BINS: usize = 18;
+    /// Below this a pixel is effectively grey and votes for no hue at all.
+    const COLOURFUL_ENOUGH: f32 = 0.05;
+    /// Floors, so the result reads as a colour rather than as a smudge.
+    const MIN_SATURATION: f32 = 0.45;
+    const LIGHTNESS: std::ops::RangeInclusive<f32> = 0.35..=0.55;
+
+    if pixels.is_empty() {
+        return None;
+    }
+
+    let mut weight = [0f32; BINS];
+    let (mut hue_sum, mut sat_sum, mut light_sum) = ([0f32; BINS], [0f32; BINS], [0f32; BINS]);
+    let mut grey_sum = (0f32, 0f32, 0f32);
+
+    for &(r, g, b) in pixels {
+        grey_sum = (
+            grey_sum.0 + r as f32,
+            grey_sum.1 + g as f32,
+            grey_sum.2 + b as f32,
+        );
+
+        let (hue, sat, light) = hsl(r, g, b);
+        // Near-black and near-white carry no usable colour, and album art is
+        // full of both — letterboxing, borders, blown highlights.
+        let usable = 1.0 - (light - 0.5).abs() * 1.6;
+        if usable <= 0.0 {
+            continue;
+        }
+        let w = sat * usable;
+        if w < COLOURFUL_ENOUGH {
+            continue;
+        }
+
+        let bin = (((hue / 360.0) * BINS as f32) as usize).min(BINS - 1);
+        weight[bin] += w;
+        hue_sum[bin] += hue * w;
+        sat_sum[bin] += sat * w;
+        light_sum[bin] += light * w;
+    }
+
+    let around = |i: usize| [(i + BINS - 1) % BINS, i, (i + 1) % BINS];
+    let best = (0..BINS)
+        .map(|i| (i, around(i).iter().map(|&j| weight[j]).sum::<f32>()))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .filter(|(_, total)| *total > 0.0);
+
+    let Some((centre, total)) = best else {
+        // A sleeve with no colour in it at all — black and white photography, a
+        // plain typographic cover. Its average is the honest answer, and a
+        // neutral tint beats no tint.
+        let n = pixels.len() as f32;
+        return Some((
+            (grey_sum.0 / n) as u8,
+            (grey_sum.1 / n) as u8,
+            (grey_sum.2 / n) as u8,
+        ));
+    };
+
+    let window = around(centre);
+
+    // The hue comes from the heaviest bin *inside* the window, not from the
+    // window's centre — which may hold nothing at all. A cover that is mostly
+    // pink with three red pixels puts pink in one bin and red in another, and
+    // the window between them wins on their combined weight; taking the centre
+    // then invented a hue halfway between and reported the sleeve as red.
+    let anchor = window
+        .iter()
+        .copied()
+        .max_by(|a, b| weight[*a].total_cmp(&weight[*b]))
+        .unwrap_or(centre);
+    let hue = if weight[anchor] > 0.0 {
+        hue_sum[anchor] / weight[anchor]
+    } else {
+        (anchor as f32 + 0.5) * (360.0 / BINS as f32)
+    };
+    let sat = (window.iter().map(|&i| sat_sum[i]).sum::<f32>() / total).max(MIN_SATURATION);
+    let light = (window.iter().map(|&i| light_sum[i]).sum::<f32>() / total)
+        .clamp(*LIGHTNESS.start(), *LIGHTNESS.end());
+
+    Some(rgb(hue, sat.min(1.0), light))
+}
+
+/// HSL back to RGB.
+pub(crate) fn rgb(hue: f32, sat: f32, light: f32) -> (u8, u8, u8) {
+    let chroma = (1.0 - (2.0 * light - 1.0).abs()) * sat;
+    let h = hue / 60.0;
+    let x = chroma * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let m = light - chroma / 2.0;
+    let to8 = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    (to8(r), to8(g), to8(b))
+}
+
+/// Hue in degrees, saturation and lightness in 0..=1.
+pub(crate) fn hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let chroma = max - min;
+    let light = (max + min) / 2.0;
+
+    if chroma == 0.0 {
+        return (0.0, 0.0, light);
+    }
+
+    let sat = chroma / (1.0 - (2.0 * light - 1.0).abs()).max(f32::EPSILON);
+    let hue = if max == r {
+        60.0 * (((g - b) / chroma) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / chroma + 2.0)
+    } else {
+        60.0 * ((r - g) / chroma + 4.0)
+    };
+    ((hue + 360.0) % 360.0, sat.clamp(0.0, 1.0), light)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +281,60 @@ mod tests {
         assert!(strays.is_empty(), "temp file left behind");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Repeat a colour `n` times, to stand in for "this much of the sleeve".
+    fn field(n: usize, rgb: (u8, u8, u8)) -> Vec<(u8, u8, u8)> {
+        vec![rgb; n]
+    }
+
+    #[test]
+    fn the_colour_there_is_most_of_wins() {
+        // The reported bug: a mostly-pink sleeve came back dark red, because
+        // the old version took the single most saturated pixel and one stray
+        // red beat a whole field of pink.
+        let mut art = field(400, (240, 120, 190)); // pink, most of the cover
+        art.extend(field(3, (255, 0, 0))); // a few vivid red pixels
+        let (r, g, b) = dominant(&art).unwrap();
+        // What separates pink from the red we planted is *blue*, not green —
+        // the tint deepens lightness to read on a dark bar, so the green
+        // channel drops even when the hue is right.
+        assert!(
+            b > 120 && b > g + 60,
+            "expected a pink, got ({r}, {g}, {b})"
+        );
+    }
+
+    #[test]
+    fn black_bars_and_white_borders_do_not_get_a_vote() {
+        // Letterboxing and blown highlights are everywhere in album art and
+        // carry no usable colour.
+        let mut art = field(600, (0, 0, 0));
+        art.extend(field(600, (255, 255, 255)));
+        art.extend(field(100, (40, 160, 220))); // the only real colour
+        let (r, g, b) = dominant(&art).unwrap();
+        assert!(b > r, "expected the blue, got ({r}, {g}, {b})");
+    }
+
+    #[test]
+    fn a_black_and_white_cover_still_gets_a_tint() {
+        // No hue anywhere. Its average is the honest answer, and a neutral
+        // tint beats no tint at all.
+        let art = field(100, (90, 90, 90));
+        assert_eq!(dominant(&art), Some((90, 90, 90)));
+    }
+
+    #[test]
+    fn nothing_in_means_nothing_out() {
+        assert_eq!(dominant(&[]), None);
+    }
+
+    #[test]
+    fn hsl_places_the_primaries_where_they_belong() {
+        assert!((hsl(255, 0, 0).0 - 0.0).abs() < 1.0);
+        assert!((hsl(0, 255, 0).0 - 120.0).abs() < 1.0);
+        assert!((hsl(0, 0, 255).0 - 240.0).abs() < 1.0);
+        // Grey has no hue and no saturation, whatever its lightness.
+        assert_eq!(hsl(128, 128, 128).1, 0.0);
     }
 }

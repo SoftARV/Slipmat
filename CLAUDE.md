@@ -281,8 +281,21 @@ re-read rather than assume.
 | Want | Call |
 | --- | --- |
 | Add to library | `POST /v1/me/library?ids[songs]=…&ids[albums]=…` — several types in one request |
-| Favourite (the star) | `POST /v1/me/favorites?ids[<type>]=…` |
+| Favourite (the star) | `POST /v1/me/favorites?ids[<type>]=…` — **add only**, see below |
 | Love / dislike | `PUT /v1/me/ratings/{type}/{id}`, body `{"type":"rating","attributes":{"value": 1 \| -1}}` |
+
+**Un-favouriting is not possible over REST with this token.** Apple documents no
+counterpart to the add, and `DELETE /v1/me/favorites?ids[songs]=…` — the obvious
+inverse — answers `400 Insufficient Permissions`:
+`'Favorites:DELETE:IdsQuery' entities require permissions that are not in the
+request`. So the row menu offers no removal.
+
+Worth knowing before anyone concludes it is impossible: **`music.apple.com` can
+un-favourite**, using the same session we borrow. So a route exists — just not
+this one. The likely candidate is MusicKit JS inside the sidecar, the way
+playback already works, rather than a REST call from Rust. Untried, and it would
+be the first time the sidecar is used for anything but audio, which is a real
+cost to weigh.
 
 **Favourites and ratings are different things.** `favorites` is the modern star;
 `ratings` is the older love/dislike pair, whose only legal values are `1` and
@@ -291,9 +304,43 @@ value of `0`. Ratings come in catalog and library flavours per type (`songs`,
 `albums`, `playlists`, `music-videos`, `stations`), which is the same
 two-id-spaces trap as everything else here.
 
-None of this is implemented yet. It is written down because rule 2 says not to
-trust training data on this API, and this was checked against
-`developer.apple.com`'s own JSON rather than remembered.
+Add-to-library and favourites are wired to the row context menu. Ratings are
+not — they are a third mechanism nobody has asked for yet.
+
+**Nothing shows state.** A 202 means accepted, so a star drawn from it would be
+a star that might be lying; showing it truthfully means reading it back per
+track, which is a request per row. The menu therefore *acts* and toasts, and
+says "Sent to your library" rather than "Added".
+
+### Library song attributes, and what you have to ask for
+
+`LibrarySongs.Attributes` is a **documented, closed list**, and two things about
+it matter:
+
+- **`dateAdded` cannot be had per song.** It is not in the dictionary, and
+  `extend=dateAdded` does not produce it either — **measured as 0 of 541**
+  against a real library. There is therefore no "Recently Added" *sort*:
+  offering one that silently orders by title is worse than not offering it.
+
+  There *is* `GET /v1/me/library/recently-added`, which returns a
+  `ResourceCollectionResponse` — a mixed list of **albums and playlists** in
+  recently-added order, the same thing Apple Music's own "Recently Added"
+  screen shows. That is a plausible future *view*, not a sort of the songs
+  list: it never promises individual songs, and it documents no `limit` or
+  `offset`. Untried.
+- **`inFavorites` *is* on it**, with `&extend=inFavorites` — **41 of 541**.
+  Whether a track is starred comes back with the library, so a row shows it
+  without a read-back or a request per row. This is the exception to "202 means
+  you cannot know the state": for favourites on library songs, you can.
+
+Both numbers came from a counter left in `all_library_songs`, which still logs
+`starred` on every load. Two rounds were lost to guessing which attributes Apple
+honours before anyone measured; the counter stays so the next question is
+settled the same way.
+
+Library membership is the same shape of fact: a track that came from
+`/me/library/…` is in the library by definition, so `Track::in_library` is set
+by the client method that fetched it — never guessed from the id.
 
 ### Sidecar rules learned the hard way
 
@@ -355,6 +402,7 @@ src/
     status.rs        # what the pane shows when it is not showing music
     chrome.rs        # the menu, its accelerators, and the three dialogs
   settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
+  style.rs           # accent colour + the Now Playing tint. The only CSS.
   secret.rs          # oo7 wrapper: store / load / clear the Music User Token
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)
@@ -450,6 +498,25 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   set **every** property it cares about, because the widget it is handed was
   showing a different track a moment ago, and anything left unset keeps the old
   value. Disconnect signal handlers in `unbind` or they stack up on reuse.
+- **The app stylesheet is `style.rs`, and it is the sanctioned CSS.** An accent
+  colour is not a widget: libadwaita 1.6 exposes it only as CSS variables
+  (`--accent-bg-color` and friends), so a `CssProvider` is the only route.
+  Two providers, kept apart — a **base** one replaced when the accent
+  preference changes, and a **tint** one for the Now Playing bar replaced on
+  every track — so recolouring the bar does not reparse the accent rules.
+  Anything else wanting CSS still has to argue for itself first.
+- **The bar's tint is a tonal scrim, not a repaint.** One flat, heavily
+  desaturated wash of the sleeve's colour across the whole bar — what Apple
+  Music and the better third-party players do. It reads as *the surface being
+  tinted* rather than as a decoration laid over it, which a left-to-right
+  gradient did.
+
+  Still a wash over the normal background, never a fill: every label, icon and
+  slider in that bar already has a colour chosen for contrast against the theme,
+  and repainting the background with a colour from artwork nobody has seen would
+  mean recolouring all of them and guessing at contrast. Muting the colour first
+  is what keeps that true — the vivid colour `artwork::dominant` returns answers
+  "what colour is this record", and a surface has the opposite job.
 - **Use libadwaita widgets, not raw GTK.** `adw::ActionRow`,
   `adw::PreferencesGroup`, `adw::AboutDialog`, `adw::StatusPage`,
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS

@@ -24,6 +24,12 @@ pub struct Track {
     pub date_added: String,
     /// Release year, or empty when Apple did not say.
     pub year: String,
+    /// Starred in Apple Music. Only ever true for a track read from the
+    /// library — the catalog has no opinion about your favourites.
+    pub favorite: bool,
+    /// Already saved to the library, so "Add to Library" is not offered for it.
+    /// Set by the client method that fetched it, never guessed.
+    pub in_library: bool,
     /// The resource id. For library items this is a library id (`i.AbCd123`),
     /// which is **not** playable.
     pub id: TrackId,
@@ -270,8 +276,12 @@ pub(crate) struct ArtistRelationships {
 pub(crate) struct SongAttributes {
     #[serde(default)]
     pub name: String,
-    /// When the user saved it. ISO 8601, and **library-only** — a catalog song
-    /// has never been added to anything, so it is absent there.
+    /// When the user saved it, if Apple ever tells us.
+    ///
+    /// **It does not.** `dateAdded` is not in `LibrarySongs.Attributes` and
+    /// `extend=dateAdded` does not produce it — measured as 0 of 541 tracks
+    /// against a real library. Kept as the place it would land, and as the
+    /// reason there is no "Recently Added" sort.
     #[serde(default)]
     pub date_added: String,
     /// `"2016-05-27"` or `"2016"`; we only ever want the year.
@@ -287,6 +297,11 @@ pub(crate) struct SongAttributes {
     pub track_number: u32,
     pub artwork: Option<ArtworkAttributes>,
     pub play_params: Option<PlayParams>,
+    /// Whether the user has starred it. A documented attribute of
+    /// `LibrarySongs.Attributes`, so it costs nothing — no read-back, no extra
+    /// request. Absent on catalog songs.
+    #[serde(default)]
+    pub in_favorites: bool,
 }
 
 /// How Apple says "here is what to actually play".
@@ -430,6 +445,7 @@ impl From<Resource<SongAttributes>> for Track {
             name: String::new(),
             date_added: String::new(),
             release_date: String::new(),
+            in_favorites: false,
             artist_name: String::new(),
             album_name: String::new(),
             duration_in_millis: 0,
@@ -448,6 +464,9 @@ impl From<Resource<SongAttributes>> for Track {
             catalog_id,
             id: TrackId(res.id),
             date_added: attrs.date_added,
+            favorite: attrs.in_favorites,
+            // Catalog unless a library method says otherwise, as for Album.
+            in_library: false,
             year: attrs.release_date.chars().take(4).collect(),
             title: attrs.name,
             artist: attrs.artist_name,

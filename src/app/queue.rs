@@ -84,6 +84,25 @@ pub(super) fn queue_from(
     (songs, start_id)
 }
 
+/// Whether MusicKit is already holding exactly this set of songs.
+///
+/// Compared **unordered**: with shuffle on, MusicKit's order is deliberately
+/// not ours, and it is still the same queue. A free function so it can be
+/// tested without building an `AppModel`, which owns GTK widgets.
+pub(super) fn holds(queue: &[crate::player::protocol::Item], songs: &[String]) -> bool {
+    if queue.len() != songs.len() {
+        return false;
+    }
+    let mut theirs: Vec<&str> = queue
+        .iter()
+        .filter_map(|item| item.catalog_id.as_deref().or(item.id.as_deref()))
+        .collect();
+    let mut ours: Vec<&str> = songs.iter().map(String::as_str).collect();
+    theirs.sort_unstable();
+    ours.sort_unstable();
+    theirs == ours
+}
+
 /// Where `start_id` sits in `songs`. Falls back to the top rather than failing:
 /// playing from the start beats not playing.
 pub(super) fn start_index(songs: &[String], start_id: Option<&String>) -> usize {
@@ -112,6 +131,26 @@ impl AppModel {
             self.toast("Nothing here can be streamed");
             return;
         }
+
+        // **Rule 3, in the one place it was being broken.** Clicking a track in
+        // a list whose queue MusicKit already holds is a move *within* that
+        // queue, not a reason to rebuild it. Rebuilding tore the queue down and
+        // built the same 117 tracks again, which cost the gapless buffer,
+        // blanked the bar, and — because the old queue and the new one are
+        // identical — left `verify_start` unable to tell whether the queue it
+        // was looking at was the one it had just asked for. It corrected
+        // against the stale one and started the wrong song.
+        if let Some(wanted) = &start_id
+            && holds(&self.player.queue, &songs)
+            && let Some(index) = self.queue_index_of(wanted)
+        {
+            tracing::info!(index, "already loaded; moving within the queue");
+            // Nothing pending: there is no new queue to verify against.
+            self.pending_start = None;
+            self.send(Command::ChangeToIndex { index });
+            return;
+        }
+
         let start = start_index(&songs, start_id.as_ref());
         tracing::info!(queue = songs.len(), start, "enqueuing");
         self.pending_start = start_id.clone();
@@ -236,13 +275,30 @@ impl AppModel {
             return; // queue hasn't arrived yet; try again on the next event
         }
 
-        // One shot either way: acting or giving up both clear the flag, so a
-        // correction can never bounce against MusicKit's own echo.
-        self.pending_start = None;
-
         let id_of = |item: &crate::player::protocol::Item| {
             item.catalog_id.clone().or_else(|| item.id.clone())
         };
+
+        // **Wait for the queue we actually sent.** The mirror still holds the
+        // previous one for a few milliseconds after `setQueue`, and playing the
+        // same playlist twice means both have the same length and the same
+        // ids — so "is a queue loaded" is not enough to tell them apart. An
+        // earlier version corrected 3ms after sending, against the old queue,
+        // and jumped to whatever sat at that index. Compare *sorted* ids: with
+        // shuffle on, MusicKit's order is deliberately not ours.
+        if let Some((sent, _)) = &self.last_queue {
+            let mut theirs: Vec<String> = self.player.queue.iter().filter_map(id_of).collect();
+            let mut ours = sent.clone();
+            theirs.sort_unstable();
+            ours.sort_unstable();
+            if theirs != ours {
+                return; // not our queue yet
+            }
+        }
+
+        // One shot either way: acting or giving up both clear the flag, so a
+        // correction can never bounce against MusicKit's own echo.
+        self.pending_start = None;
         let Some(index) = self
             .player
             .queue
@@ -292,6 +348,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            favorite: false,
+            in_library: false,
             date_added: String::new(),
             year: String::new(),
             artist: "Aitana".into(),
@@ -408,5 +466,36 @@ mod tests {
         // Nothing streamable at or after the click: play from the start rather
         // than not play at all.
         assert_eq!(start_index(&songs, start_id.as_ref()), 0);
+    }
+
+    /// A MusicKit queue item, as the mirror holds it.
+    fn item(catalog: &str) -> crate::player::protocol::Item {
+        crate::player::protocol::Item {
+            id: None,
+            catalog_id: Some(catalog.into()),
+            title: catalog.into(),
+            artist: String::new(),
+            album: String::new(),
+            duration_ms: 0,
+            track_number: 0,
+            artwork_template: None,
+        }
+    }
+
+    #[test]
+    fn a_shuffled_queue_is_still_the_same_queue() {
+        // The reported bug. Clicking a track in a playlist that is already
+        // playing shuffled must move within that queue, not rebuild it — and
+        // shuffle means MusicKit's order is deliberately not ours.
+        let queue = [item("3"), item("1"), item("2")];
+        assert!(holds(&queue, &["1".into(), "2".into(), "3".into()]));
+    }
+
+    #[test]
+    fn a_different_list_is_not_the_same_queue() {
+        let queue = [item("1"), item("2")];
+        assert!(!holds(&queue, &["1".into(), "3".into()]));
+        assert!(!holds(&queue, &["1".into(), "2".into(), "3".into()]));
+        assert!(!holds(&queue, &[]));
     }
 }

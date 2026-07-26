@@ -8,6 +8,7 @@ mod music;
 mod notify;
 mod player;
 mod settings;
+mod style;
 mod unplayable;
 
 use relm4::RelmApp;
@@ -34,6 +35,8 @@ fn main() {
     // so there is no flash of the wrong theme. The model owns them from here.
     let settings = settings::Settings::load();
     settings.apply_theme();
+    // Before the window exists, so nothing is ever drawn in the wrong accent.
+    style::init(style::Accent::parse(&settings.accent));
     app.run::<app::AppModel>(settings);
 }
 

@@ -284,6 +284,18 @@ impl DetailPage {
         self.header.set_show_end_title_buttons(show);
     }
 
+    /// Update a track's favourite flag in this page's own copy of the list, so
+    /// a later rebind does not undo what the user just did.
+    pub fn set_favorite(&mut self, catalog_id: &str, on: bool) {
+        for entry in &mut self.entries {
+            if let Entry::Song(track) = entry
+                && track.catalog_id.as_deref() == Some(catalog_id)
+            {
+                track.favorite = on;
+            }
+        }
+    }
+
     /// This page's own row widgets, so the play marker can find them.
     pub fn registry(&self) -> &RowRegistry<LibraryRowWidgets> {
         &self.registry

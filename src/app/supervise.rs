@@ -227,6 +227,12 @@ impl AppModel {
                 .set((self.player.position_ms, self.player.duration_ms));
         }
 
+        // Remembered before anything renders, so a queue reload has something
+        // to hold on to while MusicKit reports nothing at all.
+        if let Some(item) = &self.player.now_playing {
+            self.last_item = Some(item.clone());
+        }
+
         // Everything below is derived from the mirror, so it happens in one
         // place rather than being sprinkled through the match above — miss one
         // branch there and the bar silently goes stale.

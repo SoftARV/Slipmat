@@ -110,6 +110,39 @@ impl Client {
         }
     }
 
+    /// As [`Client::get`], for the endpoints that write. Same origin-locked
+    /// headers — they are enforced on every method, not just reads — and the
+    /// user token is not optional here: every write is on behalf of a person.
+    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        let req = self
+            .http
+            .post(format!("{API_BASE}{path}"))
+            .bearer_auth(&self.developer_token)
+            .header("Origin", WEB_ORIGIN)
+            .header("Referer", WEB_REFERER)
+            // Apple rejects a POST with no body outright; an empty JSON object
+            // is the smallest thing it accepts.
+            .header("Content-Length", "0");
+        match &self.music_user_token {
+            Some(t) => req.header("Music-User-Token", t.as_str()),
+            None => req,
+        }
+    }
+
+    /// As [`Client::post`], for the one write that removes something.
+    fn delete(&self, path: &str) -> reqwest::RequestBuilder {
+        let req = self
+            .http
+            .delete(format!("{API_BASE}{path}"))
+            .bearer_auth(&self.developer_token)
+            .header("Origin", WEB_ORIGIN)
+            .header("Referer", WEB_REFERER);
+        match &self.music_user_token {
+            Some(t) => req.header("Music-User-Token", t.as_str()),
+            None => req,
+        }
+    }
+
     /// Map a response status to something the UI can act on.
     ///
     /// `signed_in` matters: a 401 while holding a live user token is not a
@@ -168,8 +201,27 @@ impl Client {
     /// stops as soon as a round comes back short, which is the same termination
     /// condition with far fewer waits.
     pub async fn all_library_songs(&self, max: usize) -> Result<Vec<Track>> {
-        self.all_library::<Resource<SongAttributes>, Track>("songs", "", max)
-            .await
+        // `extend=inFavorites` is what puts the star on a row: it is listed in
+        // `LibrarySongs.Attributes` but omitted from the response unless asked
+        // for. Measured against a real library: 41 of 541 came back starred.
+        //
+        // `dateAdded` is **not** obtainable this way. It is not in that
+        // dictionary and `extend` does not produce it — measured as 0 of 541 —
+        // which is why there is no "Recently Added" sort. If a route to it
+        // turns up, that is the sort to add back.
+        let mut songs = self
+            .all_library::<Resource<SongAttributes>, Track>("songs", "&extend=inFavorites", max)
+            .await?;
+        for song in &mut songs {
+            song.in_library = true;
+        }
+
+        // Kept: this is how the `dateAdded` question got settled, and it is
+        // how the next one will be.
+        let starred = songs.iter().filter(|s| s.favorite).count();
+        tracing::info!(total = songs.len(), starred, "library attributes present");
+
+        Ok(songs)
     }
 
     /// Every album in the user's library.
@@ -200,6 +252,58 @@ impl Client {
             .await
     }
 
+    /// Add catalog resources to the user's library.
+    ///
+    /// **202 Accepted with an empty body** is success, and Apple's own wording
+    /// for it is "although the modification request was acceptable, it may not
+    /// have completed". So this returning `Ok` means *accepted*, not *done* —
+    /// nothing may call it and then claim the item is in the library.
+    pub async fn add_to_library(&self, kind: &str, id: &str) -> Result<()> {
+        self.accepted(
+            self.post(&format!("/me/library?ids[{kind}]={id}")),
+            "adding to library",
+        )
+        .await
+    }
+
+    /// Favourite a resource — the star, not the older love/dislike rating.
+    pub async fn add_to_favorites(&self, kind: &str, id: &str) -> Result<()> {
+        self.accepted(
+            self.post(&format!("/me/favorites?ids[{kind}]={id}")),
+            "favouriting",
+        )
+        .await
+    }
+
+    // There is deliberately no `remove_from_favorites`.
+    //
+    // Apple documents "Add resource to favorites" and publishes no counterpart.
+    // `DELETE /v1/me/favorites?ids[songs]=…` — the obvious REST inverse — was
+    // tried against a real account and answered:
+    //
+    //   400 Insufficient Permissions
+    //   'Favorites:DELETE:IdsQuery' entities require permissions that are not
+    //   in the request
+    //
+    // The harvested web-player token does not carry that permission, and there
+    // is no way to ask for it from here. So favouriting is **add-only** in
+    // Tonearm, and the menu does not offer a removal it cannot perform.
+
+    /// The shared POST-and-check for both. Neither returns a body worth
+    /// parsing; what matters is that Apple accepted it.
+    async fn accepted(&self, request: reqwest::RequestBuilder, what: &'static str) -> Result<()> {
+        let res = request
+            .send()
+            .await
+            .map_err(Self::transport_error)
+            .context(what)?;
+
+        if !res.status().is_success() {
+            return Err(self.explain(res).await);
+        }
+        Ok(())
+    }
+
     /// Every playlist in the user's library.
     pub async fn all_library_playlists(&self, max: usize) -> Result<Vec<Playlist>> {
         let mut playlists = self
@@ -226,7 +330,7 @@ impl Client {
         let tracks = self
             .all_library::<Resource<SongAttributes>, Track>(
                 &format!("playlists/{id}/tracks"),
-                "",
+                "&extend=inFavorites",
                 PLAYLIST_MAX,
             )
             .await?;
@@ -465,7 +569,10 @@ impl Client {
         let resource = self
             .album_resource(&format!("/me/library/albums/{id}?include=tracks"))
             .await?;
-        let tracks = album_tracks(&resource);
+        let mut tracks = album_tracks(&resource);
+        for track in &mut tracks {
+            track.in_library = true;
+        }
         let mut album = Album::from(resource.into_album());
         album.library = true;
         Ok((album, tracks))

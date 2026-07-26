@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use relm4::adw::prelude::*;
-use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent, gtk};
+use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
 
 use crate::music::types::format_duration;
 
@@ -27,6 +27,23 @@ use crate::music::types::format_duration;
 /// Fixed rather than proportional so the seek scale does not jump about as
 /// tracks with different name lengths come and go.
 const METADATA_WIDTH: i32 = 240;
+
+/// How often the slider redraws itself between snapshots.
+///
+/// The app pushes a snapshot twice a second, which moved the slider in visible
+/// steps. Rather than push ten a second — every one of which also rebuilds
+/// strings, updates the queue sidebar and writes MPRIS properties over D-Bus —
+/// the bar advances its own display between them. Nothing else is recomputed.
+const ADVANCE_MS: u64 = 100;
+
+/// How far the slider may be allowed to run ahead of a correction before it
+/// gives in and jumps back. Below this it holds still and lets the real
+/// position catch up; above it, something discontinuous happened.
+const BACKSTEP_TOLERANCE_MS: u64 = 1_500;
+
+/// How big the disc is drawn inside the empty sleeve. The sleeve itself stays
+/// 48px; this is what leaves a margin inside it.
+const EMPTY_COVER_PX: i32 = 22;
 
 const SCRUB_COMMIT_MS: u64 = 250;
 
@@ -59,6 +76,8 @@ pub struct Snapshot {
     pub has_previous: bool,
     pub active: bool,
     pub shuffle: bool,
+    /// Whether the queue sidebar is open, so the bar's toggle agrees with it.
+    pub queue_open: bool,
     /// Mirrored from MusicKit, never authored here (rule 3).
     pub repeat: Repeat,
 }
@@ -104,6 +123,18 @@ impl Repeat {
 pub struct NowPlaying {
     snap: Snapshot,
     artwork: Option<PathBuf>,
+    /// What the cover widget is actually displaying, so `post_view` can tell a
+    /// real change from the many redraws that are not one.
+    shown_artwork: std::cell::RefCell<Option<PathBuf>>,
+    /// When the last snapshot arrived, so the position can be carried forward
+    /// between them. `None` while paused — a paused player's position is a
+    /// fact, not something to extrapolate from.
+    synced_at: Option<std::time::Instant>,
+    /// The last position actually drawn, so the slider can be kept monotonic.
+    shown_ms: std::cell::Cell<u64>,
+    /// Drives [`ADVANCE_MS`]. Removed the moment playback stops, so a paused
+    /// app is not waking up ten times a second.
+    advance: Option<gtk::glib::SourceId>,
     volume: f64,
     /// True from the first slider movement until the debounce commits. State
     /// updates must not yank the handle out from under the user — the single
@@ -135,8 +166,14 @@ pub enum NowPlayingInput {
     PlayPause,
     Next,
     Previous,
+    /// Redraw the slider from the interpolated position. Carries nothing and
+    /// touches nothing but the two widgets that show time.
+    Advance,
     ShuffleToggled(bool),
     RepeatCycled,
+    /// The queue button was clicked. Carries nothing: the app owns whether the
+    /// sidebar is open, and the button follows it rather than leading.
+    QueueToggled,
 }
 
 #[derive(Debug)]
@@ -148,6 +185,7 @@ pub enum NowPlayingOutput {
     SetVolume(f64),
     SetShuffle(bool),
     SetRepeat(Repeat),
+    ToggleQueue,
 }
 
 #[relm4::component(pub)]
@@ -160,16 +198,34 @@ impl SimpleComponent for NowPlaying {
         gtk::Box {
             set_orientation: gtk::Orientation::Horizontal,
             set_spacing: 12,
-            set_margin_all: 10,
-            #[watch]
-            set_sensitive: model.snap.active,
+            // Padding, not margin — the spacing is in `.np-bar`'s CSS.
+            //
+            // A margin sits *outside* the widget's background, so a 10px one
+            // left an untinted frame around the whole bar once it had a colour
+            // of its own. Padding is inside it, and the tint reaches the edges.
+            add_css_class: "np-bar",
+            // Deliberately no blanket `set_sensitive` here. Greying the whole
+            // bar when nothing is playing also greyed the queue button, so you
+            // could not open the queue to start something — the one moment you
+            // most need it. Each control gates itself instead.
 
             // --- artwork + labels ------------------------------------------
             #[name = "cover"]
             gtk::Image {
-                set_pixel_size: 48,
-                set_icon_name: Some("audio-x-generic-symbolic"),
+                // The *widget* stays 48px so the case does not change size;
+                // the icon inside it is drawn smaller so it sits within the
+                // sleeve rather than against its edges. Swapped for the full
+                // 48 in `post_view` when real artwork arrives, which fills the
+                // square by design.
+                set_pixel_size: EMPTY_COVER_PX,
+                set_size_request: (48, 48),
+                // An empty sleeve rather than a floating icon: with nothing
+                // playing, the bar should still read as having a place where
+                // the artwork goes. `.np-cover-empty` draws the case; it is
+                // removed the moment a real cover arrives.
+                set_icon_name: Some("media-optical-symbolic"),
                 add_css_class: "np-cover",
+                add_css_class: "np-cover-empty",
             },
 
             // Deliberately **not** hexpand, and width-limited.
@@ -189,22 +245,45 @@ impl SimpleComponent for NowPlaying {
                 set_width_request: METADATA_WIDTH,
                 set_spacing: 2,
 
+                // Two grey bars where the title and artist go.
+                //
+                // Deliberately **not** animated: a pulsing skeleton means
+                // "loading", and nothing is loading — nothing is playing. The
+                // static version says "this is where the track goes", which is
+                // both true and quieter than the words "Nothing playing"
+                // sitting in the bar all evening.
+                #[name = "skeleton"]
+                gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_valign: gtk::Align::Center,
+                    set_spacing: 7,
+                    #[watch]
+                    set_visible: !model.snap.active,
+
+                    gtk::Box {
+                        set_size_request: (140, 11),
+                        add_css_class: "np-skeleton",
+                    },
+                    gtk::Box {
+                        set_size_request: (92, 9),
+                        add_css_class: "np-skeleton",
+                    },
+                },
+
                 gtk::Label {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
                     set_max_width_chars: 1,
                     add_css_class: "heading",
+                    #[watch]
+                    set_visible: model.snap.active,
                     // Track and album names are plain text, not markup. Without
                     // this, a title containing `&` — "Blood, Sweat & 3 Years",
                     // "Slade & Co" — fails to render and GTK warns on every
                     // track change.
                     set_use_markup: false,
                     #[watch]
-                    set_label: if model.snap.title.is_empty() {
-                        "Nothing playing"
-                    } else {
-                        &model.snap.title
-                    },
+                    set_label: &model.snap.title,
                     #[watch]
                     set_tooltip_text: (!model.snap.title.is_empty())
                         .then_some(model.snap.title.as_str()),
@@ -233,10 +312,15 @@ impl SimpleComponent for NowPlaying {
                 set_spacing: 8,
                 set_hexpand: true,
 
+                // Fixed width. `numeric` gives tabular figures, but "0:59" and
+                // "1:00:00" are different lengths, and a label that resizes
+                // under the scale drags the scale with it.
                 #[name = "elapsed"]
                 gtk::Label {
                     add_css_class: "numeric",
                     add_css_class: "caption",
+                    set_width_chars: 5,
+                    set_xalign: 1.0,
                 },
 
                 #[name = "seek"]
@@ -266,6 +350,8 @@ impl SimpleComponent for NowPlaying {
                     add_css_class: "numeric",
                     add_css_class: "caption",
                     add_css_class: "dim-label",
+                    set_width_chars: 5,
+                    set_xalign: 0.0,
                 },
             },
 
@@ -328,12 +414,13 @@ impl SimpleComponent for NowPlaying {
                     connect_clicked => NowPlayingInput::Next,
                 },
 
-                // A ToggleButton would only have two states; repeat has
-                // three, so this is a plain button that cycles and shows where
-                // it is through its icon and the "accent" class.
+                // A ToggleButton, even though repeat has three states and a
+                // toggle has two. "Off" versus "on" is the distinction that
+                // needs to be *visible* — a plain button gave no indication at
+                // all that repeat was off — and which flavour of on it is comes
+                // through the icon. Clicking still cycles.
                 #[name = "repeat_button"]
-                gtk::Button {
-                    set_tooltip_text: Some("Repeat"),
+                gtk::ToggleButton {
                     add_css_class: "flat",
                     add_css_class: "circular",
                     #[watch]
@@ -341,8 +428,24 @@ impl SimpleComponent for NowPlaying {
                     #[watch]
                     set_tooltip_text: Some(model.snap.repeat.tooltip()),
                     #[watch]
+                    set_active: model.snap.repeat != Repeat::Off,
+                    #[watch]
                     set_sensitive: model.snap.active,
                     connect_clicked => NowPlayingInput::RepeatCycled,
+                },
+
+                // Lives here rather than in the header: pushing an album or
+                // playlist page replaces the header, and the queue was
+                // unreachable until you navigated back. The bar is on every
+                // page by definition.
+                gtk::ToggleButton {
+                    set_icon_name: "view-list-symbolic",
+                    set_tooltip_text: Some("Queue"),
+                    add_css_class: "flat",
+                    add_css_class: "circular",
+                    #[watch]
+                    set_active: model.snap.queue_open,
+                    connect_clicked => NowPlayingInput::QueueToggled,
                 },
 
                 gtk::ScaleButton {
@@ -374,6 +477,10 @@ impl SimpleComponent for NowPlaying {
         let model = NowPlaying {
             snap: Snapshot::default(),
             artwork: None,
+            shown_artwork: std::cell::RefCell::new(None),
+            shown_ms: std::cell::Cell::new(0),
+            synced_at: None,
+            advance: None,
             volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
@@ -392,7 +499,30 @@ impl SimpleComponent for NowPlaying {
                 // Everything except the position comes straight from the
                 // sidecar. The position is ours to defend while the user is
                 // driving it — see `settle_position`.
-                self.snap.position_ms = self.settle_position(held, incoming);
+                let settled = self.settle_position(held, incoming);
+
+                // Decided once: calling this again afterwards would ask about
+                // the state we just changed.
+                let action =
+                    base_action(self.snap.playing, settled, held, self.synced_at.is_some());
+                match action {
+                    Base::Clear => self.synced_at = None,
+                    Base::Reset => self.synced_at = Some(std::time::Instant::now()),
+                    Base::Keep => {}
+                }
+                if action != Base::Keep {
+                    // The sidecar is authoritative, so a new base resets the
+                    // monotonic floor. Otherwise a stale one survives a track
+                    // change and strands the slider mid-song.
+                    self.shown_ms.set(settled);
+                }
+                self.snap.position_ms = settled;
+                self.retime(&sender);
+            }
+            NowPlayingInput::Advance => {
+                // Nothing to update: `post_view` reads `shown_position_ms`,
+                // which is a function of the clock. This message exists purely
+                // to make relm4 redraw.
             }
             NowPlayingInput::ArtworkReady(path) => self.artwork = path,
             NowPlayingInput::ScrubMoved(fraction) => {
@@ -433,6 +563,11 @@ impl SimpleComponent for NowPlaying {
                 // mirror stays the only source of truth (rule 3).
                 let _ = sender.output(NowPlayingOutput::SetShuffle(on));
             }
+            NowPlayingInput::QueueToggled => {
+                // The button's state is a watch on the snapshot, so it follows
+                // the app rather than leading it — same discipline as shuffle.
+                let _ = sender.output(NowPlayingOutput::ToggleQueue);
+            }
             NowPlayingInput::RepeatCycled => {
                 let _ = sender.output(NowPlayingOutput::SetRepeat(self.snap.repeat.next()));
             }
@@ -457,23 +592,130 @@ impl SimpleComponent for NowPlaying {
             widgets.seek.set_value(self.progress());
         }
         widgets.seek.set_sensitive(self.snap.duration_ms > 0);
+        // `set_label` compares internally and no-ops when unchanged, so these
+        // are free on a tick that only moved the slider.
         widgets
             .elapsed
-            .set_label(&format_duration(self.snap.position_ms));
+            .set_label(&format_duration(self.shown_position_ms()));
         widgets
             .total
             .set_label(&format_duration(self.snap.duration_ms));
 
-        match &self.artwork {
-            Some(path) => widgets.cover.set_from_file(Some(path)),
-            None => widgets
-                .cover
-                .set_icon_name(Some("audio-x-generic-symbolic")),
+        // `gtk_image_set_from_file` does **not** compare — it reloads and
+        // re-decodes every time it is called. This function runs on every
+        // snapshot, which is twice a second while playing plus every position
+        // event MusicKit sends, so the unconditional version was decoding the
+        // cover several times a second on the GTK main thread and making the
+        // seek bar stutter. The doc comment above always claimed it only
+        // swapped on change; now it does.
+        let mut shown = self.shown_artwork.borrow_mut();
+        if *shown != self.artwork {
+            match &self.artwork {
+                Some(path) => {
+                    widgets.cover.set_pixel_size(48);
+                    widgets.cover.set_from_file(Some(path));
+                    widgets.cover.remove_css_class("np-cover-empty");
+                }
+                None => {
+                    widgets.cover.set_pixel_size(EMPTY_COVER_PX);
+                    widgets.cover.set_icon_name(Some("media-optical-symbolic"));
+                    widgets.cover.add_css_class("np-cover-empty");
+                }
+            }
+            shown.clone_from(&self.artwork);
         }
     }
 }
 
+/// What to do with the extrapolation base when a snapshot arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Base {
+    /// Stop extrapolating. Nothing is playing, so the position is a fact.
+    Clear,
+    /// Start counting from now, against the reading just received.
+    Reset,
+    /// Carry on. The reading has not moved, so re-anchoring it to `now` would
+    /// stall the slider and then make it leap.
+    Keep,
+}
+
+/// Decide what happens to the base.
+///
+/// The two rules that matter, both learned from bugs:
+///
+/// - **Not playing means no base at all.** Keeping one across a pause meant
+///   resuming extrapolated from *before* the pause, so the slider jumped
+///   forward by however long the pause lasted and then snapped back. The same
+///   thing happens on every track change, where the state passes through
+///   Waiting and Loading for a second or two before audio actually starts.
+/// - **Only rebase on a reading that moved.** MusicKit reports about once a
+///   second while snapshots go out twice a second, so rebasing on every one
+///   would anchor half of them to an unchanged position.
+fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) -> Base {
+    if !playing {
+        Base::Clear
+    } else if settled_ms != held_ms || !have_base {
+        Base::Reset
+    } else {
+        Base::Keep
+    }
+}
+
+/// Where the slider should sit, given the last real reading and how long ago it
+/// arrived.
+///
+/// A free function so the arithmetic can be tested without a clock. Three
+/// separate attempts at this shipped broken; the tests below are the reason a
+/// fourth one will not.
+fn advance(base_ms: u64, ahead_ms: u64, duration_ms: u64, last_shown_ms: u64) -> u64 {
+    // Only clamp against a duration we actually have. It is 0 until the first
+    // metadata arrives, and clamping to that pins the position at the base —
+    // the slider hides itself while duration is unknown, but the elapsed label
+    // does not, and a frozen clock is a bug you can read.
+    let raw = base_ms + ahead_ms;
+    let candidate = if duration_ms > 0 {
+        raw.min(duration_ms)
+    } else {
+        raw
+    };
+
+    // A clock only runs forwards. MusicKit's reports are not perfectly even,
+    // and a small backward correction is far more noticeable than being a few
+    // tens of milliseconds optimistic — but a *large* jump is a seek or a new
+    // track, and must be obeyed.
+    if candidate < last_shown_ms && last_shown_ms - candidate < BACKSTEP_TOLERANCE_MS {
+        last_shown_ms
+    } else {
+        candidate
+    }
+}
+
 impl NowPlaying {
+    /// Start or stop the redraw timer to match playback.
+    ///
+    /// Mirrors the app's own tick discipline: a timer that runs while paused is
+    /// a timer waking the machine for nothing.
+    fn retime(&mut self, sender: &relm4::ComponentSender<Self>) {
+        match (self.snap.playing, self.advance.is_some()) {
+            (true, false) => {
+                let sender = sender.clone();
+                self.advance = Some(gtk::glib::timeout_add_local(
+                    Duration::from_millis(ADVANCE_MS),
+                    move || {
+                        sender.input(NowPlayingInput::Advance);
+                        gtk::glib::ControlFlow::Continue
+                    },
+                ));
+            }
+            (false, true) => {
+                if let Some(id) = self.advance.take() {
+                    id.remove();
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Decide which position to display when a snapshot arrives.
     ///
     /// This is the fix for the bug where a seek during playback jumped back to
@@ -539,7 +781,28 @@ impl NowPlaying {
         if self.snap.duration_ms == 0 {
             return 0.0;
         }
-        (self.snap.position_ms as f64 / self.snap.duration_ms as f64).clamp(0.0, 1.0)
+        (self.shown_position_ms() as f64 / self.snap.duration_ms as f64).clamp(0.0, 1.0)
+    }
+
+    /// Where the track is *now*: the last reported position, carried forward by
+    /// however long ago it was reported.
+    ///
+    /// Clamped to the track length so a late snapshot cannot run the slider
+    /// past the end, and never extrapolated while paused.
+    fn shown_position_ms(&self) -> u64 {
+        let base = self.snap.position_ms;
+        let Some(at) = self.synced_at.filter(|_| self.snap.playing) else {
+            self.shown_ms.set(base);
+            return base;
+        };
+        let shown = advance(
+            base,
+            at.elapsed().as_millis() as u64,
+            self.snap.duration_ms,
+            self.shown_ms.get(),
+        );
+        self.shown_ms.set(shown);
+        shown
     }
 
     /// `Artist — Album`, collapsing gracefully when either is missing rather
@@ -562,6 +825,10 @@ mod tests {
         NowPlaying {
             snap,
             artwork: None,
+            shown_artwork: std::cell::RefCell::new(None),
+            shown_ms: std::cell::Cell::new(0),
+            synced_at: None,
+            advance: None,
             volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
@@ -757,5 +1024,72 @@ mod tests {
         assert_eq!(album_only.subtitle(), "Fragile");
 
         assert_eq!(model(Snapshot::default()).subtitle(), "");
+    }
+
+    #[test]
+    fn the_slider_advances_by_real_time_and_no_more() {
+        // 20s in, reported 300ms ago, on a 3 minute track.
+        assert_eq!(advance(20_000, 300, 180_000, 20_000), 20_300);
+        // The offset is time since the *reading*, not since the app started.
+        // Getting that wrong made a track that just began read minutes in.
+        assert_eq!(advance(0, 250, 180_000, 0), 250);
+    }
+
+    #[test]
+    fn the_slider_never_runs_past_the_end() {
+        assert_eq!(advance(179_900, 5_000, 180_000, 179_900), 180_000);
+    }
+
+    #[test]
+    fn a_small_backward_correction_is_absorbed() {
+        // MusicKit reports unevenly; a 200ms step back is far more noticeable
+        // than being 200ms optimistic, so the slider holds instead.
+        assert_eq!(advance(19_800, 0, 180_000, 20_000), 20_000);
+    }
+
+    #[test]
+    fn a_large_jump_backwards_is_obeyed() {
+        // A seek, or a new track. Holding here would strand the slider
+        // mid-song for the whole of the next one.
+        assert_eq!(advance(0, 0, 180_000, 90_000), 0);
+        assert_eq!(advance(5_000, 0, 180_000, 120_000), 5_000);
+    }
+
+    #[test]
+    fn a_zero_length_track_does_not_clamp_the_position_away() {
+        // Duration can be 0 before the first metadata arrives; the position
+        // must survive that rather than being clamped to nothing.
+        assert_eq!(advance(4_000, 100, 0, 4_000), 4_100);
+    }
+
+    #[test]
+    fn pausing_drops_the_base_so_resuming_starts_from_now() {
+        // The reported bug: pause, wait, play — the slider leapt forward by
+        // roughly the length of the pause and then snapped back, because the
+        // base still pointed at the moment before the pause.
+        assert_eq!(base_action(false, 42_000, 42_000, true), Base::Clear);
+        // ...and resuming with the position unchanged must still rebase.
+        assert_eq!(base_action(true, 42_000, 42_000, false), Base::Reset);
+    }
+
+    #[test]
+    fn a_track_change_rebases_even_though_it_passes_through_loading() {
+        // Playing -> Waiting -> Loading -> Playing takes a second or two before
+        // audio starts. Without dropping the base across it, the slider ran for
+        // that whole gap and then snapped back once real positions arrived.
+        assert_eq!(base_action(false, 0, 180_000, true), Base::Clear);
+        assert_eq!(base_action(true, 0, 180_000, false), Base::Reset);
+    }
+
+    #[test]
+    fn an_unchanged_reading_keeps_its_base() {
+        // MusicKit reports about once a second; snapshots go out twice a
+        // second. Rebasing the repeats would stall the slider, then leap it.
+        assert_eq!(base_action(true, 20_000, 20_000, true), Base::Keep);
+    }
+
+    #[test]
+    fn a_moved_reading_rebases() {
+        assert_eq!(base_action(true, 21_000, 20_000, true), Base::Reset);
     }
 }
