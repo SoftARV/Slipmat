@@ -602,6 +602,7 @@ impl Component for AppModel {
                                                         // window.
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: model.loading_library,
                                                         },
@@ -620,6 +621,17 @@ impl Component for AppModel {
                                                             set_tooltip_text: Some("Reload"),
                                                             add_css_class: "flat",
                                                             add_css_class: "circular",
+                                                            // Exactly the
+                                                            // spinner's 16px,
+                                                            // in the spinner's
+                                                            // place: the row
+                                                            // must not change
+                                                            // height depending
+                                                            // on whether it is
+                                                            // loading.
+                                                            add_css_class: "row-action",
+                                                            set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: !(model.loading_library),
                                                             connect_clicked => AppMsg::ReloadSection(View::Songs),
@@ -644,6 +656,7 @@ impl Component for AppModel {
                                                         },
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: model.loading_albums,
                                                         },
@@ -662,6 +675,17 @@ impl Component for AppModel {
                                                             set_tooltip_text: Some("Reload"),
                                                             add_css_class: "flat",
                                                             add_css_class: "circular",
+                                                            // Exactly the
+                                                            // spinner's 16px,
+                                                            // in the spinner's
+                                                            // place: the row
+                                                            // must not change
+                                                            // height depending
+                                                            // on whether it is
+                                                            // loading.
+                                                            add_css_class: "row-action",
+                                                            set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: !(model.loading_albums),
                                                             connect_clicked => AppMsg::ReloadSection(View::Albums),
@@ -686,6 +710,7 @@ impl Component for AppModel {
                                                         },
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: model.loading_artists,
                                                         },
@@ -704,6 +729,17 @@ impl Component for AppModel {
                                                             set_tooltip_text: Some("Reload"),
                                                             add_css_class: "flat",
                                                             add_css_class: "circular",
+                                                            // Exactly the
+                                                            // spinner's 16px,
+                                                            // in the spinner's
+                                                            // place: the row
+                                                            // must not change
+                                                            // height depending
+                                                            // on whether it is
+                                                            // loading.
+                                                            add_css_class: "row-action",
+                                                            set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: !(model.loading_artists),
                                                             connect_clicked => AppMsg::ReloadSection(View::Artists),
@@ -728,6 +764,7 @@ impl Component for AppModel {
                                                         },
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: model.loading_playlists,
                                                         },
@@ -746,6 +783,17 @@ impl Component for AppModel {
                                                             set_tooltip_text: Some("Reload"),
                                                             add_css_class: "flat",
                                                             add_css_class: "circular",
+                                                            // Exactly the
+                                                            // spinner's 16px,
+                                                            // in the spinner's
+                                                            // place: the row
+                                                            // must not change
+                                                            // height depending
+                                                            // on whether it is
+                                                            // loading.
+                                                            add_css_class: "row-action",
+                                                            set_size_request: (16, 16),
+                                                            set_valign: gtk::Align::Center,
                                                             #[watch]
                                                             set_visible: !(model.loading_playlists),
                                                             connect_clicked => AppMsg::ReloadSection(View::Playlists),

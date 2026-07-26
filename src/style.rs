@@ -160,7 +160,17 @@ pub fn set_accent(accent: Accent) {
 
          /* Same reason. A GridView draws its own background, so insetting it
             with a margin shows a band of the window around every grid. */
-         .tile-grid {{ padding: 12px; }}"
+         .tile-grid {{ padding: 12px; }}
+
+         /* A button that has to be exactly as big as the 16px spinner it
+            swaps with. GTK's own button metrics are built for a hit target,
+            not for sitting inside a sidebar row, and the default padding
+            alone made every library row taller. */
+         .row-action {{
+             padding: 0;
+             min-width: 16px;
+             min-height: 16px;
+         }}"
     );
 
     BASE.with(|p| p.load_from_string(&css));
