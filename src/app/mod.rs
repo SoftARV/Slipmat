@@ -140,6 +140,15 @@ pub struct AppModel {
     /// and the first is not. `RefCell` because `send` takes `&self`.
     last_command: std::cell::RefCell<Option<(std::time::Instant, String)>>,
 
+    /// Furthest position reached in the current track, and that track's length.
+    ///
+    /// A high-water mark rather than a live read, because at the moment
+    /// `nowPlayingItemDidChange` arrives MusicKit has usually already zeroed
+    /// the position — and sometimes has not. Sampling it there gave a number
+    /// that was the full duration on three boundaries and zero on a fourth,
+    /// depending purely on which event won the race.
+    progress_mark: std::cell::Cell<(u64, u64)>,
+
     /// Live for the process lifetime, never persisted (rule 7).
     tokens: Option<Tokens>,
     sidecar: Option<sidecar::Handle>,
@@ -961,6 +970,7 @@ impl Component for AppModel {
             pending_start: None,
             player: PlayerState::new(),
             last_command: std::cell::RefCell::new(None),
+            progress_mark: std::cell::Cell::new((0, 0)),
             tokens: None,
             sidecar: None,
             restarts: 0,

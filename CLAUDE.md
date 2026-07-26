@@ -462,6 +462,8 @@ Playback engine first. One vertical slice, one PR each.
   login, tokens harvested. Verified: Widevine → MusicKit → PipeWire, window
   never mapped.
 - ✅ **M2 — Transport.** The Now Playing bar, sidecar-owned queue, supervision.
+  **Gapless verified 2026-07-26** — see below; the architecture's central claim
+  is no longer taken on trust.
 - ✅ **M3 — MPRIS.** `org.mpris.MediaPlayer2.Tonearm`, bidirectional, artwork as
   a `file://` URL. Verified over `busctl`: properties read, and `PlayPause` /
   `Next` from the bus reach the sidecar.
@@ -579,6 +581,35 @@ Two gotchas around installing the sidecar, both of which fail confusingly:
   `node node_modules/electron/install.js`. Skip it and you get a 14 MB
   `node_modules` with no binary, and the failure only surfaces later as
   "Electron not installed". `make sidecar` runs both steps.
+
+### Gapless — verified 2026-07-26
+
+**It works.** Measured on *A Thousand Suns (Deluxe)*, four consecutive
+boundaries:
+
+- Every transition logged `prompted_by="nothing — MusicKit advanced itself"`.
+  Rust sent nothing at any boundary; MusicKit advanced a queue it already held,
+  which is exactly what rule 3 exists to guarantee.
+- Wall-clock between transitions matched each track's length to the second
+  (57s / 254s / 18s), so every track ran out rather than being cut short.
+- PipeWire sink-input **#26158 was created once, at the first play, and was
+  still alive after all four boundaries.** The decoder never stopped. That is
+  the half you cannot hear and cannot infer.
+- The listener heard no gap.
+
+Two things that run cost, both now fixed, both worth not re-learning:
+
+- **The two logs are on different clocks.** `tracing` prints UTC, the script
+  printed local time. A `remove` two hours adrift looked like a gap at a
+  boundary and was in fact a screenshot shutter. The script now prints the
+  offset, and only reports Tonearm's *own* stream — any notification sound
+  opens and closes a stream of its own, and reporting those made the whole
+  instrument untrustworthy.
+- **`left_ms` was sampled at the wrong moment.** Read live when
+  `nowPlayingItemDidChange` arrives, MusicKit has usually already zeroed the
+  position — but not always, so it read as the full duration on three
+  boundaries and zero on the fourth, purely on which event won the race. It is
+  a high-water mark now.
 
 ### Verifying gapless
 

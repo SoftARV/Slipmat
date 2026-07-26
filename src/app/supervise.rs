@@ -90,8 +90,8 @@ impl AppModel {
                 .as_ref()
                 .map(|i| i.title.as_str())
                 .unwrap_or("<none>"),
-            // How much of the previous track was left. Near zero means it ran
-            // out — a natural boundary. Anything large is a skip.
+            // How much of the previous track never played. Near zero means it
+            // ran out — a natural boundary. Seconds mean it was skipped.
             left_ms,
             prompted_by = prompted
                 .as_deref()
@@ -201,10 +201,9 @@ impl AppModel {
                 i.catalog_id.clone().or_else(|| i.id.clone()),
             )
         });
-        let left_ms = self
-            .player
-            .duration_ms
-            .saturating_sub(self.player.position_ms);
+        // The high-water mark, not a live read — see `progress_mark`.
+        let (reached, length) = self.progress_mark.get();
+        let left_ms = length.saturating_sub(reached);
 
         // The mirror is updated last so the stage transitions above always see
         // the previous state (rule 3: this is a projection, not a source).
@@ -215,11 +214,17 @@ impl AppModel {
             .now_playing
             .as_ref()
             .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()));
-        if let Some((title, before)) = &was
-            && before != &now
-            && now.is_some()
-        {
+        let changed = was.as_ref().is_some_and(|(_, before)| before != &now) && now.is_some();
+        if changed && let Some((title, _)) = &was {
             self.log_transition(Some(title), left_ms);
+        }
+
+        if changed || was.is_none() {
+            // A new track: start the mark over at its length.
+            self.progress_mark.set((0, self.player.duration_ms));
+        } else if self.player.position_ms > reached {
+            self.progress_mark
+                .set((self.player.position_ms, self.player.duration_ms));
         }
 
         // Everything below is derived from the mirror, so it happens in one

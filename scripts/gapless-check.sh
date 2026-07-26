@@ -18,6 +18,11 @@
 #      A gapless transition keeps one stream alive throughout.
 #
 # Neither replaces listening. Both tell you *where* a gap came from.
+#
+# NOTE ON CLOCKS: the timestamps below are local time; `tracing` logs UTC.
+# The header prints the offset so the two logs can be lined up — the first
+# run of this script cost a few minutes to working out that a "gap" two
+# hours adrift was in fact a screenshot shutter.
 
 set -uo pipefail
 
@@ -26,31 +31,65 @@ if ! command -v pactl >/dev/null; then
 	exit 1
 fi
 
-# The sidecar's stream, not the whole system's. Chromium names it after the
-# app; `app.setName('Tonearm')` in sidecar/main.js is what makes this work.
-stream_of_interest() {
-	pactl list sink-inputs 2>/dev/null |
-		grep -iE "index:|application.name|media.name" |
-		sed 's/^[[:space:]]*//'
+# Which sink-input belongs to Tonearm. Matched on any property containing the
+# name, because Chromium spreads it across application.name,
+# application.process.binary and media.name depending on the version — and
+# `app.setName('Tonearm')` in sidecar/main.js is what puts it there at all.
+#
+# This filter is the point: a notification sound or a screenshot shutter opens
+# and closes its own short-lived stream, and reporting those as gaps makes the
+# whole instrument untrustworthy.
+tonearm_indices() {
+	pactl list sink-inputs 2>/dev/null | awk '
+		/^Sink Input #/ { idx = substr($3, 2); hit = 0 }
+		tolower($0) ~ /tonearm/ { hit = 1 }
+		/^[[:space:]]*$/ { if (hit && idx != "") print idx; idx = ""; hit = 0 }
+		END { if (hit && idx != "") print idx }
+	'
 }
 
-echo "Watching PipeWire sink-inputs. Play across a track boundary."
-echo "Expect: nothing at all. A 'remove' followed by a 'new' is a gap."
+echo "Watching Tonearm's audio stream. Play across a track boundary."
+echo "Expect: nothing at all. A 'remove' of Tonearm's own stream is a gap."
 echo
-echo "--- streams right now ---"
-stream_of_interest
-echo "-------------------------"
+printf 'Timestamps below are local time; the app logs UTC (offset %s).\n' \
+	"$(date '+%:z')"
 echo
 
-# `pactl subscribe` emits a line per event; timestamp them so the boundary can
-# be lined up against the app's own "track transition" log.
+known=$(tonearm_indices | tr '\n' ' ')
+if [ -n "${known// /}" ]; then
+	echo "Tonearm is already playing on sink-input(s): $known"
+else
+	echo "Tonearm is not playing yet — its stream will appear when you hit play."
+fi
+echo
+
 pactl subscribe 2>/dev/null | while read -r line; do
 	case "$line" in
-	*"on sink-input"*)
-		printf '%s  %s\n' "$(date '+%H:%M:%S.%3N')" "$line"
-		case "$line" in
-		*remove*)
-			echo "    ^^ the stream went away — that is an audible gap."
+	*"on sink-input"*) ;;
+	*) continue ;;
+	esac
+
+	index=${line##*#}
+	stamp=$(date '+%H:%M:%S.%3N')
+
+	case "$line" in
+	*remove*)
+		# Already gone from `pactl list`, so this leans on what we saw when
+		# it appeared.
+		case " $known " in
+		*" $index "*)
+			echo "$stamp  Tonearm's stream #$index went away"
+			echo "    ^^ the decoder stopped — that is an audible gap."
+			known=${known// $index / }
+			;;
+		esac
+		;;
+	*)
+		current=$(tonearm_indices | tr '\n' ' ')
+		case " $current " in
+		*" $index "*)
+			[ -n "${known// /}" ] || echo "$stamp  Tonearm's stream #$index appeared"
+			known=$current
 			;;
 		esac
 		;;
