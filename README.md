@@ -3,6 +3,10 @@ SPDX-FileCopyrightText: 2026 Miguel Rincon
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
+<p align="center">
+  <img src="docs/screenshots/icon.png" width="128" alt="Tonearm icon">
+</p>
+
 # Tonearm
 
 A native GNOME client for Apple Music.
@@ -14,6 +18,9 @@ native: GTK4 and libadwaita, written in Rust, with real libadwaita lists, real
 GNOME search, and MPRIS that works in both directions.
 
 The web engine is still there. You just never see it.
+
+![Tonearm showing a library of songs, with the playing track marked and the Now
+Playing bar along the bottom](docs/screenshots/library.webp)
 
 ## What it does
 
@@ -27,13 +34,21 @@ the way it was mastered to. This is measured, not hoped for — see
 playlists as grids. Type-to-find filtering on all four. Artist portraits come
 from Apple's catalogue, and covers are cached to disk as they scroll into view.
 
+![The Albums grid, covers filling the window](docs/screenshots/albums.webp)
+
 **The whole catalogue.** Search Apple Music, paginated as you scroll. Results
 mix artists and albums above the songs, and either one opens a page you can play
 from and drill through — artist → album → track.
 
+![A catalogue search for Foo Fighters: artists and albums above the songs, each
+with a chevron into its own page](docs/screenshots/search.webp)
+
 **A queue you can see.** A sidebar rather than a modal, opening on the track
 that is playing. Jump to any track, remove any track, without disturbing
 playback.
+
+![The Playlists grid with the queue sidebar open beside it, 530 tracks deep and
+scrolled to the one playing](docs/screenshots/queue.webp)
 
 **MPRIS, properly.** `org.mpris.MediaPlayer2.Tonearm`, bidirectional. The GNOME
 Shell applet and the lock screen show correct metadata and artwork, and their
