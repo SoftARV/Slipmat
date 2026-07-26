@@ -18,35 +18,42 @@ rsvg-convert -w 128 -h 128 \
 
 ## The shots
 
-| File | Shows | Why it earns its place |
-| --- | --- | --- |
-| `library.png` | Songs, a full library list | The thing a wrapper cannot do: a real, virtualised, native list |
-| `album.png` | An album or playlist page, playing | Cover, track list, and the Now Playing bar in one frame |
-| `grid.png` | Albums or Artists | Round artist portraits are the most obviously *native* detail |
-| `search.png` | Apple Music results | Artists and albums above songs — the way in to the catalogue |
-| `gapless.png` | The run beside its log | The evidence for the one claim that matters |
-
-Only the first two are load-bearing. The rest are nice.
+| File | Shows |
+| --- | --- |
+| `library.webp` | Songs — the playing track marked, bar active |
+| `albums.webp` | The Albums grid |
+| `search.webp` | A catalogue search: artists and albums above songs |
+| `queue.webp` | Playlists, with the queue sidebar open |
 
 ## Taking them
 
 - **Dark theme**, since that is what the app looks like on a default GNOME
-  install and what every other shot here uses.
-- Capture the **window, not the screen** — `Alt`+`PrtSc`, or the area tool.
-  GNOME's shadow and rounded corners come along with it, which is what makes a
-  GTK4 app look like one.
-- Play something first. A Now Playing bar reading "Nothing playing" undersells
-  every screenshot it appears in.
+  install and what every shot here uses.
+- Capture the **window, not the screen** — `Alt`+`PrtSc`. GNOME's shadow and
+  rounded corners come along with it, which is what makes a GTK4 app look like
+  one.
+- Play something first, and keep the *same* track across the set. A Now Playing
+  bar reading "Nothing playing" undersells every screenshot it appears in, and a
+  different track in each one reads as four unrelated apps.
 - Avoid a half-loaded state: no spinners, no placeholder covers.
 
 ## Processing
 
-Resize to 1600px wide and strip metadata, so the repo does not accumulate
-multi-megabyte PNGs:
+Resize to 1600px wide, then pick a format **by what is in the picture**:
 
 ```bash
-magick shot.png -resize 1600x -strip docs/screenshots/album.png
+# UI and text — lossless, so glyphs stay crisp
+magick shot.png -resize 1600x -strip \
+  -define webp:lossless=true -define webp:method=6 docs/screenshots/library.webp
+
+# Mostly album art — lossy, since lossless gains nothing and costs 4x
+magick shot.png -resize 1600x -strip \
+  -quality 92 -define webp:method=6 docs/screenshots/albums.webp
 ```
 
-Keep each one **under ~500 KB**. If one is stubborn, `-resize 1400x` first —
-nobody reads a README at full resolution.
+WebP rather than PNG throughout: the four shots here are **724 KB** together,
+where the same images as PNG were **2.2 MB**. A repository carries its blobs
+forever, so this is worth two minutes.
+
+Keep each one under ~500 KB. If one is stubborn, `-resize 1400x` first — nobody
+reads a README at full resolution.
