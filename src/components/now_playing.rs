@@ -41,6 +41,10 @@ const ADVANCE_MS: u64 = 100;
 /// position catch up; above it, something discontinuous happened.
 const BACKSTEP_TOLERANCE_MS: u64 = 1_500;
 
+/// How big the disc is drawn inside the empty sleeve. The sleeve itself stays
+/// 48px; this is what leaves a margin inside it.
+const EMPTY_COVER_PX: i32 = 22;
+
 const SCRUB_COMMIT_MS: u64 = 250;
 
 /// How close the sidecar's reported position must get to a seek target before
@@ -208,7 +212,12 @@ impl SimpleComponent for NowPlaying {
             // --- artwork + labels ------------------------------------------
             #[name = "cover"]
             gtk::Image {
-                set_pixel_size: 48,
+                // The *widget* stays 48px so the case does not change size;
+                // the icon inside it is drawn smaller so it sits within the
+                // sleeve rather than against its edges. Swapped for the full
+                // 48 in `post_view` when real artwork arrives, which fills the
+                // square by design.
+                set_pixel_size: EMPTY_COVER_PX,
                 set_size_request: (48, 48),
                 // An empty sleeve rather than a floating icon: with nothing
                 // playing, the bar should still read as having a place where
@@ -603,10 +612,12 @@ impl SimpleComponent for NowPlaying {
         if *shown != self.artwork {
             match &self.artwork {
                 Some(path) => {
+                    widgets.cover.set_pixel_size(48);
                     widgets.cover.set_from_file(Some(path));
                     widgets.cover.remove_css_class("np-cover-empty");
                 }
                 None => {
+                    widgets.cover.set_pixel_size(EMPTY_COVER_PX);
                     widgets.cover.set_icon_name(Some("media-optical-symbolic"));
                     widgets.cover.add_css_class("np-cover-empty");
                 }
