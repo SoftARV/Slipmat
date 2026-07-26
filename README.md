@@ -127,9 +127,13 @@ sudo pacman -S --needed base-devel pkgconf rust gtk4 libadwaita librsvg nodejs n
 ## Install
 
 ```bash
-make sidecar     # fetch castLabs Electron (~200 MB, once)
 make install     # build + install to ~/.local, no sudo
 ```
+
+The first build also fetches castLabs Electron — **about 200 MB of Chromium**,
+once. That is the Widevine boundary and there is no smaller version of it; see
+[Limitations](#limitations). `make sidecar` fetches it on its own if you want
+that step separately.
 
 Then launch **Tonearm** from the app grid, or run `tonearm`. If that command is
 not found, `~/.local/bin` is not on your `PATH` — most shells add it, some do
