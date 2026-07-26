@@ -201,6 +201,7 @@ pub fn row_icon(playing: bool, playable: bool) -> (&'static str, &'static [&'sta
 
 pub struct LibraryItemWidgets {
     star: gtk::Image,
+    menu_button: gtk::Button,
     /// What this recycled widget is showing **right now**. The context-menu
     /// gesture is attached once in `setup` and lives as long as the widget, so
     /// it cannot capture a track — it reads this, which `bind` rewrites every
@@ -271,6 +272,24 @@ impl RelmListItem for LibraryItem {
                     add_css_class: "favorite-star",
                 },
 
+                // The same menu the right-click opens, as a button.
+                //
+                // A context menu you can only reach by right-clicking is a
+                // context menu a touchscreen cannot reach at all — and a
+                // trackpad user has to know is there. Always visible rather
+                // than on hover, for the same reason.
+                // A plain Button, not a MenuButton: a MenuButton owns its
+                // popover, and this one has to come from the same place the
+                // right-click menu does or the two will drift apart.
+                #[name = "menu_button"]
+                gtk::Button {
+                    set_icon_name: "view-more-symbolic",
+                    set_tooltip_text: Some("Track options"),
+                    set_valign: gtk::Align::Center,
+                    add_css_class: "flat",
+                    add_css_class: "circular",
+                },
+
                 #[name = "trailing"]
                 gtk::Label {
                     set_valign: gtk::Align::Center,
@@ -293,6 +312,33 @@ impl RelmListItem for LibraryItem {
         // click that activates a row.
         let menu = gtk::GestureClick::new();
         menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+        // The button asks for exactly the same menu, at its own position, so
+        // there is one code path and it cannot drift from the right-click one.
+        let asked_by_button = showing.clone();
+        let button_root = root.clone();
+        let button = menu_button.clone();
+        menu_button.connect_clicked(move |_| {
+            let Some(shown) = asked_by_button.borrow().clone() else {
+                return;
+            };
+            if let Some(request) = ROW_MENU.with(|m| m.borrow().clone()) {
+                // Where the button sits inside the row, so the popover points
+                // at it rather than at wherever the last right-click was.
+                // `allocation()` is deprecated; this is the replacement.
+                let at = button
+                    .compute_bounds(&button_root)
+                    .map(|b| (b.x() as i32, (b.y() + b.height()) as i32))
+                    .unwrap_or((0, 0));
+                request(RowMenuRequest {
+                    catalog_id: shown.catalog_id,
+                    in_library: shown.in_library,
+                    favorite: shown.favorite,
+                    at,
+                    over: button_root.clone(),
+                });
+            }
+        });
+
         let asked = showing.clone();
         let root_for_menu = root.clone();
         menu.connect_pressed(move |gesture, _, x, y| {
@@ -316,6 +362,7 @@ impl RelmListItem for LibraryItem {
             root,
             LibraryItemWidgets {
                 star,
+                menu_button,
                 showing,
                 icon,
                 title,
@@ -348,8 +395,13 @@ impl RelmListItem for LibraryItem {
         widgets.chevron.set_visible(opens);
         widgets.trailing.set_visible(!opens);
 
-        // Set unconditionally: this widget was showing a different track a
-        // moment ago, and a star left over from it is a lie about this one.
+        // Both set unconditionally: this widget was showing a different track a
+        // moment ago, and anything left over from it is a lie about this one.
+        widgets
+            .menu_button
+            .set_visible(widgets.showing.borrow().is_some());
+
+        // A star left over from the previous track is a lie about this one.
         widgets.star.set_visible(match &self.entry {
             Entry::Song(track) => track.favorite,
             _ => false,

@@ -359,7 +359,9 @@ pub enum AppMsg {
     ToggleSidebar,
     /// The results list is near its end; fetch the next page if there is one.
     LoadMoreCatalog,
-    ReloadLibrary,
+    /// Re-fetch one library section. There is no section-less "reload": each
+    /// is fetched separately, so a single one could not know which you meant.
+    ReloadSection(View),
     ShowPreferences,
     ShowShortcuts,
     ShowAbout,
@@ -603,6 +605,25 @@ impl Component for AppModel {
                                                             #[watch]
                                                             set_visible: model.loading_library,
                                                         },
+
+                                                        // Per section, because
+                                                        // each is fetched
+                                                        // separately and a
+                                                        // single "reload"
+                                                        // cannot know which one
+                                                        // you meant. Swaps with
+                                                        // the spinner rather
+                                                        // than sitting beside
+                                                        // it.
+                                                        gtk::Button {
+                                                            set_icon_name: "view-refresh-symbolic",
+                                                            set_tooltip_text: Some("Reload"),
+                                                            add_css_class: "flat",
+                                                            add_css_class: "circular",
+                                                            #[watch]
+                                                            set_visible: !(model.loading_library),
+                                                            connect_clicked => AppMsg::ReloadSection(View::Songs),
+                                                        },
                                                     },
                                                 },
 
@@ -625,6 +646,25 @@ impl Component for AppModel {
                                                             set_size_request: (16, 16),
                                                             #[watch]
                                                             set_visible: model.loading_albums,
+                                                        },
+
+                                                        // Per section, because
+                                                        // each is fetched
+                                                        // separately and a
+                                                        // single "reload"
+                                                        // cannot know which one
+                                                        // you meant. Swaps with
+                                                        // the spinner rather
+                                                        // than sitting beside
+                                                        // it.
+                                                        gtk::Button {
+                                                            set_icon_name: "view-refresh-symbolic",
+                                                            set_tooltip_text: Some("Reload"),
+                                                            add_css_class: "flat",
+                                                            add_css_class: "circular",
+                                                            #[watch]
+                                                            set_visible: !(model.loading_albums),
+                                                            connect_clicked => AppMsg::ReloadSection(View::Albums),
                                                         },
                                                     },
                                                 },
@@ -649,6 +689,25 @@ impl Component for AppModel {
                                                             #[watch]
                                                             set_visible: model.loading_artists,
                                                         },
+
+                                                        // Per section, because
+                                                        // each is fetched
+                                                        // separately and a
+                                                        // single "reload"
+                                                        // cannot know which one
+                                                        // you meant. Swaps with
+                                                        // the spinner rather
+                                                        // than sitting beside
+                                                        // it.
+                                                        gtk::Button {
+                                                            set_icon_name: "view-refresh-symbolic",
+                                                            set_tooltip_text: Some("Reload"),
+                                                            add_css_class: "flat",
+                                                            add_css_class: "circular",
+                                                            #[watch]
+                                                            set_visible: !(model.loading_artists),
+                                                            connect_clicked => AppMsg::ReloadSection(View::Artists),
+                                                        },
                                                     },
                                                 },
 
@@ -671,6 +730,25 @@ impl Component for AppModel {
                                                             set_size_request: (16, 16),
                                                             #[watch]
                                                             set_visible: model.loading_playlists,
+                                                        },
+
+                                                        // Per section, because
+                                                        // each is fetched
+                                                        // separately and a
+                                                        // single "reload"
+                                                        // cannot know which one
+                                                        // you meant. Swaps with
+                                                        // the spinner rather
+                                                        // than sitting beside
+                                                        // it.
+                                                        gtk::Button {
+                                                            set_icon_name: "view-refresh-symbolic",
+                                                            set_tooltip_text: Some("Reload"),
+                                                            add_css_class: "flat",
+                                                            add_css_class: "circular",
+                                                            #[watch]
+                                                            set_visible: !(model.loading_playlists),
+                                                            connect_clicked => AppMsg::ReloadSection(View::Playlists),
                                                         },
                                                     },
                                                 },
@@ -744,16 +822,6 @@ impl Component for AppModel {
                                             set_visible: model.view == View::Songs,
                                         },
 
-                                        pack_end = &gtk::Button {
-                                            set_icon_name: "view-refresh-symbolic",
-                                            set_tooltip_text: Some("Reload library"),
-                                            add_css_class: "flat",
-                                            #[watch]
-                                            set_visible: model.view == View::Songs,
-                                            #[watch]
-                                            set_sensitive: !model.loading_library,
-                                            connect_clicked => AppMsg::ReloadLibrary,
-                                        },
                                     },
 
                                     #[wrap(Some)]
@@ -1404,7 +1472,7 @@ impl Component for AppModel {
                     self.run_catalog_search(&sender, generation, offset);
                 }
             }
-            AppMsg::ReloadLibrary => self.load_library(&sender),
+            AppMsg::ReloadSection(view) => self.reload(view, &sender),
             AppMsg::ShowPreferences => self.show_preferences(&sender, root),
             AppMsg::ShowShortcuts => show_shortcuts(root),
             AppMsg::ShowAbout => show_about(root),
@@ -1994,6 +2062,29 @@ impl AppModel {
         for registry in lists {
             if let Some(w) = registry.borrow().get(catalog_id) {
                 w.star.set_visible(on);
+            }
+        }
+    }
+
+    /// Throw away a section's cache and fetch it again.
+    ///
+    /// Each loader returns early when it already holds data — that is what
+    /// makes revisiting a section instant — so a reload has to clear first or
+    /// it does nothing at all.
+    fn reload(&mut self, view: View, sender: &ComponentSender<Self>) {
+        match view {
+            View::Songs | View::Search => self.load_library(sender),
+            View::Albums => {
+                self.albums.clear();
+                self.load_albums(sender);
+            }
+            View::Artists => {
+                self.artists.clear();
+                self.load_artists(sender);
+            }
+            View::Playlists => {
+                self.playlists.clear();
+                self.load_playlists(sender);
             }
         }
     }

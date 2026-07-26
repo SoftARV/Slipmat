@@ -402,6 +402,7 @@ src/
     status.rs        # what the pane shows when it is not showing music
     chrome.rs        # the menu, its accelerators, and the three dialogs
   settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
+  style.rs           # accent colour + the Now Playing tint. The only CSS.
   secret.rs          # oo7 wrapper: store / load / clear the Music User Token
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)
@@ -497,6 +498,18 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   set **every** property it cares about, because the widget it is handed was
   showing a different track a moment ago, and anything left unset keeps the old
   value. Disconnect signal handlers in `unbind` or they stack up on reuse.
+- **The app stylesheet is `style.rs`, and it is the sanctioned CSS.** An accent
+  colour is not a widget: libadwaita 1.6 exposes it only as CSS variables
+  (`--accent-bg-color` and friends), so a `CssProvider` is the only route.
+  Two providers, kept apart — a **base** one replaced when the accent
+  preference changes, and a **tint** one for the Now Playing bar replaced on
+  every track — so recolouring the bar does not reparse the accent rules.
+  Anything else wanting CSS still has to argue for itself first.
+- **The bar's tint is a wash, not a repaint.** Every label, icon and slider in
+  it already has a colour chosen for contrast against the theme. Filling the
+  background with a colour taken from a sleeve nobody has seen would mean
+  recolouring all of them and guessing at contrast; a low-alpha gradient over
+  the normal background is legible by construction.
 - **Use libadwaita widgets, not raw GTK.** `adw::ActionRow`,
   `adw::PreferencesGroup`, `adw::AboutDialog`, `adw::StatusPage`,
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS
