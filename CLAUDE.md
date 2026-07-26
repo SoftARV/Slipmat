@@ -55,11 +55,31 @@ inside Chrome x86_64 and Chromium shells that bundle it.
 | Rust + GStreamer direct         | **Dead.** Cannot decrypt Widevine-protected HLS.                |
 | Stock Electron                  | **Dead.** `navigator.requestMediaKeySystemAccess` is absent.    |
 | `pywidevine` + an extracted CDM | **Rejected.** See rule 1. Out of scope, permanently.            |
-| **castLabs Electron (`wvcus`)** | **Works.** Bundles the real CDM. What Sidra uses.               |
+| **castLabs Electron (`wvcus`)** | **Works.** *Fetches* the CDM — see below. What Sidra uses.      |
 
 So a 100% native Apple Music player *cannot exist*. The honest ceiling — and the
 whole design — is: **everything the user sees is native; the audio decoder is
 invisible.**
+
+**`wvcus` does not ship the CDM — it fetches it.** The suffix is *Widevine CDM
+Update Service*: what castLabs adds is the plumbing that lets Chromium's own
+component updater pull the CDM down, exactly as Chrome does for itself. There is
+no Widevine binary anywhere in the 327 MB Electron dist; verify with
+
+```bash
+find sidecar/node_modules -iname "*widevine*"   # finds nothing
+```
+
+It lands at `~/.config/Tonearm/WidevineCdm/` on first run, beside the copies
+Chrome and Chromium fetched for themselves.
+
+This matters for **packaging**, and this entry used to say "bundles", which
+pointed the wrong way. Nothing Tonearm would ship contains proprietary Google
+code: Electron is MIT, our code is GPL-3, and the CDM arrives on the user's own
+machine through their own component updater into their own config directory. So
+redistribution is not the obstacle it looked like — a Flatpak or an AUR package
+would carry Electron and nothing more, and the CDM download needs only network
+access and a writable, persistent config directory.
 
 Two Linux facts that follow, and that you must not design around:
 
