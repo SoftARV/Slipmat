@@ -203,7 +203,7 @@ pub(crate) fn dominant(pixels: &[(u8, u8, u8)]) -> Option<(u8, u8, u8)> {
 }
 
 /// HSL back to RGB.
-fn rgb(hue: f32, sat: f32, light: f32) -> (u8, u8, u8) {
+pub(crate) fn rgb(hue: f32, sat: f32, light: f32) -> (u8, u8, u8) {
     let chroma = (1.0 - (2.0 * light - 1.0).abs()) * sat;
     let h = hue / 60.0;
     let x = chroma * (1.0 - (h % 2.0 - 1.0).abs());
@@ -221,7 +221,7 @@ fn rgb(hue: f32, sat: f32, light: f32) -> (u8, u8, u8) {
 }
 
 /// Hue in degrees, saturation and lightness in 0..=1.
-fn hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+pub(crate) fn hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);

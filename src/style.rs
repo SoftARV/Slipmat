@@ -166,28 +166,48 @@ pub fn set_accent(accent: Accent) {
     BASE.with(|p| p.load_from_string(&css));
 }
 
-/// Tint the Now Playing bar towards a colour taken from the cover.
+/// Tint the Now Playing bar with a colour taken from the cover.
 ///
-/// Deliberately a **low-alpha wash over the normal background**, not a solid
-/// fill: every label, icon and slider in that bar already has a colour chosen
-/// for contrast against the theme, and repainting the background outright would
-/// mean recolouring all of them and getting the contrast right for artwork we
-/// have never seen. A wash keeps every one of them legible by construction.
+/// A **tonal scrim**: one flat, heavily desaturated wash of the sleeve's colour
+/// across the whole bar, rather than a gradient fading out to one side. It is
+/// what Apple Music and the better third-party players do, and it reads as *the
+/// surface being tinted* rather than as a decoration laid on top of it.
+///
+/// Still a wash over the normal background rather than a repaint: every label,
+/// icon and slider in that bar already has a colour chosen for contrast against
+/// the theme, and filling the background with a colour taken from artwork
+/// nobody has seen would mean recolouring all of them and guessing at contrast.
+/// Muting the colour first is what keeps this true — a vivid fill at this
+/// coverage would not be legible.
 pub fn set_bar_tint(rgb: Option<(u8, u8, u8)>) {
-    let css = match rgb {
+    let css = match rgb.map(muted) {
         Some((r, g, b)) => format!(
             ".np-bar {{
+                 /* Two stops a hair apart, not one flat colour: it is still
+                    read as a single tone, but the surface has some depth to it
+                    rather than looking like a painted rectangle. */
                  background-image: linear-gradient(
-                     to right,
-                     rgba({r}, {g}, {b}, 0.34),
-                     rgba({r}, {g}, {b}, 0.10) 55%,
-                     transparent
+                     to bottom,
+                     rgba({r}, {g}, {b}, 0.30),
+                     rgba({r}, {g}, {b}, 0.22)
                  );
-                 transition: background-image 400ms ease;
+                 transition: background-image 500ms ease;
              }}"
         ),
         // Nothing playing, or a cover we could not read: back to the plain bar.
         None => ".np-bar { background-image: none; }".into(),
     };
     TINT.with(|p| p.load_from_string(&css));
+}
+
+/// Pull a sleeve's colour towards something that can be a *surface*.
+///
+/// The colour `artwork::dominant` returns is deliberately vivid — it answers
+/// "what colour is this record". A background has the opposite job: it has to
+/// stay behind text. So saturation comes right down and lightness lands in a
+/// narrow band, which also stops a very dark or very bright sleeve from
+/// producing a bar that is nearly black or nearly white.
+fn muted((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
+    let (hue, sat, light) = crate::components::artwork::hsl(r, g, b);
+    crate::components::artwork::rgb(hue, (sat * 0.5).min(0.38), light.clamp(0.52, 0.66))
 }

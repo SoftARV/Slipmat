@@ -505,11 +505,18 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   preference changes, and a **tint** one for the Now Playing bar replaced on
   every track — so recolouring the bar does not reparse the accent rules.
   Anything else wanting CSS still has to argue for itself first.
-- **The bar's tint is a wash, not a repaint.** Every label, icon and slider in
-  it already has a colour chosen for contrast against the theme. Filling the
-  background with a colour taken from a sleeve nobody has seen would mean
-  recolouring all of them and guessing at contrast; a low-alpha gradient over
-  the normal background is legible by construction.
+- **The bar's tint is a tonal scrim, not a repaint.** One flat, heavily
+  desaturated wash of the sleeve's colour across the whole bar — what Apple
+  Music and the better third-party players do. It reads as *the surface being
+  tinted* rather than as a decoration laid over it, which a left-to-right
+  gradient did.
+
+  Still a wash over the normal background, never a fill: every label, icon and
+  slider in that bar already has a colour chosen for contrast against the theme,
+  and repainting the background with a colour from artwork nobody has seen would
+  mean recolouring all of them and guessing at contrast. Muting the colour first
+  is what keeps that true — the vivid colour `artwork::dominant` returns answers
+  "what colour is this record", and a surface has the opposite job.
 - **Use libadwaita widgets, not raw GTK.** `adw::ActionRow`,
   `adw::PreferencesGroup`, `adw::AboutDialog`, `adw::StatusPage`,
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS
