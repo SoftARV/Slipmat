@@ -131,8 +131,13 @@ make sidecar     # fetch castLabs Electron (~200 MB, once)
 make install     # build + install to ~/.local, no sudo
 ```
 
-Then launch **Tonearm** from the app grid. On first run, Apple's sign-in window
-opens once; after you authenticate it hides for good.
+Then launch **Tonearm** from the app grid, or run `tonearm`. If that command is
+not found, `~/.local/bin` is not on your `PATH` — most shells add it, some do
+not.
+
+On first run, Apple's sign-in window opens once; after you authenticate it hides
+for good. Notifications need the app to be installed, and the first time may
+need a fresh login so the shell picks up the new `.desktop` entry and icon.
 
 **No token is ever written to disk.** Both the developer token and the Music
 User Token are re-harvested from the running MusicKit instance on every launch;
