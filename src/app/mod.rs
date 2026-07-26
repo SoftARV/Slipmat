@@ -1445,8 +1445,8 @@ impl Component for AppModel {
                     &self.artist_art_widgets,
                     &self.playlist_art_widgets,
                 ] {
-                    if let Some(image) = registry.borrow().get(&key) {
-                        image.set_from_file(Some(&path));
+                    if let Some(cover) = registry.borrow().get(&key) {
+                        cover.set_file(&path);
                     }
                 }
             }

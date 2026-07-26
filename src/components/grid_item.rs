@@ -32,6 +32,7 @@ use relm4::gtk::prelude::*;
 use relm4::typed_view::grid::RelmGridItem;
 use relm4::{gtk, view};
 
+use crate::components::cover::Cover;
 use crate::music::types::{Album, Artist, Artwork, Playlist};
 
 /// Tile artwork, in logical pixels. Big enough to read, small enough that a
@@ -45,7 +46,7 @@ pub type ArtCache = Rc<RefCell<HashMap<String, PathBuf>>>;
 
 /// Tiles currently on screen, keyed the same way, so a fetch that finishes late
 /// can find the widget to paint.
-pub type ArtRegistry = Rc<RefCell<HashMap<String, gtk::Image>>>;
+pub type ArtRegistry = Rc<RefCell<HashMap<String, Cover>>>;
 
 /// "Please fetch this artwork." Called from `bind` on a cache miss; the app
 /// turns it into a relm4 `Command`.
@@ -142,7 +143,7 @@ impl GridItem {
 }
 
 pub struct GridItemWidgets {
-    image: gtk::Image,
+    cover: Cover,
     title: gtk::Label,
     subtitle: gtk::Label,
 }
@@ -160,17 +161,6 @@ impl RelmGridItem for GridItem {
                 set_spacing: 6,
                 set_margin_all: 6,
                 set_width_request: TILE_PX,
-
-                #[name = "image"]
-                gtk::Image {
-                    set_pixel_size: TILE_PX,
-                    set_width_request: TILE_PX,
-                    set_height_request: TILE_PX,
-                    set_halign: gtk::Align::Center,
-                    // Clip the picture to whatever shape the CSS draws — GTK4
-                    // rounds the background but not the content on its own.
-                    set_overflow: gtk::Overflow::Hidden,
-                },
 
                 // `halign: Fill` — the default — is load-bearing, and centring
                 // is done with `xalign` instead. A centred label is allocated
@@ -201,10 +191,13 @@ impl RelmGridItem for GridItem {
             }
         }
 
+        let cover = Cover::new(TILE_PX);
+        cover.attach_first(&root);
+
         (
             root,
             GridItemWidgets {
-                image,
+                cover,
                 title,
                 subtitle,
             },
@@ -224,31 +217,26 @@ impl RelmGridItem for GridItem {
         widgets.subtitle.set_visible(!subtitle.is_empty());
         widgets.subtitle.set_label(&subtitle);
 
-        // Shape first, so a recycled artist tile does not stay round when it is
-        // reused for an album.
-        widgets.image.set_css_classes(if self.tile.round() {
-            &["circular"]
+        // Shape first, and unconditionally: this widget was showing a different
+        // tile a moment ago, and a recycled artist must not stay round when it
+        // comes back as an album.
+        if self.tile.round() {
+            widgets.cover.round(&title);
         } else {
-            &["card"]
-        });
+            widgets.cover.square(self.tile.placeholder());
+        }
 
-        match self.tile.artwork() {
-            Some(art) => {
-                let key = art.cache_key();
-                match self.art.borrow().get(&key) {
-                    // Already on disk from an earlier bind, or from the Now
-                    // Playing bar having played something off this album.
-                    Some(path) if path.is_file() => widgets.image.set_from_file(Some(path)),
-                    _ => {
-                        widgets.image.set_icon_name(Some(self.tile.placeholder()));
-                        (self.request)(key.clone(), art.clone());
-                    }
-                }
-                self.registry
-                    .borrow_mut()
-                    .insert(key, widgets.image.clone());
+        if let Some(art) = self.tile.artwork() {
+            let key = art.cache_key();
+            match self.art.borrow().get(&key) {
+                // Already on disk from an earlier bind, or from the Now Playing
+                // bar having played something off this album.
+                Some(path) if path.is_file() => widgets.cover.set_file(path),
+                _ => (self.request)(key.clone(), art.clone()),
             }
-            None => widgets.image.set_icon_name(Some(self.tile.placeholder())),
+            self.registry
+                .borrow_mut()
+                .insert(key, widgets.cover.clone());
         }
     }
 
@@ -258,7 +246,7 @@ impl RelmGridItem for GridItem {
         if let Some(art) = self.tile.artwork() {
             let key = art.cache_key();
             let mut registry = self.registry.borrow_mut();
-            if registry.get(&key).is_some_and(|w| w == &widgets.image) {
+            if registry.get(&key).is_some_and(|c| c.is(&widgets.cover)) {
                 registry.remove(&key);
             }
         }

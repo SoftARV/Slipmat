@@ -23,6 +23,7 @@ use relm4::gtk::prelude::*;
 use relm4::typed_view::list::TypedListView;
 use relm4::{adw, gtk};
 
+use crate::components::cover::Cover;
 use crate::components::track_row::{Entry, LibraryItem, LibraryRowWidgets};
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
 use crate::music::types::{Album, Artist, Artwork, Playlist};
@@ -115,7 +116,7 @@ pub struct DetailPage {
 
     header: adw::HeaderBar,
     stack: gtk::Stack,
-    art: gtk::Image,
+    cover: Cover,
     title: gtk::Label,
     subtitle: gtk::Label,
     meta: gtk::Label,
@@ -143,24 +144,7 @@ impl DetailPage {
         view.add_css_class("navigation-sidebar");
         view.connect_activate(move |_, position| on_activate(position as usize));
 
-        // `halign: Center` and an explicit size are both load-bearing.
-        // `GtkImage` defaults to filling its allocation and centres the picture
-        // inside it, which is invisible until the `card` background is asked to
-        // paint that allocation — then a long album title widens the header box
-        // and the cover sits in the middle of a grey slab. Pinning the widget
-        // to the artwork's own size makes the card *be* the cover.
-        let art = gtk::Image::builder()
-            .pixel_size(ART_PX)
-            .width_request(ART_PX)
-            .height_request(ART_PX)
-            .halign(gtk::Align::Center)
-            .icon_name("media-optical-symbolic")
-            .css_classes(["card"])
-            // Clip to the rounded corners `card` draws — and to the circle on
-            // an artist page. GTK4 rounds the background but not the content
-            // unless the widget is told to clip.
-            .overflow(gtk::Overflow::Hidden)
-            .build();
+        let cover = Cover::new(ART_PX);
 
         let title = gtk::Label::builder()
             .css_classes(["title-1"])
@@ -192,7 +176,7 @@ impl DetailPage {
             .margin_top(24)
             .margin_bottom(24)
             .build();
-        banner.append(&art);
+        cover.attach_first(&banner);
         banner.append(&title);
         banner.append(&subtitle);
         banner.append(&meta);
@@ -262,9 +246,9 @@ impl DetailPage {
             list,
             state,
             registry: crate::components::row_registry(),
+            cover,
             header,
             stack,
-            art,
             title,
             subtitle,
             meta,
@@ -291,7 +275,7 @@ impl DetailPage {
 
     /// Fill an album page: cover, artist, year, and its tracks.
     pub fn show_album(&mut self, album: &Album, tracks: Vec<Entry>) {
-        self.art.add_css_class("card");
+        self.cover.square("media-optical-symbolic");
         self.head(&album.name, &album.artist, album.artwork.as_ref());
 
         let songs = tracks.len();
@@ -323,7 +307,7 @@ impl DetailPage {
 
     /// Fill a playlist page: cover, curator or blurb, and its tracks.
     pub fn show_playlist(&mut self, playlist: &Playlist, tracks: Vec<Entry>) {
-        self.art.add_css_class("card");
+        self.cover.square("view-list-symbolic");
         // Unlike the tile, a page *can* show the blurb: its subtitle label
         // wraps and is centred, which is where a sentence belongs. The curator
         // still wins when there is one.
@@ -347,9 +331,10 @@ impl DetailPage {
 
     /// Fill an artist page: portrait, genres, and their albums.
     pub fn show_artist(&mut self, artist: &Artist, albums: Vec<Entry>) {
-        // A round portrait, the way every other GNOME app shows a person.
-        self.art.remove_css_class("card");
-        self.art.add_css_class("circular");
+        // A round portrait, the way every other GNOME app shows a person —
+        // and an `adw::Avatar`, which is the only way to actually get one. See
+        // `components::cover`.
+        self.cover.round(&artist.name);
         self.head(&artist.name, &artist.genres, artist.artwork.as_ref());
 
         let count = albums.len();
@@ -371,12 +356,10 @@ impl DetailPage {
         self.title.set_label(title);
         self.subtitle.set_label(subtitle);
         self.subtitle.set_visible(!subtitle.is_empty());
-        // Artwork lands separately once it is on disk — the page must be
-        // readable before the network says anything.
-        self.art.set_icon_name(Some(match artwork {
-            Some(_) => "image-loading-symbolic",
-            None => "media-optical-symbolic",
-        }));
+        // Artwork lands separately once it is on disk (see `set_artwork`) — the
+        // page has to be readable before the network says anything. `artwork`
+        // is only consulted for whether one is coming at all.
+        let _ = artwork;
     }
 
     fn fill(&mut self, entries: Vec<Entry>) {
@@ -409,7 +392,7 @@ impl DetailPage {
     /// Show the cover, once it has been fetched to disk.
     pub fn set_artwork(&self, path: &std::path::Path) {
         if path.is_file() {
-            self.art.set_from_file(Some(path));
+            self.cover.set_file(path);
         }
     }
 
