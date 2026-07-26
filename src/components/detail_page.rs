@@ -23,9 +23,10 @@ use relm4::gtk::prelude::*;
 use relm4::typed_view::list::TypedListView;
 use relm4::{adw, gtk};
 
+use crate::components::cover::Cover;
 use crate::components::track_row::{Entry, LibraryItem, LibraryRowWidgets};
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
-use crate::music::types::{Album, Artist, Artwork};
+use crate::music::types::{Album, Artist, Artwork, Playlist};
 
 /// Header artwork, in logical pixels. The widget is pinned to exactly this so
 /// the `card` background cannot outgrow the picture inside it.
@@ -44,6 +45,7 @@ pub enum PageKind {
     Artist(String),
     LibraryAlbum(String),
     LibraryArtist(String),
+    LibraryPlaylist(String),
 }
 
 impl PageKind {
@@ -52,7 +54,8 @@ impl PageKind {
             Self::Album(id)
             | Self::Artist(id)
             | Self::LibraryAlbum(id)
-            | Self::LibraryArtist(id) => id,
+            | Self::LibraryArtist(id)
+            | Self::LibraryPlaylist(id) => id,
         }
     }
 
@@ -63,6 +66,12 @@ impl PageKind {
         } else {
             Self::Album(album.id.clone())
         }
+    }
+
+    /// Playlists are library-only for now — catalog playlist search is not
+    /// wired up, so there is nothing to disambiguate yet.
+    pub fn playlist(playlist: &Playlist) -> Self {
+        Self::LibraryPlaylist(playlist.id.clone())
     }
 
     pub fn artist(artist: &Artist) -> Self {
@@ -78,6 +87,7 @@ impl PageKind {
         match self {
             Self::Album(_) | Self::LibraryAlbum(_) => "Album",
             Self::Artist(_) | Self::LibraryArtist(_) => "Artist",
+            Self::LibraryPlaylist(_) => "Playlist",
         }
     }
 }
@@ -106,12 +116,13 @@ pub struct DetailPage {
 
     header: adw::HeaderBar,
     stack: gtk::Stack,
-    art: gtk::Image,
+    cover: Cover,
     title: gtk::Label,
     subtitle: gtk::Label,
     meta: gtk::Label,
     play: gtk::Button,
     error: adw::StatusPage,
+    empty: adw::StatusPage,
 }
 
 impl DetailPage {
@@ -133,24 +144,7 @@ impl DetailPage {
         view.add_css_class("navigation-sidebar");
         view.connect_activate(move |_, position| on_activate(position as usize));
 
-        // `halign: Center` and an explicit size are both load-bearing.
-        // `GtkImage` defaults to filling its allocation and centres the picture
-        // inside it, which is invisible until the `card` background is asked to
-        // paint that allocation — then a long album title widens the header box
-        // and the cover sits in the middle of a grey slab. Pinning the widget
-        // to the artwork's own size makes the card *be* the cover.
-        let art = gtk::Image::builder()
-            .pixel_size(ART_PX)
-            .width_request(ART_PX)
-            .height_request(ART_PX)
-            .halign(gtk::Align::Center)
-            .icon_name("media-optical-symbolic")
-            .css_classes(["card"])
-            // Clip to the rounded corners `card` draws — and to the circle on
-            // an artist page. GTK4 rounds the background but not the content
-            // unless the widget is told to clip.
-            .overflow(gtk::Overflow::Hidden)
-            .build();
+        let cover = Cover::new(ART_PX);
 
         let title = gtk::Label::builder()
             .css_classes(["title-1"])
@@ -182,7 +176,7 @@ impl DetailPage {
             .margin_top(24)
             .margin_bottom(24)
             .build();
-        banner.append(&art);
+        cover.attach_first(&banner);
         banner.append(&title);
         banner.append(&subtitle);
         banner.append(&meta);
@@ -217,10 +211,19 @@ impl DetailPage {
             .title("Could not load this page")
             .build();
 
+        // Distinct from `error`: a playlist you have not put anything in yet
+        // loaded perfectly well. Without this it renders as a header floating
+        // over nothing, which reads as a failure.
+        let empty = adw::StatusPage::builder()
+            .icon_name("folder-music-symbolic")
+            .title("Nothing here yet")
+            .build();
+
         let stack = gtk::Stack::new();
         stack.add_named(&spinner, Some("loading"));
         stack.add_named(&content, Some("content"));
         stack.add_named(&error, Some("error"));
+        stack.add_named(&empty, Some("empty"));
         stack.set_visible_child_name("loading");
 
         let header = adw::HeaderBar::new();
@@ -243,14 +246,15 @@ impl DetailPage {
             list,
             state,
             registry: crate::components::row_registry(),
+            cover,
             header,
             stack,
-            art,
             title,
             subtitle,
             meta,
             play,
             error,
+            empty,
         }
     }
 
@@ -271,7 +275,7 @@ impl DetailPage {
 
     /// Fill an album page: cover, artist, year, and its tracks.
     pub fn show_album(&mut self, album: &Album, tracks: Vec<Entry>) {
-        self.art.add_css_class("card");
+        self.cover.square("media-optical-symbolic");
         self.head(&album.name, &album.artist, album.artwork.as_ref());
 
         let songs = tracks.len();
@@ -291,14 +295,46 @@ impl DetailPage {
         self.meta.set_label(&meta);
         self.meta.set_visible(!meta.is_empty());
 
+        self.set_empty_kind("album");
+        self.fill(tracks);
+    }
+
+    /// What the empty state calls the thing that is empty.
+    fn set_empty_kind(&self, plural: &str) {
+        self.empty
+            .set_description(Some(&format!("This {plural} has no songs.")));
+    }
+
+    /// Fill a playlist page: cover, curator or blurb, and its tracks.
+    pub fn show_playlist(&mut self, playlist: &Playlist, tracks: Vec<Entry>) {
+        self.cover.square("view-list-symbolic");
+        // Unlike the tile, a page *can* show the blurb: its subtitle label
+        // wraps and is centred, which is where a sentence belongs. The curator
+        // still wins when there is one.
+        let subtitle = if playlist.curator.is_empty() {
+            &playlist.description
+        } else {
+            &playlist.curator
+        };
+        self.head(&playlist.name, subtitle, playlist.artwork.as_ref());
+
+        let songs = tracks.len();
+        self.meta.set_label(&format!(
+            "{songs} {}",
+            if songs == 1 { "song" } else { "songs" }
+        ));
+        self.meta.set_visible(songs > 0);
+
+        self.set_empty_kind("playlist");
         self.fill(tracks);
     }
 
     /// Fill an artist page: portrait, genres, and their albums.
     pub fn show_artist(&mut self, artist: &Artist, albums: Vec<Entry>) {
-        // A round portrait, the way every other GNOME app shows a person.
-        self.art.remove_css_class("card");
-        self.art.add_css_class("circular");
+        // A round portrait, the way every other GNOME app shows a person —
+        // and an `adw::Avatar`, which is the only way to actually get one. See
+        // `components::cover`.
+        self.cover.round(&artist.name);
         self.head(&artist.name, &artist.genres, artist.artwork.as_ref());
 
         let count = albums.len();
@@ -308,6 +344,8 @@ impl DetailPage {
         ));
         self.meta.set_visible(count > 0);
 
+        self.empty
+            .set_description(Some("Apple Music lists no albums for this artist."));
         self.fill(albums);
     }
 
@@ -318,12 +356,10 @@ impl DetailPage {
         self.title.set_label(title);
         self.subtitle.set_label(subtitle);
         self.subtitle.set_visible(!subtitle.is_empty());
-        // Artwork lands separately once it is on disk — the page must be
-        // readable before the network says anything.
-        self.art.set_icon_name(Some(match artwork {
-            Some(_) => "image-loading-symbolic",
-            None => "media-optical-symbolic",
-        }));
+        // Artwork lands separately once it is on disk (see `set_artwork`) — the
+        // page has to be readable before the network says anything. `artwork`
+        // is only consulted for whether one is coming at all.
+        let _ = artwork;
     }
 
     fn fill(&mut self, entries: Vec<Entry>) {
@@ -347,14 +383,16 @@ impl DetailPage {
         self.play
             .set_visible(entries.iter().any(|e| e.catalog_id().is_some()));
 
+        let anything = !entries.is_empty();
         self.entries = entries;
-        self.stack.set_visible_child_name("content");
+        self.stack
+            .set_visible_child_name(if anything { "content" } else { "empty" });
     }
 
     /// Show the cover, once it has been fetched to disk.
     pub fn set_artwork(&self, path: &std::path::Path) {
         if path.is_file() {
-            self.art.set_from_file(Some(path));
+            self.cover.set_file(path);
         }
     }
 

@@ -67,6 +67,7 @@ pub enum Section {
     Library,
     Albums,
     Artists,
+    Playlists,
     Catalog,
 }
 
@@ -76,6 +77,7 @@ impl Section {
             Self::Library => "library",
             Self::Albums => "albums",
             Self::Artists => "artists",
+            Self::Playlists => "playlists",
             Self::Catalog => "catalog",
         }
     }
@@ -85,6 +87,7 @@ impl Section {
             "catalog" => Self::Catalog,
             "albums" => Self::Albums,
             "artists" => Self::Artists,
+            "playlists" => Self::Playlists,
             _ => Self::Library,
         }
     }
@@ -223,12 +226,14 @@ mod tests {
             Section::Library,
             Section::Albums,
             Section::Artists,
+            Section::Playlists,
             Section::Catalog,
         ] {
             assert_eq!(Section::parse(section.as_str()), section);
         }
-        // A hand-edited or future-version ini must not break startup.
-        assert_eq!(Section::parse("playlists"), Section::Library);
+        // A hand-edited or future-version ini must not break startup. This
+        // once used "playlists" as the unknown value, which stopped being one.
+        assert_eq!(Section::parse("radio"), Section::Library);
         assert_eq!(Section::parse(""), Section::Library);
     }
 

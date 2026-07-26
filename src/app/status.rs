@@ -27,6 +27,7 @@ impl AppModel {
         match self.view {
             View::Albums => !self.albums.is_empty() || self.loading_albums,
             View::Artists => !self.artists.is_empty() || self.loading_artists,
+            View::Playlists => !self.playlists.is_empty() || self.loading_playlists,
             _ => !self.all_tracks.is_empty(),
         }
     }
@@ -75,6 +76,15 @@ impl AppModel {
                     "no-results"
                 } else {
                     "artists"
+                }
+            }
+            View::Playlists => {
+                if self.loading_playlists && self.playlists.is_empty() {
+                    "loading"
+                } else if self.playlist_grid.is_empty() {
+                    "no-results"
+                } else {
+                    "playlists"
                 }
             }
             View::Search => {

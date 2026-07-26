@@ -222,6 +222,43 @@ impl AppModel {
         self.album_grid.extend_from_iter(items);
     }
 
+    /// Load the library's playlists, once.
+    pub(super) fn load_playlists(&mut self, sender: &ComponentSender<Self>) {
+        if self.loading_playlists || !self.playlists.is_empty() {
+            return;
+        }
+        let Some(client) = self.client() else { return };
+        self.loading_playlists = true;
+        tracing::info!("loading library playlists");
+        sender.oneshot_command(async move {
+            CommandMsg::LibraryPlaylists(
+                client
+                    .all_library_playlists(LIBRARY_MAX)
+                    .await
+                    .map_err(|err| format!("{err:#}")),
+            )
+        });
+    }
+
+    pub(super) fn rebuild_playlists(&mut self) {
+        let needle = self.library_query.trim().to_lowercase();
+        let tiles: Vec<Tile> = self
+            .playlists
+            .iter()
+            .filter(|p| {
+                needle.is_empty()
+                    || p.name.to_lowercase().contains(&needle)
+                    || p.curator.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .map(Tile::Playlist)
+            .collect();
+        self.playlist_grid.clear();
+        self.playlist_art_widgets.borrow_mut().clear();
+        let items = self.grid_items(tiles, &self.playlist_art_widgets);
+        self.playlist_grid.extend_from_iter(items);
+    }
+
     pub(super) fn rebuild_artists(&mut self) {
         let needle = self.library_query.trim().to_lowercase();
         let tiles: Vec<Tile> = self
