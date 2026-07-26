@@ -61,8 +61,8 @@ impl Handle {
     }
 }
 
-/// Find the sidecar directory: an explicit override, the installed location,
-/// then the dev tree. Matches the search order documented in the Makefile.
+/// Find the sidecar directory: an explicit override, the per-user install, the
+/// system install, then the dev tree.
 pub fn locate() -> Result<PathBuf> {
     let mut tried = Vec::new();
 
@@ -74,7 +74,11 @@ pub fn locate() -> Result<PathBuf> {
         tried.push(p);
     }
 
-    if let Some(data) = dirs_data_home() {
+    // Per-user first, then system-wide. `XDG_DATA_DIRS` is what makes a
+    // packaged install work at all: `make install` puts the sidecar under
+    // `~/.local/share`, but a distribution package puts it in
+    // `/usr/share/tonearm/sidecar`, which nothing here used to look at.
+    for data in dirs_data_home().into_iter().chain(dirs_data_dirs()) {
         let p = data.join("tonearm/sidecar");
         if p.join("main.js").is_file() {
             return Ok(p);
@@ -82,11 +86,18 @@ pub fn locate() -> Result<PathBuf> {
         tried.push(p);
     }
 
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar");
-    if dev.join("main.js").is_file() {
-        return Ok(dev);
+    // The dev tree, and only in a dev build: `CARGO_MANIFEST_DIR` is where the
+    // binary was compiled, which for a package is a build root that will not
+    // exist on the machine running it. Baking it into a release binary is both
+    // useless and what makes `makepkg` warn about a reference to `$srcdir`.
+    #[cfg(debug_assertions)]
+    {
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar");
+        if dev.join("main.js").is_file() {
+            return Ok(dev);
+        }
+        tried.push(dev);
     }
-    tried.push(dev);
 
     Err(anyhow!(
         "sidecar not found (looked in: {}). Run `make sidecar` to install it.",
@@ -99,6 +110,19 @@ pub fn locate() -> Result<PathBuf> {
 }
 
 /// `$XDG_DATA_HOME`, else `~/.local/share`. Small enough not to warrant a crate.
+/// The system data directories, in preference order. Defaults to the values the
+/// XDG spec mandates when the variable is unset, which is the common case.
+fn dirs_data_dirs() -> Vec<PathBuf> {
+    let raw = match std::env::var("XDG_DATA_DIRS") {
+        Ok(x) if !x.is_empty() => x,
+        _ => "/usr/local/share:/usr/share".to_owned(),
+    };
+    raw.split(':')
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
 fn dirs_data_home() -> Option<PathBuf> {
     if let Ok(x) = std::env::var("XDG_DATA_HOME")
         && !x.is_empty()
