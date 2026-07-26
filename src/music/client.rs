@@ -187,15 +187,35 @@ impl Client {
     /// stops as soon as a round comes back short, which is the same termination
     /// condition with far fewer waits.
     pub async fn all_library_songs(&self, max: usize) -> Result<Vec<Track>> {
-        // `extend=dateAdded` because it is **not** a default attribute of
-        // LibrarySongs — without it the field comes back absent and sorting by
-        // "Recently Added" silently falls back to title.
+        // Both are **extended** attributes: `LibrarySongs.Attributes` lists
+        // them, but the response omits them unless `extend` asks. Without
+        // `dateAdded` every track ties on an empty string and "Recently Added"
+        // silently degrades to title; without `inFavorites` no row can show a
+        // star. Comma-separated, one request.
         let mut songs = self
-            .all_library::<Resource<SongAttributes>, Track>("songs", "&extend=dateAdded", max)
+            .all_library::<Resource<SongAttributes>, Track>(
+                "songs",
+                "&extend=dateAdded,inFavorites",
+                max,
+            )
             .await?;
         for song in &mut songs {
             song.in_library = true;
         }
+
+        // Say how many actually came back. Guessing at which attributes Apple
+        // honours has cost two rounds already; this turns "it doesn't work"
+        // into a number. If either is 0 against a real library, `extend` is not
+        // doing what the docs imply and the feature needs a different route.
+        let dated = songs.iter().filter(|s| !s.date_added.is_empty()).count();
+        let starred = songs.iter().filter(|s| s.favorite).count();
+        tracing::info!(
+            total = songs.len(),
+            dated,
+            starred,
+            "library attributes present"
+        );
+
         Ok(songs)
     }
 
@@ -289,7 +309,7 @@ impl Client {
         let tracks = self
             .all_library::<Resource<SongAttributes>, Track>(
                 &format!("playlists/{id}/tracks"),
-                "&extend=dateAdded",
+                "&extend=dateAdded,inFavorites",
                 PLAYLIST_MAX,
             )
             .await?;

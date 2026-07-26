@@ -28,6 +28,14 @@ use crate::music::types::format_duration;
 /// tracks with different name lengths come and go.
 const METADATA_WIDTH: i32 = 240;
 
+/// How often the slider redraws itself between snapshots.
+///
+/// The app pushes a snapshot twice a second, which moved the slider in visible
+/// steps. Rather than push ten a second — every one of which also rebuilds
+/// strings, updates the queue sidebar and writes MPRIS properties over D-Bus —
+/// the bar advances its own display between them. Nothing else is recomputed.
+const ADVANCE_MS: u64 = 100;
+
 const SCRUB_COMMIT_MS: u64 = 250;
 
 /// How close the sidecar's reported position must get to a seek target before
@@ -109,6 +117,13 @@ pub struct NowPlaying {
     /// What the cover widget is actually displaying, so `post_view` can tell a
     /// real change from the many redraws that are not one.
     shown_artwork: std::cell::RefCell<Option<PathBuf>>,
+    /// When the last snapshot arrived, so the position can be carried forward
+    /// between them. `None` while paused — a paused player's position is a
+    /// fact, not something to extrapolate from.
+    synced_at: Option<std::time::Instant>,
+    /// Drives [`ADVANCE_MS`]. Removed the moment playback stops, so a paused
+    /// app is not waking up ten times a second.
+    advance: Option<gtk::glib::SourceId>,
     volume: f64,
     /// True from the first slider movement until the debounce commits. State
     /// updates must not yank the handle out from under the user — the single
@@ -140,6 +155,9 @@ pub enum NowPlayingInput {
     PlayPause,
     Next,
     Previous,
+    /// Redraw the slider from the interpolated position. Carries nothing and
+    /// touches nothing but the two widgets that show time.
+    Advance,
     ShuffleToggled(bool),
     RepeatCycled,
     /// The queue button was clicked. Carries nothing: the app owns whether the
@@ -170,8 +188,10 @@ impl SimpleComponent for NowPlaying {
             set_orientation: gtk::Orientation::Horizontal,
             set_spacing: 12,
             set_margin_all: 10,
-            #[watch]
-            set_sensitive: model.snap.active,
+            // Deliberately no blanket `set_sensitive` here. Greying the whole
+            // bar when nothing is playing also greyed the queue button, so you
+            // could not open the queue to start something — the one moment you
+            // most need it. Each control gates itself instead.
 
             // --- artwork + labels ------------------------------------------
             #[name = "cover"]
@@ -408,6 +428,8 @@ impl SimpleComponent for NowPlaying {
             snap: Snapshot::default(),
             artwork: None,
             shown_artwork: std::cell::RefCell::new(None),
+            synced_at: None,
+            advance: None,
             volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
@@ -427,6 +449,13 @@ impl SimpleComponent for NowPlaying {
                 // sidecar. The position is ours to defend while the user is
                 // driving it — see `settle_position`.
                 self.snap.position_ms = self.settle_position(held, incoming);
+                self.synced_at = Some(std::time::Instant::now());
+                self.retime(&sender);
+            }
+            NowPlayingInput::Advance => {
+                // Nothing to update: `post_view` reads `shown_position_ms`,
+                // which is a function of the clock. This message exists purely
+                // to make relm4 redraw.
             }
             NowPlayingInput::ArtworkReady(path) => self.artwork = path,
             NowPlayingInput::ScrubMoved(fraction) => {
@@ -500,7 +529,7 @@ impl SimpleComponent for NowPlaying {
         // are free on a tick that only moved the slider.
         widgets
             .elapsed
-            .set_label(&format_duration(self.snap.position_ms));
+            .set_label(&format_duration(self.shown_position_ms()));
         widgets
             .total
             .set_label(&format_duration(self.snap.duration_ms));
@@ -526,6 +555,31 @@ impl SimpleComponent for NowPlaying {
 }
 
 impl NowPlaying {
+    /// Start or stop the redraw timer to match playback.
+    ///
+    /// Mirrors the app's own tick discipline: a timer that runs while paused is
+    /// a timer waking the machine for nothing.
+    fn retime(&mut self, sender: &relm4::ComponentSender<Self>) {
+        match (self.snap.playing, self.advance.is_some()) {
+            (true, false) => {
+                let sender = sender.clone();
+                self.advance = Some(gtk::glib::timeout_add_local(
+                    Duration::from_millis(ADVANCE_MS),
+                    move || {
+                        sender.input(NowPlayingInput::Advance);
+                        gtk::glib::ControlFlow::Continue
+                    },
+                ));
+            }
+            (false, true) => {
+                if let Some(id) = self.advance.take() {
+                    id.remove();
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Decide which position to display when a snapshot arrives.
     ///
     /// This is the fix for the bug where a seek during playback jumped back to
@@ -591,7 +645,20 @@ impl NowPlaying {
         if self.snap.duration_ms == 0 {
             return 0.0;
         }
-        (self.snap.position_ms as f64 / self.snap.duration_ms as f64).clamp(0.0, 1.0)
+        (self.shown_position_ms() as f64 / self.snap.duration_ms as f64).clamp(0.0, 1.0)
+    }
+
+    /// Where the track is *now*: the last reported position, carried forward by
+    /// however long ago it was reported.
+    ///
+    /// Clamped to the track length so a late snapshot cannot run the slider
+    /// past the end, and never extrapolated while paused.
+    fn shown_position_ms(&self) -> u64 {
+        let Some(at) = self.synced_at.filter(|_| self.snap.playing) else {
+            return self.snap.position_ms;
+        };
+        let ahead = at.elapsed().as_millis() as u64;
+        (self.snap.position_ms + ahead).min(self.snap.duration_ms.max(self.snap.position_ms))
     }
 
     /// `Artist — Album`, collapsing gracefully when either is missing rather
@@ -615,6 +682,8 @@ mod tests {
             snap,
             artwork: None,
             shown_artwork: std::cell::RefCell::new(None),
+            synced_at: None,
+            advance: None,
             volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
