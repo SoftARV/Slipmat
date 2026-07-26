@@ -117,7 +117,6 @@ strip DRM, does not use extracted CDMs, and does not download anything.
 - GTK ≥ 4.20, libadwaita ≥ 1.8, Rust ≥ 1.93 (relm4 0.11's MSRV)
 - Node and npm — verified on Node 26; `make sidecar` handles the rest
 - x86_64 (Widevine on Linux is x86_64 only)
-- A running keyring provider (`gnome-keyring` on GNOME)
 - **A network connection, always** — see Limitations
 
 ```bash
@@ -135,9 +134,11 @@ make install     # build + install to ~/.local, no sudo
 Then launch **Tonearm** from the app grid. On first run, Apple's sign-in window
 opens once; after you authenticate it hides for good.
 
-Your Music User Token goes to the keyring. The developer token is re-harvested
-from the running MusicKit instance on every launch and never written anywhere —
-if Apple rotates it, Tonearm follows automatically.
+**No token is ever written to disk.** Both the developer token and the Music
+User Token are re-harvested from the running MusicKit instance on every launch;
+what persists your login is the sidecar's own session cookie, exactly as it
+would in a browser. If Apple rotates a token, Tonearm follows automatically, and
+there is nothing cached for anyone to find.
 
 ## Limitations
 
