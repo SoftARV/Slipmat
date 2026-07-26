@@ -76,6 +76,10 @@ pub enum Command {
     #[serde(rename = "playLater")]
     PlayLater { songs: Vec<String> },
 
+    /// Empty the queue and stop.
+    #[serde(rename = "clearQueue")]
+    ClearQueue,
+
     /// Drop one item from the loaded queue, by **MusicKit's** index. Also not a
     /// `SetQueue`: rebuilding the queue to remove one track would restart
     /// playback and lose the gapless buffer (rule 3).
@@ -121,6 +125,7 @@ impl Command {
             Self::PlayNext { .. } => "playNext",
             Self::PlayLater { .. } => "playLater",
             Self::RemoveFromQueue { .. } => "removeFromQueue",
+            Self::ClearQueue => "clearQueue",
             Self::Seek { .. } => "seek",
             Self::SetVolume { .. } => "setVolume",
             Self::SetShuffle { .. } => "setShuffle",

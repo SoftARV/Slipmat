@@ -379,6 +379,13 @@ same reason. Rendering that faithfully left the Now Playing bar empty beside a
 full queue, so `showing()` falls back to the queue's own current entry — which
 is the honest answer to "what is this player on".
 
+**Clearing the queue is not one documented call.** `clearQueue`,
+`queue.splice` and `setQueue({songs: []})` are all plausible depending on the
+MusicKit build, so the sidecar tries them in that order and throws if items
+remain — and stops playback first, because an empty queue with a track still
+playing is a state nothing else expects. Clearing also drops the saved session:
+there is nothing to come back to.
+
 **And `changeToMediaAtIndex` only moves the cursor.** On a queue that is loaded
 but idle it moves silently, so clicking a track in the queue looked like nothing
 happened. Clicking a track is a request to *play* it, so a jump now starts

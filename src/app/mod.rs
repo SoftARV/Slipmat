@@ -376,6 +376,8 @@ pub enum AppMsg {
     ToggleSortDirection,
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
+    /// Empty the queue and stop.
+    ClearQueue,
     /// Grow the queue MusicKit already holds, without rebuilding it.
     Enqueue {
         catalog_id: String,
@@ -1143,6 +1145,7 @@ impl Component for AppModel {
             .forward(sender.input_sender(), |out| match out {
                 QueueViewOutput::Jump(id) => AppMsg::JumpTo(id),
                 QueueViewOutput::Remove(id) => AppMsg::RemoveFromQueue(id),
+                QueueViewOutput::Clear => AppMsg::ClearQueue,
             });
 
         // Popping is the user's business (back button, swipe, Escape), so the
@@ -1730,6 +1733,18 @@ impl AppModel {
                 // sequential mode, which is not what pressing Shuffle means.
                 self.send(Command::SetShuffle { shuffle });
                 self.play_entries(&entries, 0);
+            }
+            AppMsg::ClearQueue => {
+                tracing::info!("clearing the queue");
+                self.send(Command::ClearQueue);
+                // Nothing to come back to next launch, either. The mirror
+                // follows the sidecar's queue event as always (rule 3) — this
+                // is only the part MusicKit cannot know about.
+                self.last_queue = None;
+                self.pending_start = None;
+                self.last_item = None;
+                crate::session::clear();
+                crate::style::set_bar_tint(None);
             }
             AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
                 Some(index) => {
