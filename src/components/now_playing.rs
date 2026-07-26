@@ -209,8 +209,14 @@ impl SimpleComponent for NowPlaying {
             #[name = "cover"]
             gtk::Image {
                 set_pixel_size: 48,
-                set_icon_name: Some("audio-x-generic-symbolic"),
+                set_size_request: (48, 48),
+                // An empty sleeve rather than a floating icon: with nothing
+                // playing, the bar should still read as having a place where
+                // the artwork goes. `.np-cover-empty` draws the case; it is
+                // removed the moment a real cover arrives.
+                set_icon_name: Some("media-optical-symbolic"),
                 add_css_class: "np-cover",
+                add_css_class: "np-cover-empty",
             },
 
             // Deliberately **not** hexpand, and width-limited.
@@ -230,22 +236,45 @@ impl SimpleComponent for NowPlaying {
                 set_width_request: METADATA_WIDTH,
                 set_spacing: 2,
 
+                // Two grey bars where the title and artist go.
+                //
+                // Deliberately **not** animated: a pulsing skeleton means
+                // "loading", and nothing is loading — nothing is playing. The
+                // static version says "this is where the track goes", which is
+                // both true and quieter than the words "Nothing playing"
+                // sitting in the bar all evening.
+                #[name = "skeleton"]
+                gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_valign: gtk::Align::Center,
+                    set_spacing: 7,
+                    #[watch]
+                    set_visible: !model.snap.active,
+
+                    gtk::Box {
+                        set_size_request: (140, 11),
+                        add_css_class: "np-skeleton",
+                    },
+                    gtk::Box {
+                        set_size_request: (92, 9),
+                        add_css_class: "np-skeleton",
+                    },
+                },
+
                 gtk::Label {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
                     set_max_width_chars: 1,
                     add_css_class: "heading",
+                    #[watch]
+                    set_visible: model.snap.active,
                     // Track and album names are plain text, not markup. Without
                     // this, a title containing `&` — "Blood, Sweat & 3 Years",
                     // "Slade & Co" — fails to render and GTK warns on every
                     // track change.
                     set_use_markup: false,
                     #[watch]
-                    set_label: if model.snap.title.is_empty() {
-                        "Nothing playing"
-                    } else {
-                        &model.snap.title
-                    },
+                    set_label: &model.snap.title,
                     #[watch]
                     set_tooltip_text: (!model.snap.title.is_empty())
                         .then_some(model.snap.title.as_str()),
@@ -573,10 +602,14 @@ impl SimpleComponent for NowPlaying {
         let mut shown = self.shown_artwork.borrow_mut();
         if *shown != self.artwork {
             match &self.artwork {
-                Some(path) => widgets.cover.set_from_file(Some(path)),
-                None => widgets
-                    .cover
-                    .set_icon_name(Some("audio-x-generic-symbolic")),
+                Some(path) => {
+                    widgets.cover.set_from_file(Some(path));
+                    widgets.cover.remove_css_class("np-cover-empty");
+                }
+                None => {
+                    widgets.cover.set_icon_name(Some("media-optical-symbolic"));
+                    widgets.cover.add_css_class("np-cover-empty");
+                }
             }
             shown.clone_from(&self.artwork);
         }

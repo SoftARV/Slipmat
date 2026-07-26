@@ -170,6 +170,30 @@ pub fn set_accent(accent: Accent) {
              padding: 0;
              min-width: 16px;
              min-height: 16px;
+         }}
+
+         /* The empty artwork slot, drawn as a case rather than left as a
+            floating icon: with nothing playing the bar should still read as
+            having a place the cover goes. The left edge is a touch lighter,
+            which is enough to suggest a spine. */
+         .np-cover-empty {{
+             border-radius: 6px;
+             background-image: linear-gradient(
+                 to right,
+                 alpha(currentColor, 0.16) 0%,
+                 alpha(currentColor, 0.16) 3px,
+                 alpha(currentColor, 0.07) 3px,
+                 alpha(currentColor, 0.10) 100%
+             );
+             box-shadow: inset 0 0 0 1px alpha(currentColor, 0.12);
+             color: alpha(currentColor, 0.45);
+         }}
+
+         /* Two grey bars where the title and artist go. Static, not pulsing:
+            a pulsing skeleton would say something is loading, and nothing is. */
+         .np-skeleton {{
+             border-radius: 4px;
+             background-color: alpha(currentColor, 0.13);
          }}"
     );
 
