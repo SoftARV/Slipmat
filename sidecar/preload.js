@@ -201,6 +201,21 @@ function wireEvents() {
 // changeToMediaAtIndex, never a fresh setQueue.
 // ---------------------------------------------------------------------------
 
+// `playNext` and `playLater` are documented on MusicKit v3, but this page ships
+// whichever version it likes (rule 4), so feature-detect and fail loudly rather
+// than throwing a bare TypeError at somebody who clicked a menu item.
+async function enqueue(method, songs) {
+  if (typeof music[method] !== 'function') {
+    throw new Error(`this MusicKit build has no ${method}`)
+  }
+  if (!Array.isArray(songs) || songs.length === 0) {
+    throw new Error(`${method} called with no songs`)
+  }
+  // The descriptor takes `song` for one and `songs` for many; passing a
+  // one-element array to the plural form is accepted and keeps this single-path.
+  await music[method]({ songs })
+}
+
 const commands = {
   async setQueue({ songs, startPosition = 0 }) {
     // BOTH keys, deliberately. MusicKit v3's setQueue forwards only
@@ -243,6 +258,12 @@ const commands = {
     }
     music.queue.remove(index)
   },
+  // Insert into the queue MusicKit already holds, rather than rebuilding it.
+  // A fresh setQueue would restart playback and throw away the gapless buffer,
+  // which is the whole reason rule 3 exists — these two are the *only*
+  // sanctioned way to grow a queue that is already playing.
+  playNext: ({ songs }) => enqueue('playNext', songs),
+  playLater: ({ songs }) => enqueue('playLater', songs),
   seek: ({ positionMs }) => music.seekToTime(positionMs / 1000),
   setVolume: ({ volume }) => {
     music.volume = volume

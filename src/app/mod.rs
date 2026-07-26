@@ -50,7 +50,7 @@ use crate::components::grid_item::{
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Repeat};
 use crate::components::queue_view::{QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::LibraryRowWidgets;
-use crate::components::track_row::{Entry, LibraryItem};
+use crate::components::track_row::{Entry, LibraryItem, RowMenuRequest};
 use crate::components::{
     CurrentTrack, DeadTracks, RowRegistry, current_track, dead_tracks, row_registry,
 };
@@ -134,6 +134,10 @@ pub enum Stage {
 pub struct AppModel {
     stage: Stage,
     player: PlayerState,
+    /// Kept for the row context menu, whose GTK actions outlive the `update`
+    /// call that built them.
+    menu_sender: ComponentSender<AppModel>,
+
     /// The last command sent to the sidecar, and when. Read only by the
     /// gapless diagnostic, which needs to distinguish a transition **we** asked
     /// for from one MusicKit made on its own — the second is the gapless path
@@ -291,6 +295,13 @@ pub enum AppMsg {
     SetVolume(f64),
     SetShuffle(bool),
     SetRepeat(Repeat),
+    /// A row was right-clicked; show its menu there.
+    ShowRowMenu(RowMenuRequest),
+    /// Grow the queue MusicKit already holds, without rebuilding it.
+    Enqueue {
+        catalog_id: String,
+        next: bool,
+    },
     /// Repaint the seek bar from the interpolated position.
     Tick,
     /// Play the visible list, starting at this row.
@@ -886,6 +897,13 @@ impl Component for AppModel {
             activate.input(AppMsg::LibraryActivated(position));
         });
 
+        // One handler for every list's rows. `setup` is a static method with no
+        // item to carry a callback, so this is installed once, here.
+        let menu_sender = sender.clone();
+        crate::components::track_row::set_row_menu(move |req| {
+            menu_sender.input(AppMsg::ShowRowMenu(req));
+        });
+
         let queue_view = QueueView::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
@@ -976,6 +994,7 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
+            menu_sender: sender.clone(),
             last_command: std::cell::RefCell::new(None),
             progress_mark: std::cell::Cell::new((0, 0)),
             tokens: None,
@@ -1346,6 +1365,23 @@ impl Component for AppModel {
                 Some(index) => self.send(Command::RemoveFromQueue { index }),
                 None => self.toast("That track is no longer in the queue"),
             },
+            AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
+            AppMsg::Enqueue { catalog_id, next } => {
+                if self.player.queue.is_empty() {
+                    // Nothing to insert into. `playNext` on an empty queue is a
+                    // silent no-op in MusicKit — exactly the class of failure
+                    // this project keeps refusing to ship.
+                    self.toast("Play something first, then add to the queue");
+                    return;
+                }
+                tracing::info!(next, "enqueueing one track");
+                let songs = vec![catalog_id];
+                self.send(if next {
+                    Command::PlayNext { songs }
+                } else {
+                    Command::PlayLater { songs }
+                });
+            }
             AppMsg::SetShuffle(on) => {
                 // Sent and forgotten: the mirror updates when MusicKit echoes
                 // it back, so the button never claims a state the player is not
@@ -1634,6 +1670,45 @@ impl AppModel {
     /// section. Not stored: see [`View`].
     fn scope(&self) -> SearchScope {
         self.view.scope()
+    }
+
+    /// Show a row's context menu where it was clicked.
+    ///
+    /// Built fresh each time and parented to the row: a single long-lived
+    /// popover would have to be re-parented on every click anyway, and a
+    /// `ListView` recycles the widget under it while it is open.
+    fn show_row_menu(&self, req: RowMenuRequest) {
+        let menu = gtk::gio::Menu::new();
+        menu.append(Some("Play _Next"), Some("row.play-next"));
+        menu.append(Some("Add to _Queue"), Some("row.play-later"));
+
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popover.set_has_arrow(false);
+        popover.set_halign(gtk::Align::Start);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(req.at.0, req.at.1, 1, 1)));
+        popover.set_parent(&req.over);
+
+        // The actions live on the popover, so they go away with it rather than
+        // accumulating on the window one right-click at a time.
+        let actions = gtk::gio::SimpleActionGroup::new();
+        for (name, next) in [("play-next", true), ("play-later", false)] {
+            let action = gtk::gio::SimpleAction::new(name, None);
+            let id = req.catalog_id.clone();
+            let sender = self.menu_sender.clone();
+            action.connect_activate(move |_, _| {
+                sender.input(AppMsg::Enqueue {
+                    catalog_id: id.clone(),
+                    next,
+                });
+            });
+            actions.add_action(&action);
+        }
+        popover.insert_action_group("row", Some(&actions));
+
+        // Unparent on close, or it leaks and keeps the row widget alive after
+        // the list has recycled it out from under us.
+        popover.connect_closed(|p| p.unparent());
+        popover.popup();
     }
 
     fn toast(&self, text: &str) {

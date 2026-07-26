@@ -50,6 +50,18 @@ pub enum Command {
     #[serde(rename = "changeToIndex")]
     ChangeToIndex { index: usize },
 
+    /// Insert songs into the queue MusicKit already holds — right after the
+    /// current track, or at the end.
+    ///
+    /// Not a `SetQueue`, and that is the point: rebuilding the queue to add a
+    /// track would restart playback and discard the gapless buffer (rule 3).
+    /// These are the only sanctioned way to grow a queue that is already
+    /// playing.
+    #[serde(rename = "playNext")]
+    PlayNext { songs: Vec<String> },
+    #[serde(rename = "playLater")]
+    PlayLater { songs: Vec<String> },
+
     /// Drop one item from the loaded queue, by **MusicKit's** index. Also not a
     /// `SetQueue`: rebuilding the queue to remove one track would restart
     /// playback and lose the gapless buffer (rule 3).
@@ -92,6 +104,8 @@ impl Command {
             Self::Next => "next",
             Self::Previous => "previous",
             Self::ChangeToIndex { .. } => "changeToIndex",
+            Self::PlayNext { .. } => "playNext",
+            Self::PlayLater { .. } => "playLater",
             Self::RemoveFromQueue { .. } => "removeFromQueue",
             Self::Seek { .. } => "seek",
             Self::SetVolume { .. } => "setVolume",
