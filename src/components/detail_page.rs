@@ -121,6 +121,7 @@ pub struct DetailPage {
     meta: gtk::Label,
     play: gtk::Button,
     error: adw::StatusPage,
+    empty: adw::StatusPage,
 }
 
 impl DetailPage {
@@ -226,10 +227,19 @@ impl DetailPage {
             .title("Could not load this page")
             .build();
 
+        // Distinct from `error`: a playlist you have not put anything in yet
+        // loaded perfectly well. Without this it renders as a header floating
+        // over nothing, which reads as a failure.
+        let empty = adw::StatusPage::builder()
+            .icon_name("folder-music-symbolic")
+            .title("Nothing here yet")
+            .build();
+
         let stack = gtk::Stack::new();
         stack.add_named(&spinner, Some("loading"));
         stack.add_named(&content, Some("content"));
         stack.add_named(&error, Some("error"));
+        stack.add_named(&empty, Some("empty"));
         stack.set_visible_child_name("loading");
 
         let header = adw::HeaderBar::new();
@@ -260,6 +270,7 @@ impl DetailPage {
             meta,
             play,
             error,
+            empty,
         }
     }
 
@@ -300,12 +311,22 @@ impl DetailPage {
         self.meta.set_label(&meta);
         self.meta.set_visible(!meta.is_empty());
 
+        self.set_empty_kind("album");
         self.fill(tracks);
+    }
+
+    /// What the empty state calls the thing that is empty.
+    fn set_empty_kind(&self, plural: &str) {
+        self.empty
+            .set_description(Some(&format!("This {plural} has no songs.")));
     }
 
     /// Fill a playlist page: cover, curator or blurb, and its tracks.
     pub fn show_playlist(&mut self, playlist: &Playlist, tracks: Vec<Entry>) {
         self.art.add_css_class("card");
+        // Unlike the tile, a page *can* show the blurb: its subtitle label
+        // wraps and is centred, which is where a sentence belongs. The curator
+        // still wins when there is one.
         let subtitle = if playlist.curator.is_empty() {
             &playlist.description
         } else {
@@ -320,6 +341,7 @@ impl DetailPage {
         ));
         self.meta.set_visible(songs > 0);
 
+        self.set_empty_kind("playlist");
         self.fill(tracks);
     }
 
@@ -337,6 +359,8 @@ impl DetailPage {
         ));
         self.meta.set_visible(count > 0);
 
+        self.empty
+            .set_description(Some("Apple Music lists no albums for this artist."));
         self.fill(albums);
     }
 
@@ -376,8 +400,10 @@ impl DetailPage {
         self.play
             .set_visible(entries.iter().any(|e| e.catalog_id().is_some()));
 
+        let anything = !entries.is_empty();
         self.entries = entries;
-        self.stack.set_visible_child_name("content");
+        self.stack
+            .set_visible_child_name(if anything { "content" } else { "empty" });
     }
 
     /// Show the cover, once it has been fetched to disk.

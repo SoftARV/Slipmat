@@ -84,15 +84,12 @@ impl Tile {
             // asks for inline. Empty when Apple had none — an empty line beats
             // a fabricated one.
             Self::Artist(a) => a.genres.clone(),
-            // Your own playlists have no curator and no blurb, which is most of
-            // a library. Whichever exists, or nothing.
-            Self::Playlist(p) => {
-                if p.curator.is_empty() {
-                    p.description.clone()
-                } else {
-                    p.curator.clone()
-                }
-            }
+            // The curator, or nothing. Deliberately **not** the description as
+            // a fallback: Apple's blurbs are sentences with newlines in them,
+            // and a tile is one line of caption. Falling back to one made a
+            // single playlist grow to a dozen lines and shove the whole grid
+            // out of shape. The page has room for the blurb; a tile does not.
+            Self::Playlist(p) => p.curator.clone(),
         }
     }
 
@@ -119,6 +116,11 @@ impl Tile {
     fn round(&self) -> bool {
         matches!(self, Self::Artist(_))
     }
+}
+
+/// Squash any run of whitespace — newlines included — into single spaces.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub struct GridItem {
@@ -210,10 +212,15 @@ impl RelmGridItem for GridItem {
     }
 
     fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
-        widgets.title.set_label(self.tile.title());
+        let title = one_line(self.tile.title());
+        widgets.title.set_label(&title);
+        // The full, untruncated name on hover — the tile always ellipsizes.
         widgets.title.set_tooltip_text(Some(self.tile.title()));
 
-        let subtitle = self.tile.subtitle();
+        // Collapsed to one line whatever it is. Ellipsizing caps a label's
+        // *width*; an embedded newline still makes it two lines tall, and one
+        // tall tile drags its whole row with it.
+        let subtitle = one_line(&self.tile.subtitle());
         widgets.subtitle.set_visible(!subtitle.is_empty());
         widgets.subtitle.set_label(&subtitle);
 
@@ -255,5 +262,22 @@ impl RelmGridItem for GridItem {
                 registry.remove(&key);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_subtitle_is_always_one_line() {
+        // Apple's playlist blurbs contain newlines. A tile is one line of
+        // caption, and a tile that grows drags its whole grid row with it.
+        assert_eq!(
+            one_line("Taken right from\nplaying the game"),
+            "Taken right from playing the game"
+        );
+        assert_eq!(one_line("  spaced \t out \n\n"), "spaced out");
+        assert_eq!(one_line(""), "");
     }
 }

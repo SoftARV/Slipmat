@@ -347,6 +347,22 @@ impl Client {
             .map_err(Self::transport_error)
             .with_context(|| format!("requesting library {kind}"))?;
 
+        // A **relationship** past its end 404s with "No related resources"
+        // rather than returning an empty page, unlike a collection, which
+        // returns `{"data": []}`. Since a round fires LIBRARY_CONCURRENCY
+        // offsets at once, every playlist shorter than
+        // LIBRARY_PAGE * LIBRARY_CONCURRENCY had five of its six requests come
+        // back 404 and take the whole page down with them.
+        //
+        // Treat it as the empty page it means. The caller stops on a short
+        // round anyway, so this cannot mask a real gap: offset 0 returning
+        // nothing for a resource that exists is indistinguishable from a
+        // resource with no tracks, and both should render as "no tracks".
+        if res.status() == StatusCode::NOT_FOUND {
+            tracing::debug!(kind, offset, "library page past the end");
+            return Ok(Vec::new());
+        }
+
         if !res.status().is_success() {
             return Err(self.explain(res).await);
         }
