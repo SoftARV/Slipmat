@@ -93,6 +93,81 @@ pub enum SearchScope {
     Catalog,
 }
 
+/// Which kinds of result a catalog search asks Apple for.
+///
+/// **A second axis, not a third `SearchScope`.** Scope is *where* the search
+/// runs; this is *what it looks for*. Collapsing them would need a variant per
+/// combination.
+///
+/// Narrowing is not only a convenience. Apple pages a single `offset` across
+/// every type named in `types=`, so "show me more albums" is not a question
+/// that can even be asked until albums are the only thing being requested —
+/// scrolling a mixed result set drags in more of all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CatalogFilter {
+    #[default]
+    All,
+    Songs,
+    Albums,
+    Artists,
+    Playlists,
+}
+
+impl CatalogFilter {
+    pub(super) const ALL: [Self; 5] = [
+        Self::All,
+        Self::Songs,
+        Self::Albums,
+        Self::Artists,
+        Self::Playlists,
+    ];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::All => "Everything",
+            Self::Songs => "Songs",
+            Self::Albums => "Albums",
+            Self::Artists => "Artists",
+            Self::Playlists => "Playlists",
+        }
+    }
+
+    /// The action target. Not persisted — a filter is what you want of *this*
+    /// search, unlike the library sort, which is how you like your library.
+    pub(super) fn id(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Songs => "songs",
+            Self::Albums => "albums",
+            Self::Artists => "artists",
+            Self::Playlists => "playlists",
+        }
+    }
+
+    pub(super) fn parse(s: &str) -> Self {
+        match s {
+            "songs" => Self::Songs,
+            "albums" => Self::Albums,
+            "artists" => Self::Artists,
+            "playlists" => Self::Playlists,
+            _ => Self::All,
+        }
+    }
+
+    /// The `types=` value. Apple wants a comma-separated list, and answers only
+    /// for the kinds named — a key is absent rather than empty when a kind
+    /// matched nothing.
+    pub(super) fn types(self) -> &'static str {
+        match self {
+            Self::All => "songs,albums,artists,playlists",
+            Self::Songs => "songs",
+            Self::Albums => "albums",
+            Self::Artists => "artists",
+            Self::Playlists => "playlists",
+        }
+    }
+}
+
 /// How the Songs list is ordered.
 ///
 /// Applied to *our* `Track`s rather than asked of Apple: the whole library is
@@ -214,6 +289,46 @@ mod tests {
         assert_eq!(View::Search.scope(), SearchScope::Catalog);
         for view in [View::Songs, View::Albums, View::Artists, View::Playlists] {
             assert_eq!(view.scope(), SearchScope::Library);
+        }
+    }
+
+    #[test]
+    fn every_catalog_filter_round_trips_through_its_id() {
+        for filter in CatalogFilter::ALL {
+            assert_eq!(CatalogFilter::parse(filter.id()), filter);
+        }
+        // A future version's id, or a typo, must widen rather than show nothing.
+        assert_eq!(CatalogFilter::parse("music-videos"), CatalogFilter::All);
+        assert_eq!(CatalogFilter::parse(""), CatalogFilter::All);
+    }
+
+    #[test]
+    fn unfiltered_asks_for_every_kind_the_app_can_show() {
+        // If a kind is missing here it is unreachable from search entirely —
+        // which is exactly how catalog playlists went missing for four
+        // milestones.
+        let all = CatalogFilter::All.types();
+        for filter in CatalogFilter::ALL {
+            if filter == CatalogFilter::All {
+                continue;
+            }
+            assert!(
+                all.split(',').any(|kind| kind == filter.types()),
+                "{:?} is offered as a filter but absent from the unfiltered search",
+                filter
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrowed_search_asks_for_exactly_one_kind() {
+        // Apple pages one offset across every kind named, so more than one
+        // here would make "load more" incoherent again.
+        for filter in CatalogFilter::ALL {
+            if filter == CatalogFilter::All {
+                continue;
+            }
+            assert!(!filter.types().contains(','), "{filter:?}");
         }
     }
 

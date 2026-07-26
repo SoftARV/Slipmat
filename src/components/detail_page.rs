@@ -43,6 +43,7 @@ const ART_PX: i32 = 160;
 pub enum PageKind {
     Album(String),
     Artist(String),
+    Playlist(String),
     LibraryAlbum(String),
     LibraryArtist(String),
     LibraryPlaylist(String),
@@ -53,6 +54,7 @@ impl PageKind {
         match self {
             Self::Album(id)
             | Self::Artist(id)
+            | Self::Playlist(id)
             | Self::LibraryAlbum(id)
             | Self::LibraryArtist(id)
             | Self::LibraryPlaylist(id) => id,
@@ -68,10 +70,12 @@ impl PageKind {
         }
     }
 
-    /// Playlists are library-only for now — catalog playlist search is not
-    /// wired up, so there is nothing to disambiguate yet.
     pub fn playlist(playlist: &Playlist) -> Self {
-        Self::LibraryPlaylist(playlist.id.clone())
+        if playlist.library {
+            Self::LibraryPlaylist(playlist.id.clone())
+        } else {
+            Self::Playlist(playlist.id.clone())
+        }
     }
 
     pub fn artist(artist: &Artist) -> Self {
@@ -87,7 +91,7 @@ impl PageKind {
         match self {
             Self::Album(_) | Self::LibraryAlbum(_) => "Album",
             Self::Artist(_) | Self::LibraryArtist(_) => "Artist",
-            Self::LibraryPlaylist(_) => "Playlist",
+            Self::Playlist(_) | Self::LibraryPlaylist(_) => "Playlist",
         }
     }
 }

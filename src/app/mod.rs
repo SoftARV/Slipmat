@@ -81,7 +81,7 @@ mod view;
 use chrome::{icon, register_actions, show_about, show_shortcuts};
 use supervise::{respawn_sidecar, start_sidecar};
 
-pub use view::{SearchScope, SortBy, View};
+pub use view::{CatalogFilter, SearchScope, SortBy, View};
 
 const TICK_MS: u32 = 500;
 
@@ -271,10 +271,16 @@ pub struct AppModel {
     /// from `update`, not declared in the view.
     nav: adw::NavigationView,
 
-    /// How many songs are in `catalog`. Paging appends songs only, so this is
-    /// the offset for the next page — the album and artist rows above them
-    /// would otherwise skew it.
-    catalog_songs: usize,
+    /// How many rows of the **paging kind** are in `catalog`, and so the offset
+    /// the next page starts from.
+    ///
+    /// Not simply `catalog.len()`: unfiltered, the browse rows on top are not
+    /// part of Apple's song pagination and would skew it. Which kind pages
+    /// depends on `catalog_filter` — see `library::catalog_rows`.
+    catalog_paged: usize,
+    /// Which kinds the catalog search asks for. Not persisted: a filter belongs
+    /// to the search you are running, not to how you like the app.
+    catalog_filter: CatalogFilter,
     searching_catalog: bool,
     /// How many catalog results we already hold, and whether Apple has run out.
     /// Together these decide whether scrolling to the end fetches more.
@@ -382,6 +388,8 @@ pub enum AppMsg {
     SetShuffle(bool),
     SetRepeat(Repeat),
     SetSort(SortBy),
+    /// Narrow the catalog search to one kind of result, or widen it again.
+    SetCatalogFilter(CatalogFilter),
     ToggleSortDirection,
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
@@ -926,6 +934,34 @@ impl Component for AppModel {
                                             set_visible: model.view == View::Songs,
                                         },
 
+                                        // Only in Search: a library filter is
+                                        // the search box itself, and the grids
+                                        // already are one kind each.
+                                        #[name = "filter_button"]
+                                        pack_end = &gtk::MenuButton {
+                                            add_css_class: "flat",
+                                            set_always_show_arrow: true,
+                                            set_tooltip_text: Some("What to search for"),
+                                            #[watch]
+                                            set_visible: model.view == View::Search,
+                                            // A label rather than an icon, for
+                                            // two reasons. Adwaita has no
+                                            // filter glyph — `funnel-symbolic`
+                                            // and `view-filter-symbolic` are
+                                            // both absent, and `chrome::icon`
+                                            // would have quietly put a music
+                                            // note here. And the current filter
+                                            // needs to be readable *without*
+                                            // hovering: this button is the only
+                                            // thing on screen explaining why a
+                                            // search returned one kind of
+                                            // result, and a narrowed search
+                                            // with no visible reason reads as
+                                            // missing results.
+                                            #[watch]
+                                            set_label: model.catalog_filter.label(),
+                                        },
+
                                     },
 
                                     #[wrap(Some)]
@@ -1235,7 +1271,8 @@ impl Component for AppModel {
             tile_art_pending: std::collections::HashSet::new(),
             tile_art_request,
             catalog: Vec::new(),
-            catalog_songs: 0,
+            catalog_paged: 0,
+            catalog_filter: CatalogFilter::default(),
             pages: Vec::new(),
             next_page_id: 1,
             nav,
@@ -1373,6 +1410,40 @@ impl Component for AppModel {
             widgets
                 .sort_button
                 .insert_action_group("sort", Some(&group));
+        }
+
+        // The catalog type filter, same shape as the sort menu above: a
+        // stateful action so the popover draws its own radio dots.
+        {
+            let menu = gtk::gio::Menu::new();
+            for option in CatalogFilter::ALL {
+                let item = gtk::gio::MenuItem::new(Some(option.label()), None);
+                item.set_action_and_target_value(
+                    Some("filter.kind"),
+                    Some(&option.id().to_variant()),
+                );
+                menu.append_item(&item);
+            }
+            widgets.filter_button.set_menu_model(Some(&menu));
+
+            let action = gtk::gio::SimpleAction::new_stateful(
+                "kind",
+                Some(&String::static_variant_type()),
+                &model.catalog_filter.id().to_variant(),
+            );
+            let filter_sender = sender.clone();
+            action.connect_activate(move |action, target| {
+                let Some(id) = target.and_then(|t| t.str().map(str::to_owned)) else {
+                    return;
+                };
+                action.set_state(&id.to_variant());
+                filter_sender.input(AppMsg::SetCatalogFilter(CatalogFilter::parse(&id)));
+            });
+            let group = gtk::gio::SimpleActionGroup::new();
+            group.add_action(&action);
+            widgets
+                .filter_button
+                .insert_action_group("filter", Some(&group));
         }
 
         // Open on the section we were last in. Selecting fires `row-selected`,
@@ -1531,7 +1602,7 @@ impl AppModel {
                         let generation = self.search_gen;
 
                         self.catalog_exhausted = false;
-                        self.catalog_songs = 0;
+                        self.catalog_paged = 0;
                         if self.catalog_query.trim().is_empty() {
                             self.catalog.clear();
                             self.searching_catalog = false;
@@ -1555,6 +1626,29 @@ impl AppModel {
                     return; // a later keystroke superseded this one
                 }
                 self.run_catalog_search(&sender, generation, 0);
+            }
+            AppMsg::SetCatalogFilter(filter) => {
+                if filter == self.catalog_filter {
+                    return;
+                }
+                self.catalog_filter = filter;
+
+                // A different filter is a different question, so the previous
+                // answer is discarded whole — including the offset, which
+                // counts a kind that may no longer be the one that pages.
+                self.search_gen = self.search_gen.wrapping_add(1);
+                self.catalog_exhausted = false;
+                self.catalog_paged = 0;
+                self.catalog.clear();
+                self.built_rows = None;
+
+                if self.catalog_query.trim().is_empty() {
+                    self.rebuild_rows();
+                    return;
+                }
+                // No debounce: this is one deliberate click, not a keystroke
+                // in a stream of them.
+                self.run_catalog_search(&sender, self.search_gen, 0);
             }
             AppMsg::SetView(view) => {
                 if view == self.view {
@@ -1648,12 +1742,12 @@ impl AppModel {
                     && !self.searching_catalog
                     && !self.catalog_exhausted
                     && !self.catalog.is_empty()
-                    && self.catalog_songs < CATALOG_MAX
+                    && self.catalog_paged < CATALOG_MAX
                 {
                     let generation = self.search_gen;
                     // Songs only — the browse rows above them are not part of
                     // Apple's song pagination.
-                    let offset = self.catalog_songs;
+                    let offset = self.catalog_paged;
                     self.run_catalog_search(&sender, generation, offset);
                 }
             }
@@ -1685,8 +1779,8 @@ impl AppModel {
                 }
             }
             AppMsg::LibraryActivated(position) => {
-                // Catalog results mix songs with albums and artists. A song
-                // plays; the other two are doors, and clicking one walks
+                // Catalog results mix songs with albums, artists and playlists.
+                // A song plays; the rest are doors, and clicking one walks
                 // through it. Resolved against the list as it is right now,
                 // never against a remembered snapshot.
                 match self.visible_entries().get(position as usize) {
@@ -1695,6 +1789,9 @@ impl AppModel {
                     }
                     Some(Entry::Artist(artist)) => {
                         sender.input(AppMsg::OpenPage(PageKind::artist(artist)))
+                    }
+                    Some(Entry::Playlist(playlist)) => {
+                        sender.input(AppMsg::OpenPage(PageKind::playlist(playlist)))
                     }
                     // The store is the visible list, so this position is the
                     // row index `queue_from` expects.
@@ -1721,6 +1818,9 @@ impl AppModel {
                     }
                     Some(Entry::Artist(artist)) => {
                         sender.input(AppMsg::OpenPage(PageKind::artist(artist)))
+                    }
+                    Some(Entry::Playlist(playlist)) => {
+                        sender.input(AppMsg::OpenPage(PageKind::playlist(playlist)))
                     }
                     Some(Entry::Song(_)) => {
                         let entries = page.entries.clone();
@@ -2060,44 +2160,31 @@ impl AppModel {
                 self.searching_catalog = false;
                 match result {
                     Ok(found) => {
-                        // A short page of songs means Apple has no more.
-                        self.catalog_exhausted = found.songs.len() < CATALOG_LIMIT as usize;
-                        self.catalog_songs = if offset == 0 {
-                            found.songs.len()
+                        let first_page = offset == 0;
+                        let (rows, paged) =
+                            library::catalog_rows(self.catalog_filter, found, first_page);
+
+                        // A short page of the **paging kind** means Apple has
+                        // no more. Which kind that is depends on the filter,
+                        // which is why the count comes back from the fold
+                        // rather than being read off one field here.
+                        self.catalog_exhausted = paged < CATALOG_LIMIT as usize;
+                        self.catalog_paged = if first_page {
+                            paged
                         } else {
-                            self.catalog_songs + found.songs.len()
+                            self.catalog_paged + paged
                         };
 
-                        if offset == 0 {
-                            // Artists and albums first: they are the way into
-                            // browsing, and burying them under 25 songs makes
-                            // them invisible. Trimmed, because the point is a
-                            // door rather than an exhaustive list.
-                            self.catalog = found
-                                .artists
-                                .into_iter()
-                                .take(CATALOG_BROWSE_ROWS)
-                                .map(Entry::Artist)
-                                .chain(
-                                    found
-                                        .albums
-                                        .into_iter()
-                                        .take(CATALOG_BROWSE_ROWS)
-                                        .map(Entry::Album),
-                                )
-                                .chain(found.songs.into_iter().map(Entry::Song))
-                                .collect();
+                        if first_page {
+                            self.catalog = rows;
                         } else {
-                            // Later pages append songs only. Paging returns
-                            // artists and albums again, and adding them would
-                            // duplicate rows already on screen.
-                            self.catalog
-                                .extend(found.songs.into_iter().map(Entry::Song));
+                            self.catalog.extend(rows);
                         }
 
                         tracing::info!(
                             rows = self.catalog.len(),
-                            songs = self.catalog_songs,
+                            paged = self.catalog_paged,
+                            filter = ?self.catalog_filter,
                             exhausted = self.catalog_exhausted,
                             "catalog results"
                         );
@@ -2332,7 +2419,7 @@ impl AppModel {
         self.built_artists = None;
         self.built_playlists = None;
         self.catalog.clear();
-        self.catalog_songs = 0;
+        self.catalog_paged = 0;
         self.library_query.clear();
         self.catalog_query.clear();
 
