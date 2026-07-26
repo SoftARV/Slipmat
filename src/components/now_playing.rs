@@ -62,8 +62,14 @@ const SEEK_SETTLE_MS: u64 = 1_500;
 /// seconds.
 const SEEK_HOLD: Duration = Duration::from_secs(10);
 
+/// How much one keyboard press or one scale step moves the volume.
+///
+/// Shared by the volume button's adjustment and the `Ctrl`+`Up`/`Down`
+/// accelerators, so the two cannot drift into disagreeing about what a step is.
+pub const VOLUME_STEP: f64 = 0.05;
+
 /// Everything the bar needs, flattened out of `PlayerState` at the boundary.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub title: String,
     pub artist: String,
@@ -80,6 +86,37 @@ pub struct Snapshot {
     pub queue_open: bool,
     /// Mirrored from MusicKit, never authored here (rule 3).
     pub repeat: Repeat,
+    /// 0.0–1.0. The volume button follows this rather than owning it, so a
+    /// change from the keyboard or from MPRIS moves the widget too.
+    pub volume: f64,
+}
+
+impl Default for Snapshot {
+    /// Hand-written for one field: **volume defaults to full, not to zero.**
+    ///
+    /// A derived `Default` starts every field at its zero value, and the volume
+    /// button watches this. The bar is built with a default snapshot before the
+    /// first real one arrives, so a zero here would push the button to silent
+    /// and echo that back as a genuine `SetVolume(0.0)` — the app would mute
+    /// itself on launch.
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            position_ms: 0,
+            duration_ms: 0,
+            playing: false,
+            busy: false,
+            has_next: false,
+            has_previous: false,
+            active: false,
+            shuffle: false,
+            queue_open: false,
+            repeat: Repeat::default(),
+            volume: 1.0,
+        }
+    }
 }
 
 /// What the repeat button is showing. Ours, not MusicKit's — `protocol` owns
@@ -135,7 +172,6 @@ pub struct NowPlaying {
     /// Drives [`ADVANCE_MS`]. Removed the moment playback stops, so a paused
     /// app is not waking up ten times a second.
     advance: Option<gtk::glib::SourceId>,
-    volume: f64,
     /// True from the first slider movement until the debounce commits. State
     /// updates must not yank the handle out from under the user — the single
     /// most annoying bug a music player can have.
@@ -460,7 +496,19 @@ impl SimpleComponent for NowPlaying {
                     // ScaleButton is not a Range, so it takes an Adjustment
                     // rather than set_range. Page increment 0.1 makes scroll
                     // wheel steps feel right.
-                    set_adjustment: &gtk::Adjustment::new(1.0, 0.0, 1.0, 0.05, 0.1, 0.0),
+                    set_adjustment: &gtk::Adjustment::new(
+                        1.0, 0.0, 1.0, VOLUME_STEP, 0.1, 0.0,
+                    ),
+                    // The button follows the mirror rather than owning the
+                    // volume, so `Ctrl`+`Up` and the Shell's own slider move it
+                    // too.
+                    //
+                    // This is a two-way binding, and GTK emits `value-changed`
+                    // for a programmatic `set_value` exactly as it does for a
+                    // drag. `VolumeChanged` is what keeps that from cycling —
+                    // see the note there before touching either.
+                    #[watch]
+                    set_value: model.snap.volume,
                     connect_value_changed[sender] => move |_, value| {
                         sender.input(NowPlayingInput::VolumeChanged(value));
                     },
@@ -481,7 +529,6 @@ impl SimpleComponent for NowPlaying {
             shown_ms: std::cell::Cell::new(0),
             synced_at: None,
             advance: None,
-            volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
             pending_seek: None,
@@ -554,7 +601,27 @@ impl SimpleComponent for NowPlaying {
                 }
             }
             NowPlayingInput::VolumeChanged(v) => {
-                self.volume = v;
+                // **Adopted locally, unlike shuffle and repeat.** Those are
+                // sent and left to come back from the mirror, because nothing
+                // downstream re-asserts them. The volume button is different:
+                // it is a two-way binding, and relm4 runs `update_view` after
+                // *every* message — so the view update that follows this one
+                // would write `self.snap.volume` back into the widget. Without
+                // the line below that is still the **old** volume, GTK emits
+                // `value-changed` for it, and the old and new values ping-pong
+                // through the reducer forever.
+                //
+                // That shipped once and took the whole desktop down with it:
+                // 5,721 `setVolume` commands, each one a sidecar write, an
+                // MPRIS property change on the bus, and a journal line.
+                //
+                // The guard is the other half — a programmatic `set_value`
+                // emits too, so every keyboard step and every change from the
+                // Shell arrives back here as an echo that must not be resent.
+                if !volume_is_new(v, self.snap.volume) {
+                    return;
+                }
+                self.snap.volume = v;
                 let _ = sender.output(NowPlayingOutput::SetVolume(v));
             }
             NowPlayingInput::ShuffleToggled(on) => {
@@ -667,6 +734,17 @@ fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) ->
 /// A free function so the arithmetic can be tested without a clock. Three
 /// separate attempts at this shipped broken; the tests below are the reason a
 /// fourth one will not.
+/// Whether a `value-changed` from the volume button is a real move, or the
+/// echo of a value we just wrote into it ourselves.
+///
+/// Exact comparison is right here, not a tolerance: `GtkScaleButton` stores
+/// what it is given without rounding it (measured against GTK 4.22), so an
+/// echo carries bit-identical the value that produced it. A tolerance would
+/// instead start swallowing small deliberate moves.
+fn volume_is_new(incoming: f64, held: f64) -> bool {
+    (incoming - held).abs() >= f64::EPSILON
+}
+
 fn advance(base_ms: u64, ahead_ms: u64, duration_ms: u64, last_shown_ms: u64) -> u64 {
     // Only clamp against a duration we actually have. It is 0 until the first
     // metadata arrives, and clamping to that pins the position at the base —
@@ -821,6 +899,44 @@ impl NowPlaying {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_volume_button_does_not_answer_its_own_echo() {
+        // The regression that froze a desktop. GTK emits `value-changed` for a
+        // programmatic `set_value` just as it does for a drag, so every
+        // keyboard step and every change from the Shell comes back here. Resend
+        // those and the value ping-pongs through the reducer without end.
+        assert!(!volume_is_new(0.4, 0.4));
+        assert!(!volume_is_new(1.0, 1.0));
+        assert!(!volume_is_new(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_real_move_still_gets_through() {
+        assert!(volume_is_new(0.4, 1.0));
+        assert!(volume_is_new(1.0, 0.95));
+        // One keyboard step, which is the smallest move that has to survive.
+        assert!(volume_is_new(1.0 - VOLUME_STEP, 1.0));
+    }
+
+    #[test]
+    fn stepping_the_whole_range_never_stalls_or_overshoots() {
+        // Repeated `+= 0.05` does not land on exact decimals, so this walks the
+        // accumulated float rather than trusting it: every step must move, and
+        // the ends must be exactly 0.0 and 1.0 so the button can reach silent
+        // and full.
+        let mut v: f64 = 1.0;
+        for _ in 0..40 {
+            let next = (v - VOLUME_STEP).clamp(0.0, 1.0);
+            assert!(next <= v, "a down step went up: {v} -> {next}");
+            v = next;
+        }
+        assert_eq!(v, 0.0, "stepping down never reached silence");
+        for _ in 0..40 {
+            v = (v + VOLUME_STEP).clamp(0.0, 1.0);
+        }
+        assert_eq!(v, 1.0, "stepping up never reached full");
+    }
+
     fn model(snap: Snapshot) -> NowPlaying {
         NowPlaying {
             snap,
@@ -829,7 +945,6 @@ mod tests {
             shown_ms: std::cell::Cell::new(0),
             synced_at: None,
             advance: None,
-            volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
             pending_seek: None,
