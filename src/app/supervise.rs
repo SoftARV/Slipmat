@@ -54,10 +54,50 @@ pub(super) fn respawn_sidecar(sender: &ComponentSender<AppModel>, delay: std::ti
 
 impl AppModel {
     pub(super) fn send(&self, cmd: Command) {
+        // Remembered for the gapless diagnostic below. Cheap, and the only way
+        // to tell "MusicKit advanced its own queue" from "we told it to".
+        *self.last_command.borrow_mut() = Some((std::time::Instant::now(), cmd.name().to_owned()));
         match &self.sidecar {
             Some(handle) => handle.send(cmd),
             None => tracing::debug!(?cmd, "dropped: no sidecar"),
         }
+    }
+
+    /// Report a track change and, crucially, **why** it happened.
+    ///
+    /// Rule 3's whole point is that a natural boundary is MusicKit advancing a
+    /// queue it already holds — that is what makes the transition gapless. If
+    /// this ever logs `prompted_by` on a track that ran to its end, Rust is
+    /// driving the queue and the headline feature is gone. It is the one
+    /// invariant the architecture exists to protect, so it says so out loud
+    /// rather than being inferred from silence.
+    fn log_transition(&self, from: Option<&str>, left_ms: u64) {
+        // A window, not an instant: the command goes out over stdio and the
+        // echo comes back, so "just now" is the honest test.
+        const RECENT: std::time::Duration = std::time::Duration::from_secs(2);
+        let prompted = self
+            .last_command
+            .borrow()
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < RECENT)
+            .map(|(_, cmd)| cmd.clone());
+
+        tracing::info!(
+            from = from.unwrap_or("<none>"),
+            to = self
+                .player
+                .now_playing
+                .as_ref()
+                .map(|i| i.title.as_str())
+                .unwrap_or("<none>"),
+            // How much of the previous track never played. Near zero means it
+            // ran out — a natural boundary. Seconds mean it was skipped.
+            left_ms,
+            prompted_by = prompted
+                .as_deref()
+                .unwrap_or("nothing — MusicKit advanced itself"),
+            "track transition"
+        );
     }
 
     pub(super) fn on_event(&mut self, event: Event, sender: &ComponentSender<Self>) {
@@ -153,9 +193,39 @@ impl AppModel {
             }
             _ => {}
         }
+        // Captured before the mirror moves on, so a transition can be reported
+        // against what was actually playing a moment ago.
+        let was = self.player.now_playing.as_ref().map(|i| {
+            (
+                i.title.clone(),
+                i.catalog_id.clone().or_else(|| i.id.clone()),
+            )
+        });
+        // The high-water mark, not a live read — see `progress_mark`.
+        let (reached, length) = self.progress_mark.get();
+        let left_ms = length.saturating_sub(reached);
+
         // The mirror is updated last so the stage transitions above always see
         // the previous state (rule 3: this is a projection, not a source).
         let metadata_changed = self.player.apply(&event);
+
+        let now = self
+            .player
+            .now_playing
+            .as_ref()
+            .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()));
+        let changed = was.as_ref().is_some_and(|(_, before)| before != &now) && now.is_some();
+        if changed && let Some((title, _)) = &was {
+            self.log_transition(Some(title), left_ms);
+        }
+
+        if changed || was.is_none() {
+            // A new track: start the mark over at its length.
+            self.progress_mark.set((0, self.player.duration_ms));
+        } else if self.player.position_ms > reached {
+            self.progress_mark
+                .set((self.player.position_ms, self.player.duration_ms));
+        }
 
         // Everything below is derived from the mirror, so it happens in one
         // place rather than being sprinkled through the match above — miss one

@@ -17,7 +17,7 @@ SIDECAR  = $(DATADIR)/tonearm/sidecar
 
 ICON_SIZES = 16 32 48 64 128 256 512
 
-.PHONY: all build run test check sidecar sidecar-run install install-sidecar \
+.PHONY: all build run test check sidecar sidecar-run gapless install install-sidecar \
         dev-install uninstall clean
 
 all: build
@@ -50,6 +50,12 @@ sidecar:
 # CLAUDE.md. If a track plays here, DRM is fine and the bug is in the Rust side.
 sidecar-run: sidecar
 	cd sidecar && npm run debug
+
+# Watch the audio stream across a track boundary. Run it in one terminal and
+# `RUST_LOG=tonearm=info cargo run` in another — the log says whether Rust
+# drove the transition, this says whether the decoder stopped.
+gapless:
+	./scripts/gapless-check.sh
 
 install: build install-sidecar dev-install
 	install -Dm755 target/release/tonearm $(BINDIR)/tonearm
