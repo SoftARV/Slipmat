@@ -78,9 +78,9 @@ impl Tile {
     fn subtitle(&self) -> String {
         match self {
             Self::Album(a) => a.artist.clone(),
-            // Apple does not report a count on `/me/library/artists`, and the
-            // genre list is usually empty there too. An empty line is better
-            // than a fabricated one.
+            // Genres come from the artist's catalog twin, which the client
+            // asks for inline. Empty when Apple had none — an empty line beats
+            // a fabricated one.
             Self::Artist(a) => a.genres.clone(),
         }
     }
@@ -92,8 +92,8 @@ impl Tile {
         }
     }
 
-    /// Shown until the picture arrives — and forever, for a library artist,
-    /// which Apple gives no artwork at all.
+    /// Shown until the picture arrives, and permanently for anything Apple has
+    /// no picture for.
     fn placeholder(&self) -> &'static str {
         match self {
             Self::Album(_) => "media-optical-symbolic",
@@ -155,11 +155,21 @@ impl RelmGridItem for GridItem {
                     set_overflow: gtk::Overflow::Hidden,
                 },
 
+                // `halign: Fill` — the default — is load-bearing, and centring
+                // is done with `xalign` instead. A centred label is allocated
+                // its *natural* width, and `max_width_chars: 1` caps that at one
+                // character, so the pair rendered every title as a bare "…".
+                //
+                // `max_width_chars` still earns its place: without it a long
+                // album title would set the natural width of every column in
+                // the grid, since GridView allocates all columns to the widest
+                // child. Capped natural, filled allocation, ellipsis in
+                // between.
                 #[name = "title"]
                 gtk::Label {
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
                     set_max_width_chars: 1,
-                    set_halign: gtk::Align::Center,
+                    set_xalign: 0.5,
                     add_css_class: "heading",
                 },
 
@@ -167,7 +177,7 @@ impl RelmGridItem for GridItem {
                 gtk::Label {
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
                     set_max_width_chars: 1,
-                    set_halign: gtk::Align::Center,
+                    set_xalign: 0.5,
                     add_css_class: "caption",
                     add_css_class: "dim-label",
                 },

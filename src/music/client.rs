@@ -16,8 +16,8 @@ use reqwest::{Client as HttpClient, StatusCode};
 use serde::Deserialize;
 
 use super::types::{
-    Album, AlbumAttributes, AlbumResource, Artist, ArtistAttributes, ArtistResource, Resource,
-    Response, SongAttributes, Track,
+    Album, AlbumAttributes, AlbumResource, Artist, ArtistAttributes, ArtistResource,
+    LibraryArtistResource, Resource, Response, SongAttributes, Track,
 };
 
 /// What a catalog search turned up. Apple returns each kind in its own array;
@@ -164,14 +164,14 @@ impl Client {
     /// stops as soon as a round comes back short, which is the same termination
     /// condition with far fewer waits.
     pub async fn all_library_songs(&self, max: usize) -> Result<Vec<Track>> {
-        self.all_library::<SongAttributes, Track>("songs", max)
+        self.all_library::<Resource<SongAttributes>, Track>("songs", "", max)
             .await
     }
 
     /// Every album in the user's library.
     pub async fn all_library_albums(&self, max: usize) -> Result<Vec<Album>> {
         let mut albums = self
-            .all_library::<AlbumAttributes, Album>("albums", max)
+            .all_library::<Resource<AlbumAttributes>, Album>("albums", "", max)
             .await?;
         // Marked here rather than guessed from the id's shape later: these ids
         // only work against `/me/library/albums`, and the page that opens one
@@ -184,16 +184,16 @@ impl Client {
 
     /// Every artist in the user's library.
     ///
-    /// Apple returns **no artwork** for library artists — only a name. The grid
-    /// draws initials rather than waiting for a picture that never arrives.
+    /// `include=catalog` is what gets the pictures. A library artist carries
+    /// only a name — no artwork, no genres; the portrait the web player shows
+    /// belongs to the *catalog* artist, and asking for it as a relationship
+    /// costs no extra requests. If Apple ever stops honouring it the
+    /// relationship comes back absent and the grid falls back to avatar
+    /// placeholders, which is no worse than not having asked.
     pub async fn all_library_artists(&self, max: usize) -> Result<Vec<Artist>> {
-        let mut artists = self
-            .all_library::<ArtistAttributes, Artist>("artists", max)
-            .await?;
-        for artist in &mut artists {
-            artist.library = true;
-        }
-        Ok(artists)
+        // `From<LibraryArtistResource>` already marks these as library-owned.
+        self.all_library::<LibraryArtistResource, Artist>("artists", "&include=catalog", max)
+            .await
     }
 
     /// Walk a `/me/library/{kind}` collection to its end, or to `max`.
@@ -202,10 +202,15 @@ impl Client {
     /// albums and artists paginate identically — three copies of this loop
     /// would drift, and the concurrency and short-page logic below is the
     /// fiddly part worth having once.
-    async fn all_library<A, T>(&self, kind: &'static str, max: usize) -> Result<Vec<T>>
+    async fn all_library<R, T>(
+        &self,
+        kind: &'static str,
+        extra_query: &'static str,
+        max: usize,
+    ) -> Result<Vec<T>>
     where
-        A: serde::de::DeserializeOwned + Send + 'static,
-        T: From<Resource<A>> + Send + 'static,
+        R: serde::de::DeserializeOwned + Send + 'static,
+        T: From<R> + Send + 'static,
     {
         let mut all: Vec<T> = Vec::new();
         let mut offset = 0usize;
@@ -218,7 +223,12 @@ impl Client {
             let mut tasks = tokio::task::JoinSet::new();
             for (slot, at) in offsets.iter().copied().enumerate() {
                 let client = self.clone();
-                tasks.spawn(async move { (slot, client.library_page::<A, T>(kind, at).await) });
+                tasks.spawn(async move {
+                    (
+                        slot,
+                        client.library_page::<R, T>(kind, extra_query, at).await,
+                    )
+                });
             }
 
             // Collect by slot so the library keeps Apple's ordering regardless
@@ -250,14 +260,19 @@ impl Client {
         Ok(all)
     }
 
-    async fn library_page<A, T>(&self, kind: &str, offset: usize) -> Result<Vec<T>>
+    async fn library_page<R, T>(
+        &self,
+        kind: &str,
+        extra_query: &str,
+        offset: usize,
+    ) -> Result<Vec<T>>
     where
-        A: serde::de::DeserializeOwned,
-        T: From<Resource<A>>,
+        R: serde::de::DeserializeOwned,
+        T: From<R>,
     {
         let res = self
             .get(&format!(
-                "/me/library/{kind}?limit={LIBRARY_PAGE}&offset={offset}"
+                "/me/library/{kind}?limit={LIBRARY_PAGE}&offset={offset}{extra_query}"
             ))
             .send()
             .await
@@ -268,7 +283,7 @@ impl Client {
             return Err(self.explain(res).await);
         }
 
-        let parsed: Response<Resource<A>> = res
+        let parsed: Response<R> = res
             .json()
             .await
             .with_context(|| format!("decoding library {kind}"))?;
@@ -374,9 +389,19 @@ impl Client {
 
     /// One artist from the user's library, with the albums they saved.
     pub async fn library_artist_albums(&self, id: &str) -> Result<(Artist, Vec<Album>)> {
+        // `catalog` alongside `albums`: the portrait belongs to the catalog
+        // artist, exactly as in `all_library_artists`, so the page header
+        // matches the tile that opened it.
         let resource = self
-            .artist_resource(&format!("/me/library/artists/{id}?include=albums"))
+            .artist_resource(&format!("/me/library/artists/{id}?include=albums,catalog"))
             .await?;
+        let portrait = resource
+            .relationships
+            .as_ref()
+            .and_then(|r| r.catalog.as_ref())
+            .and_then(|c| c.data.first())
+            .cloned()
+            .map(Artist::from);
 
         let mut albums = artist_albums_of(&resource);
 
@@ -398,6 +423,10 @@ impl Client {
 
         let mut artist = Artist::from(resource.into_artist());
         artist.library = true;
+        if let Some(portrait) = portrait {
+            artist.artwork = portrait.artwork;
+            artist.genres = portrait.genres;
+        }
         Ok((artist, albums))
     }
 

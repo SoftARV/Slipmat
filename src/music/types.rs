@@ -126,9 +126,10 @@ pub struct Artist {
     pub artwork: Option<Artwork>,
     /// Apple's genre list, joined — "Pop, Latin".
     pub genres: String,
-    /// As [`Album::library`]. Library artists also carry **no artwork** — Apple
-    /// simply does not return it for `/me/library/artists`, so the grid draws
-    /// initials instead of waiting for a picture that is never coming.
+    /// As [`Album::library`]. A library artist has no artwork of its own —
+    /// Apple returns only a name for `/me/library/artists` — so the client asks
+    /// for the catalog twin inline and copies its portrait across. See
+    /// [`LibraryArtistResource`].
     pub library: bool,
 }
 
@@ -185,9 +186,62 @@ impl ArtistResource {
     }
 }
 
+/// A **library** artist, with its catalog counterpart pulled in.
+///
+/// Apple returns only a name for `/me/library/artists` — no artwork, no genres.
+/// The picture the web player shows comes from the *catalog* artist, which is
+/// reachable as a relationship on the library one, so asking for it inline
+/// costs no extra requests.
+#[derive(Debug, Deserialize)]
+pub(crate) struct LibraryArtistResource {
+    pub id: String,
+    pub attributes: Option<ArtistAttributes>,
+    pub relationships: Option<LibraryArtistRelationships>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LibraryArtistRelationships {
+    pub catalog: Option<Response<Resource<ArtistAttributes>>>,
+}
+
+impl From<LibraryArtistResource> for Artist {
+    fn from(res: LibraryArtistResource) -> Self {
+        // The catalog twin, when Apple honoured `include=catalog`.
+        let catalog = res
+            .relationships
+            .and_then(|r| r.catalog)
+            .and_then(|c| c.data.into_iter().next())
+            .map(Artist::from);
+
+        let mut artist = Artist::from(Resource {
+            // The **library** id: it is what the library artist page is opened
+            // with. The catalog twin's id would 404 there.
+            id: res.id,
+            attributes: res.attributes,
+        });
+        artist.library = true;
+
+        if let Some(catalog) = catalog {
+            // Name stays the library's — it is what the user's own library
+            // calls this artist. Everything the library does not carry comes
+            // from the catalog.
+            artist.artwork = catalog.artwork;
+            artist.genres = catalog.genres;
+            if artist.name.is_empty() {
+                artist.name = catalog.name;
+            }
+        }
+        artist
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ArtistRelationships {
     pub albums: Option<Response<Resource<AlbumAttributes>>>,
+    /// Only ever present on a **library** artist asked with `include=catalog`
+    /// — that is where the portrait lives. Absent on a catalog artist, which
+    /// already has its own artwork.
+    pub catalog: Option<Response<Resource<ArtistAttributes>>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -263,7 +317,7 @@ impl From<Resource<AlbumAttributes>> for Album {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ArtistAttributes {
     #[serde(default)]
@@ -460,4 +514,57 @@ mod tests {
             "no attributes at all must be survivable"
         );
     }
+}
+
+#[test]
+fn a_library_artist_keeps_its_own_id_and_takes_the_catalog_portrait() {
+    // The library id is what opens the library artist page; the catalog
+    // twin's id would 404 there. Only the things the library does not
+    // carry — artwork, genres — come across.
+    let resource = LibraryArtistResource {
+        id: "r.abc".into(),
+        attributes: Some(ArtistAttributes {
+            name: "Aitana".into(),
+            artwork: None,
+            genre_names: Vec::new(),
+        }),
+        relationships: Some(LibraryArtistRelationships {
+            catalog: Some(Response {
+                data: vec![Resource {
+                    id: "1234".into(),
+                    attributes: Some(ArtistAttributes {
+                        name: "Aitana".into(),
+                        artwork: Some(ArtworkAttributes {
+                            url: "https://example.test/{w}x{h}bb.jpg".into(),
+                        }),
+                        genre_names: vec!["Pop".into(), "Latin".into()],
+                    }),
+                }],
+            }),
+        }),
+    };
+
+    let artist = Artist::from(resource);
+    assert_eq!(artist.id, "r.abc", "the library id opens the library page");
+    assert!(artist.library);
+    assert!(artist.artwork.is_some(), "portrait comes from the catalog");
+    assert_eq!(artist.genres, "Pop, Latin");
+}
+
+#[test]
+fn a_library_artist_without_a_catalog_twin_still_parses() {
+    // `include=catalog` is honoured today and might not be tomorrow. No
+    // portrait is a placeholder, not a failure.
+    let artist = Artist::from(LibraryArtistResource {
+        id: "r.abc".into(),
+        attributes: Some(ArtistAttributes {
+            name: "Aitana".into(),
+            artwork: None,
+            genre_names: Vec::new(),
+        }),
+        relationships: None,
+    });
+    assert_eq!(artist.name, "Aitana");
+    assert!(artist.artwork.is_none());
+    assert!(artist.library);
 }

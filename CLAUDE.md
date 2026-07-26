@@ -463,7 +463,9 @@ Playback engine first. One vertical slice, one PR each.
 - ✅ **M8 — Library browsing.** Albums and Artists as `gtk::GridView` tiles in
   the sidebar, alongside Songs. Covers are fetched lazily as tiles bind and
   cached to disk; clicking one pushes the same detail page the catalog uses,
-  pointed at `/me/library` instead of `/catalog`.
+  pointed at `/me/library` instead of `/catalog`. Library artists carry no
+  artwork of their own, so the portrait is pulled from the catalog twin with
+  `include=catalog` — free, on the request we were already making.
 - ✅ **M7 — Polish.** Preferences (theme, notifications), keyboard shortcuts,
   About, the app icon, `.desktop`, `make install`, and opt-in track-change
   notifications.
