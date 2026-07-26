@@ -9,7 +9,7 @@ Two packages, both built from this tree:
 
 | Directory | Package | Builds from |
 | --- | --- | --- |
-| `tonearm/` | `tonearm` | the `v0.1.0` release tarball |
+| `tonearm/` | `tonearm` | the `v0.1.1` release tarball |
 | `tonearm-git/` | `tonearm-git` | the latest commit on `main` |
 
 They conflict with each other, as the two conventions require.
@@ -57,10 +57,11 @@ needed it.
 Electron download. Unavoidable: castLabs ships only as a GitHub release, and
 `sidecar/.npmrc` carries the `allow-git=root` that npm 12 requires to accept it.
 
-**`tonearm` warns about `$srcdir` until 0.2.0.** The v0.1.0 binary baked
-`CARGO_MANIFEST_DIR` into itself through two dev-only fallbacks. Both are gated
-behind `debug_assertions` now, so the warning clears with the next tag —
-`tonearm-git` is already clean.
+**Both packages build clean as of v0.1.1.** v0.1.0 could not be packaged at
+all: its sidecar search never looked at `XDG_DATA_DIRS`, so the binary could not
+find the sidecar installed beside it, and it baked its own build directory in —
+which is what `makepkg` was reporting as a reference to `$srcdir`. Both were
+fixed in 0.1.1, and that release exists because of this packaging work.
 
 **Foreign-architecture binaries are pruned.** One npm dependency ships 7 MB of
 prebuilt `.node` files for arm64, ia32, darwin and win32. `package()` deletes
