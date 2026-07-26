@@ -164,6 +164,76 @@ pub(super) fn show_shortcuts(parent: &adw::ApplicationWindow) {
 }
 
 impl AppModel {
+    /// The first-run gate.
+    ///
+    /// A modal that cannot be dismissed, rather than a page behind a usable
+    /// window. Signed out, every control in the app is a control that cannot
+    /// work: the sidebar sections fire library loads, the search box queries a
+    /// catalog that answers 403, and the transport talks to a player with no
+    /// session. Leaving them reachable meant a 403 per second against Apple —
+    /// blocking is not a nicety here, it is the correct behaviour.
+    ///
+    /// Dismissed from `update` the moment the sidecar reports an authorized
+    /// session, never by the user.
+    pub(super) fn present_onboarding(
+        &self,
+        sender: &ComponentSender<Self>,
+        parent: &adw::ApplicationWindow,
+    ) -> adw::Dialog {
+        let page = adw::StatusPage::builder()
+            .icon_name(crate::APP_ID)
+            .title("Welcome to Tonearm")
+            .description(
+                "Tonearm plays your Apple Music library natively on GNOME. \
+                 It needs an active Apple Music subscription.",
+            )
+            .build();
+
+        let button = gtk::Button::builder()
+            .label("Sign In to Apple Music")
+            .halign(gtk::Align::Center)
+            .css_classes(["suggested-action", "pill"])
+            .build();
+        {
+            let sender = sender.clone();
+            button.connect_clicked(move |_| sender.input(AppMsg::SignIn));
+        }
+
+        // Said before the button is pressed, not after. A browser window
+        // opening out of a native app is alarming when it is a surprise, and
+        // this is the one moment Tonearm cannot hide the web engine.
+        let note = gtk::Label::builder()
+            .label(
+                "Apple's own sign-in page opens in a separate window, including \
+                 two-factor if your account uses it. It closes for good once you're in.",
+            )
+            .justify(gtk::Justification::Center)
+            .wrap(true)
+            .max_width_chars(46)
+            .css_classes(["caption", "dim-label"])
+            .build();
+
+        let column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .halign(gtk::Align::Center)
+            .spacing(18)
+            .build();
+        column.append(&button);
+        column.append(&note);
+        page.set_child(Some(&column));
+
+        let dialog = adw::Dialog::builder()
+            .child(&page)
+            .content_width(480)
+            .content_height(420)
+            // No escape, no click-outside: there is nothing behind this worth
+            // reaching until there is a session.
+            .can_close(false)
+            .build();
+        dialog.present(Some(parent));
+        dialog
+    }
+
     /// Ask before signing out.
     ///
     /// Destructive and not obviously reversible from the user's side: it drops

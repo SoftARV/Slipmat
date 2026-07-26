@@ -134,6 +134,10 @@ pub enum Stage {
 pub struct AppModel {
     stage: Stage,
     player: PlayerState,
+    /// The first-run gate, while it is up. `Some` exactly when the app is
+    /// blocked, which is what stops it being presented twice.
+    onboarding: Option<adw::Dialog>,
+
     /// The last track MusicKit reported, kept so the bar can hold it through a
     /// queue reload — see `push_snapshot::showing`.
     last_item: Option<crate::player::protocol::Item>,
@@ -208,6 +212,12 @@ pub struct AppModel {
     loading_albums: bool,
     loading_artists: bool,
     loading_playlists: bool,
+    /// Whether a load has been *attempted*, distinct from whether it produced
+    /// anything. A failure leaves the collection empty, and "empty" alone would
+    /// mean trying again on every event.
+    tried_albums: bool,
+    tried_artists: bool,
+    tried_playlists: bool,
     /// Tile artwork already on disk. Shared between the grids on purpose: it
     /// is keyed by the artwork itself, so a cover fetched for one is a cover
     /// the other gets for free.
@@ -888,44 +898,6 @@ impl Component for AppModel {
                                             set_title: &model.headline(),
                                             #[watch]
                                             set_description: Some(&model.detail()),
-
-                                            #[wrap(Some)]
-                                            set_child = &gtk::Box {
-                                                set_orientation: gtk::Orientation::Vertical,
-                                                set_halign: gtk::Align::Center,
-                                                set_spacing: 18,
-                                                #[watch]
-                                                set_visible: matches!(model.stage, Stage::SignedOut),
-
-                                                gtk::Button {
-                                                    set_label: "Sign In to Apple Music",
-                                                    set_halign: gtk::Align::Center,
-                                                    add_css_class: "suggested-action",
-                                                    add_css_class: "pill",
-                                                    connect_clicked => AppMsg::SignIn,
-                                                },
-
-                                                // Said before the window
-                                                // appears, not after. A
-                                                // browser window opening out
-                                                // of a native app is alarming
-                                                // if it is a surprise, and
-                                                // this is the one moment
-                                                // Tonearm cannot hide the web
-                                                // engine — so it explains it
-                                                // instead.
-                                                gtk::Label {
-                                                    set_label: "Apple's own sign-in page opens in a \
-                                                                separate window, including two-factor \
-                                                                if your account uses it. It closes for \
-                                                                good once you're in.",
-                                                    set_justify: gtk::Justification::Center,
-                                                    set_wrap: true,
-                                                    set_max_width_chars: 46,
-                                                    add_css_class: "caption",
-                                                    add_css_class: "dim-label",
-                                                },
-                                            },
                                         },
 
                                         // Loading gets its own page: "nothing
@@ -1209,6 +1181,9 @@ impl Component for AppModel {
             loading_albums: false,
             loading_artists: false,
             loading_playlists: false,
+            tried_albums: false,
+            tried_artists: false,
+            tried_playlists: false,
             tile_art: art_cache(),
             album_art_widgets: art_registry(),
             artist_art_widgets: art_registry(),
@@ -1230,6 +1205,7 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
+            onboarding: None,
             last_item: None,
             menu_sender: sender.clone(),
             last_command: std::cell::RefCell::new(None),
@@ -1418,6 +1394,29 @@ impl Component for AppModel {
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
+        self.handle(msg, &sender, root);
+        self.sync_onboarding(&sender, root);
+    }
+
+    fn update_cmd(
+        &mut self,
+        msg: Self::CommandOutput,
+        sender: ComponentSender<Self>,
+        root: &Self::Root,
+    ) {
+        self.handle_cmd(msg, &sender, root);
+        self.sync_onboarding(&sender, root);
+    }
+}
+
+impl AppModel {
+    fn handle(
+        &mut self,
+        msg: AppMsg,
+        sender: &ComponentSender<Self>,
+        root: &adw::ApplicationWindow,
+    ) {
+        let sender = sender.clone();
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
             AppMsg::SignOut => {
@@ -1784,12 +1783,13 @@ impl Component for AppModel {
         }
     }
 
-    fn update_cmd(
+    fn handle_cmd(
         &mut self,
-        msg: Self::CommandOutput,
-        sender: ComponentSender<Self>,
-        _root: &Self::Root,
+        msg: CommandMsg,
+        sender: &ComponentSender<Self>,
+        _root: &adw::ApplicationWindow,
     ) {
+        let sender = sender.clone();
         match msg {
             CommandMsg::AlbumPage { page, result } => {
                 let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
@@ -2198,14 +2198,17 @@ impl AppModel {
             View::Songs | View::Search => self.load_library(sender),
             View::Albums => {
                 self.albums.clear();
+                self.tried_albums = false;
                 self.load_albums(sender);
             }
             View::Artists => {
                 self.artists.clear();
+                self.tried_artists = false;
                 self.load_artists(sender);
             }
             View::Playlists => {
                 self.playlists.clear();
+                self.tried_playlists = false;
                 self.load_playlists(sender);
             }
         }
@@ -2226,6 +2229,9 @@ impl AppModel {
         self.albums.clear();
         self.artists.clear();
         self.playlists.clear();
+        self.tried_albums = false;
+        self.tried_artists = false;
+        self.tried_playlists = false;
         self.catalog.clear();
         self.catalog_songs = 0;
         self.library_query.clear();
@@ -2244,6 +2250,24 @@ impl AppModel {
         self.pending_start = None;
         crate::style::set_bar_tint(None);
         self.push_snapshot();
+    }
+
+    /// Put the first-run gate up or take it down, to match the session.
+    ///
+    /// Driven from one place rather than from each site that changes `stage`,
+    /// because there are four of them — tokens arriving, an authorization
+    /// change, a hook attaching, and signing out — and three of them would have
+    /// been easy to forget.
+    fn sync_onboarding(&mut self, sender: &ComponentSender<Self>, root: &adw::ApplicationWindow) {
+        match (matches!(self.stage, Stage::SignedOut), &self.onboarding) {
+            (true, None) => self.onboarding = Some(self.present_onboarding(sender, root)),
+            (false, Some(dialog)) => {
+                // `can_close` is false, so it will not go on its own.
+                dialog.force_close();
+                self.onboarding = None;
+            }
+            _ => {}
+        }
     }
 
     fn toast(&self, text: &str) {

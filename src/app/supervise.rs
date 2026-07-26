@@ -263,11 +263,17 @@ impl AppModel {
         // opened straight into one of them, this *is* the first visit, and the
         // `SetView` that would normally trigger it never fires (the view was
         // already correct before the tokens arrived).
-        match self.view {
-            View::Albums => self.load_albums(sender),
-            View::Artists => self.load_artists(sender),
-            View::Playlists => self.load_playlists(sender),
-            _ => {}
+        //
+        // Gated on `Ready`, which it was not: signed out, this fired on every
+        // event, and `refreshTokens` arrives once a second. It was a 403 per
+        // second against Apple for as long as the window was open.
+        if matches!(self.stage, Stage::Ready) {
+            match self.view {
+                View::Albums => self.load_albums(sender),
+                View::Artists => self.load_artists(sender),
+                View::Playlists => self.load_playlists(sender),
+                _ => {}
+            }
         }
     }
 }

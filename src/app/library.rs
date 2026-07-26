@@ -180,9 +180,14 @@ impl AppModel {
 
     /// Load the library's albums, once. Revisiting the section is instant.
     pub(super) fn load_albums(&mut self, sender: &ComponentSender<Self>) {
-        if self.loading_albums || !self.albums.is_empty() {
+        // `tried` as well as "is it empty": a load that *failed* leaves the
+        // collection empty, and without this it was re-attempted on every
+        // sidecar event forever. Cleared by the section's reload button, which
+        // is how a failure is meant to be retried.
+        if self.loading_albums || self.tried_albums || !self.albums.is_empty() {
             return;
         }
+        self.tried_albums = true;
         let Some(client) = self.client() else { return };
         self.loading_albums = true;
         tracing::info!("loading library albums");
@@ -197,9 +202,14 @@ impl AppModel {
     }
 
     pub(super) fn load_artists(&mut self, sender: &ComponentSender<Self>) {
-        if self.loading_artists || !self.artists.is_empty() {
+        // `tried` as well as "is it empty": a load that *failed* leaves the
+        // collection empty, and without this it was re-attempted on every
+        // sidecar event forever. Cleared by the section's reload button, which
+        // is how a failure is meant to be retried.
+        if self.loading_artists || self.tried_artists || !self.artists.is_empty() {
             return;
         }
+        self.tried_artists = true;
         let Some(client) = self.client() else { return };
         self.loading_artists = true;
         tracing::info!("loading library artists");
@@ -235,9 +245,14 @@ impl AppModel {
 
     /// Load the library's playlists, once.
     pub(super) fn load_playlists(&mut self, sender: &ComponentSender<Self>) {
-        if self.loading_playlists || !self.playlists.is_empty() {
+        // `tried` as well as "is it empty": a load that *failed* leaves the
+        // collection empty, and without this it was re-attempted on every
+        // sidecar event forever. Cleared by the section's reload button, which
+        // is how a failure is meant to be retried.
+        if self.loading_playlists || self.tried_playlists || !self.playlists.is_empty() {
             return;
         }
+        self.tried_playlists = true;
         let Some(client) = self.client() else { return };
         self.loading_playlists = true;
         tracing::info!("loading library playlists");

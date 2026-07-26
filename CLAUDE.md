@@ -521,9 +521,21 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   `adw::PreferencesGroup`, `adw::AboutDialog`, `adw::StatusPage`,
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS
   unless there is no libadwaita widget for the job — say why before adding any.
-- **First run**: an `adw::StatusPage` wearing the app's own icon, saying what
-  Tonearm is, that it needs an active subscription, and — before the button, not
-  after — that Apple's own sign-in page opens in a separate window. A browser
+- **First run**: a **modal that cannot be dismissed**, wearing the app's own
+  icon, saying what Tonearm is, that it needs an active subscription, and —
+  before the button, not after — that Apple's own sign-in page opens in a
+  separate window.
+
+  Blocking is the correct behaviour, not a nicety. Signed out, every control in
+  the app is a control that cannot work: the sidebar sections fire library
+  loads, the search box queries a catalog that answers 403, and the transport
+  talks to a player with no session. Leaving them reachable produced a 403 per
+  second against Apple for as long as the window was open, because the sidecar
+  pushes `refreshTokens` every second and each one re-ran the auto-load.
+
+  Raised and lowered from **one** place (`sync_onboarding`, called after every
+  message), because four different paths change `stage` and three of them would
+  have been easy to forget. A browser
   window appearing out of a native app is alarming when it is a surprise, and
   this is the one moment the web engine cannot be hidden, so it is explained
   instead. After it succeeds the sidecar hides forever. Never re-show it except
