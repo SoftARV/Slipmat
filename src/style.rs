@@ -160,7 +160,14 @@ pub fn set_accent(accent: Accent) {
 
          /* Same reason. A GridView draws its own background, so insetting it
             with a margin shows a band of the window around every grid. */
-         .tile-grid {{ padding: 12px; }}
+         .tile-grid {{
+             padding: 12px;
+             /* A GridView paints the `view` background, which is a shade
+                darker than the window. The results list next door carries
+                `navigation-sidebar` and is transparent, so the two sections
+                did not match. */
+             background: none;
+         }}
 
          /* A button that has to be exactly as big as the 16px spinner it
             swaps with. GTK's own button metrics are built for a hit target,
@@ -200,6 +207,21 @@ pub fn set_accent(accent: Accent) {
     BASE.with(|p| p.load_from_string(&css));
 }
 
+/// How long a tint takes to cross-fade to the next track's, and how often it
+/// repaints while doing so. 60fps for a third of a second — long enough to read
+/// as a change of mood, short enough not to lag behind the track.
+const FADE_MS: u64 = 340;
+const FRAME_MS: u64 = 16;
+
+thread_local! {
+    /// The colour currently painted, so the next track has something to fade
+    /// *from*.
+    static SHOWN: std::cell::Cell<Option<(u8, u8, u8)>> = const { std::cell::Cell::new(None) };
+    /// The fade in flight, if any.
+    static FADE: std::cell::RefCell<Option<gtk::glib::SourceId>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Tint the Now Playing bar with a colour taken from the cover.
 ///
 /// A **tonal scrim**: one flat, heavily desaturated wash of the sleeve's colour
@@ -213,8 +235,67 @@ pub fn set_accent(accent: Accent) {
 /// nobody has seen would mean recolouring all of them and guessing at contrast.
 /// Muting the colour first is what keeps this true — a vivid fill at this
 /// coverage would not be legible.
+///
+/// Cross-faded here rather than with a CSS `transition`. The rule lives in a
+/// provider that is *replaced* on every track, and reloading a stylesheet is
+/// not a state change GTK will animate between — the declaration was there and
+/// did nothing. Interpolating the colour ourselves and repainting is a few
+/// dozen reparses of one small rule, and it actually moves.
 pub fn set_bar_tint(rgb: Option<(u8, u8, u8)>) {
-    let css = match rgb.map(muted) {
+    let target = rgb.map(muted);
+
+    // Whatever was in flight is now aimed at the wrong colour.
+    FADE.with(|f| {
+        if let Some(id) = f.borrow_mut().take() {
+            id.remove();
+        }
+    });
+
+    let from = SHOWN.with(|c| c.get());
+    let (Some(from), Some(to)) = (from, target) else {
+        // Nothing to fade between — the first track of a session, or playback
+        // stopping. Snap.
+        SHOWN.with(|c| c.set(target));
+        paint(target);
+        return;
+    };
+    if from == to {
+        return;
+    }
+
+    let start = std::time::Instant::now();
+    let id = gtk::glib::timeout_add_local(std::time::Duration::from_millis(FRAME_MS), move || {
+        let t = (start.elapsed().as_millis() as f32 / FADE_MS as f32).min(1.0);
+        let now = lerp(from, to, ease(t));
+        SHOWN.with(|c| c.set(Some(now)));
+        paint(Some(now));
+
+        if t >= 1.0 {
+            // Cleared here, not by the canceller: removing a source that has
+            // already finished logs a GLib critical.
+            FADE.with(|f| *f.borrow_mut() = None);
+            gtk::glib::ControlFlow::Break
+        } else {
+            gtk::glib::ControlFlow::Continue
+        }
+    });
+    FADE.with(|f| *f.borrow_mut() = Some(id));
+}
+
+/// Ease in and out, so the fade does not start and stop abruptly.
+fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn lerp(from: (u8, u8, u8), to: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
+}
+
+/// Write the rule. Already-muted colour in, CSS out.
+fn paint(rgb: Option<(u8, u8, u8)>) {
+    let css = match rgb {
         Some((r, g, b)) => format!(
             ".np-bar {{
                  /* Two stops a hair apart, not one flat colour: it is still
@@ -225,7 +306,6 @@ pub fn set_bar_tint(rgb: Option<(u8, u8, u8)>) {
                      rgba({r}, {g}, {b}, 0.30),
                      rgba({r}, {g}, {b}, 0.22)
                  );
-                 transition: background-image 500ms ease;
              }}"
         ),
         // Nothing playing, or a cover we could not read: back to the plain bar.
@@ -244,4 +324,48 @@ pub fn set_bar_tint(rgb: Option<(u8, u8, u8)>) {
 fn muted((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
     let (hue, sat, light) = crate::components::artwork::hsl(r, g, b);
     crate::components::artwork::rgb(hue, (sat * 0.5).min(0.38), light.clamp(0.52, 0.66))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fade_starts_where_it_was_and_ends_where_it_is_going() {
+        let from = (200, 40, 60);
+        let to = (40, 80, 200);
+        assert_eq!(lerp(from, to, 0.0), from);
+        assert_eq!(lerp(from, to, 1.0), to);
+    }
+
+    #[test]
+    fn the_middle_of_a_fade_is_between_the_two() {
+        let mid = lerp((0, 0, 0), (100, 200, 40), 0.5);
+        assert_eq!(mid, (50, 100, 20));
+    }
+
+    #[test]
+    fn easing_is_pinned_at_both_ends() {
+        assert_eq!(ease(0.0), 0.0);
+        assert_eq!(ease(1.0), 1.0);
+        // Out of range cannot overshoot: a late frame must not produce a
+        // colour outside the two it is fading between.
+        assert_eq!(ease(-0.5), 0.0);
+        assert_eq!(ease(2.0), 1.0);
+    }
+
+    #[test]
+    fn muting_lands_a_sleeve_colour_in_the_surface_band() {
+        // Both a near-black and a near-white sleeve have to come out as
+        // something that can sit behind text.
+        for vivid in [(10, 0, 0), (255, 250, 250), (250, 20, 140)] {
+            let (r, g, b) = muted(vivid);
+            let (_, sat, light) = crate::components::artwork::hsl(r, g, b);
+            assert!(
+                (0.50..=0.68).contains(&light),
+                "lightness {light} for {vivid:?}"
+            );
+            assert!(sat <= 0.40, "saturation {sat} for {vivid:?}");
+        }
+    }
 }
