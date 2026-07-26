@@ -501,8 +501,12 @@ impl SimpleComponent for NowPlaying {
                     ),
                     // The button follows the mirror rather than owning the
                     // volume, so `Ctrl`+`Up` and the Shell's own slider move it
-                    // too. Setting a value GTK already holds emits nothing, so
-                    // this cannot loop back through `VolumeChanged`.
+                    // too.
+                    //
+                    // This is a two-way binding, and GTK emits `value-changed`
+                    // for a programmatic `set_value` exactly as it does for a
+                    // drag. `VolumeChanged` is what keeps that from cycling —
+                    // see the note there before touching either.
                     #[watch]
                     set_value: model.snap.volume,
                     connect_value_changed[sender] => move |_, value| {
@@ -597,8 +601,27 @@ impl SimpleComponent for NowPlaying {
                 }
             }
             NowPlayingInput::VolumeChanged(v) => {
-                // Sent, not stored — the snapshot is what the button reads
-                // back, same discipline as shuffle and repeat.
+                // **Adopted locally, unlike shuffle and repeat.** Those are
+                // sent and left to come back from the mirror, because nothing
+                // downstream re-asserts them. The volume button is different:
+                // it is a two-way binding, and relm4 runs `update_view` after
+                // *every* message — so the view update that follows this one
+                // would write `self.snap.volume` back into the widget. Without
+                // the line below that is still the **old** volume, GTK emits
+                // `value-changed` for it, and the old and new values ping-pong
+                // through the reducer forever.
+                //
+                // That shipped once and took the whole desktop down with it:
+                // 5,721 `setVolume` commands, each one a sidecar write, an
+                // MPRIS property change on the bus, and a journal line.
+                //
+                // The guard is the other half — a programmatic `set_value`
+                // emits too, so every keyboard step and every change from the
+                // Shell arrives back here as an echo that must not be resent.
+                if !volume_is_new(v, self.snap.volume) {
+                    return;
+                }
+                self.snap.volume = v;
                 let _ = sender.output(NowPlayingOutput::SetVolume(v));
             }
             NowPlayingInput::ShuffleToggled(on) => {
@@ -711,6 +734,17 @@ fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) ->
 /// A free function so the arithmetic can be tested without a clock. Three
 /// separate attempts at this shipped broken; the tests below are the reason a
 /// fourth one will not.
+/// Whether a `value-changed` from the volume button is a real move, or the
+/// echo of a value we just wrote into it ourselves.
+///
+/// Exact comparison is right here, not a tolerance: `GtkScaleButton` stores
+/// what it is given without rounding it (measured against GTK 4.22), so an
+/// echo carries bit-identical the value that produced it. A tolerance would
+/// instead start swallowing small deliberate moves.
+fn volume_is_new(incoming: f64, held: f64) -> bool {
+    (incoming - held).abs() >= f64::EPSILON
+}
+
 fn advance(base_ms: u64, ahead_ms: u64, duration_ms: u64, last_shown_ms: u64) -> u64 {
     // Only clamp against a duration we actually have. It is 0 until the first
     // metadata arrives, and clamping to that pins the position at the base —
@@ -864,6 +898,44 @@ impl NowPlaying {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_volume_button_does_not_answer_its_own_echo() {
+        // The regression that froze a desktop. GTK emits `value-changed` for a
+        // programmatic `set_value` just as it does for a drag, so every
+        // keyboard step and every change from the Shell comes back here. Resend
+        // those and the value ping-pongs through the reducer without end.
+        assert!(!volume_is_new(0.4, 0.4));
+        assert!(!volume_is_new(1.0, 1.0));
+        assert!(!volume_is_new(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_real_move_still_gets_through() {
+        assert!(volume_is_new(0.4, 1.0));
+        assert!(volume_is_new(1.0, 0.95));
+        // One keyboard step, which is the smallest move that has to survive.
+        assert!(volume_is_new(1.0 - VOLUME_STEP, 1.0));
+    }
+
+    #[test]
+    fn stepping_the_whole_range_never_stalls_or_overshoots() {
+        // Repeated `+= 0.05` does not land on exact decimals, so this walks the
+        // accumulated float rather than trusting it: every step must move, and
+        // the ends must be exactly 0.0 and 1.0 so the button can reach silent
+        // and full.
+        let mut v: f64 = 1.0;
+        for _ in 0..40 {
+            let next = (v - VOLUME_STEP).clamp(0.0, 1.0);
+            assert!(next <= v, "a down step went up: {v} -> {next}");
+            v = next;
+        }
+        assert_eq!(v, 0.0, "stepping down never reached silence");
+        for _ in 0..40 {
+            v = (v + VOLUME_STEP).clamp(0.0, 1.0);
+        }
+        assert_eq!(v, 1.0, "stepping up never reached full");
+    }
 
     fn model(snap: Snapshot) -> NowPlaying {
         NowPlaying {
