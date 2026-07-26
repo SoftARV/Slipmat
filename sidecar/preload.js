@@ -242,7 +242,7 @@ async function enqueue(method, songs) {
 }
 
 const commands = {
-  async setQueue({ songs, startPosition = 0 }) {
+  async setQueue({ songs, startPosition = 0, startPlaying = true }) {
     // BOTH keys, deliberately. MusicKit v3's setQueue forwards only
     // `startWith` to the queue descriptor:
     //
@@ -258,7 +258,7 @@ const commands = {
       songs,
       startWith: startPosition,
       startPosition,
-      startPlaying: true,
+      startPlaying,
     })
   },
   play: () => music.play(),

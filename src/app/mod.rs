@@ -138,6 +138,13 @@ pub struct AppModel {
     /// blocked, which is what stops it being presented twice.
     onboarding: Option<adw::Dialog>,
 
+    /// Where to seek once a restored queue has actually arrived. `None` at all
+    /// other times — a restore is a one-shot.
+    restore_to_ms: Option<u64>,
+    /// Whether the restore has been attempted this session, so a later token
+    /// refresh cannot start it again.
+    restored: bool,
+
     /// The last track MusicKit reported, kept so the bar can hold it through a
     /// queue reload — see `push_snapshot::showing`.
     last_item: Option<crate::player::protocol::Item>,
@@ -1233,6 +1240,8 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
+            restore_to_ms: None,
+            restored: false,
             onboarding: None,
             last_item: None,
             menu_sender: sender.clone(),
@@ -1394,6 +1403,8 @@ impl Component for AppModel {
     fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
         // A now-playing notification must not outlive the player that sent it.
         notify::clear(relm4::main_application().upcast_ref::<gtk::gio::Application>());
+        // The only moment the position is accurate.
+        self.save_session();
     }
 
     /// Wraps `update` so the search box can be re-filled after a scope change.
@@ -1799,6 +1810,7 @@ impl AppModel {
                     self.send(Command::SetQueue {
                         songs,
                         start_position: 0,
+                        start_playing: true,
                     });
                     return;
                 }
@@ -2306,6 +2318,8 @@ impl AppModel {
         self.last_item = None;
         self.last_queue = None;
         self.pending_start = None;
+        self.restore_to_ms = None;
+        crate::session::clear();
         crate::style::set_bar_tint(None);
         self.push_snapshot();
     }

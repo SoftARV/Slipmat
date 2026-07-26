@@ -347,6 +347,33 @@ Library membership is the same shape of fact: a track that came from
 `/me/library/…` is in the library by definition, so `Track::in_library` is set
 by the client method that fetched it — never guessed from the id.
 
+### Restoring the last session
+
+Three files, three homes, and the distinction is not pedantry:
+
+| What | Where | Why |
+| --- | --- | --- |
+| Preferences | `~/.config/tonearm/settings.ini` | somebody chose them |
+| Unplayable ids | `~/.cache/tonearm/` | rederivable — Apple will tell us again |
+| The last queue | `$XDG_STATE_HOME/tonearm/session.json` | neither chosen nor rederivable |
+
+Two rules the restore follows:
+
+- **It never resumes playing.** `Command::SetQueue` carries `start_playing`, and
+  this is the only place that sends `false`. An app that starts making noise
+  because it was launched is hostile; the point is to remove the work of finding
+  your place, not to take the decision away.
+- **It saves on every track change as well as on shutdown.** Shutdown is the
+  only moment the position is accurate, and also the one that might not run —
+  a crash, a `SIGKILL`, a session ending badly. Saving per track means the worst
+  case is restoring the right track at its start rather than restoring nothing.
+
+The seek waits for MusicKit to confirm it holds the queue we asked for, the same
+way `verify_start` does and for the same reason: the mirror holds the *previous*
+queue for a moment after a `setQueue`, and seeking into that lands somewhere
+arbitrary. A position within five seconds of the end starts the track over
+instead — restoring two seconds from the end just skips to the next song.
+
 ### Sidecar rules learned the hard way
 
 M1 took five rounds to get audio out, and every failure was silent. These are
@@ -407,6 +434,7 @@ src/
     status.rs        # what the pane shows when it is not showing music
     chrome.rs        # the menu, its accelerators, and the three dialogs
   settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
+  session.rs         # what was playing, → $XDG_STATE_HOME/tonearm/session.json
   style.rs           # accent colour + the Now Playing tint. The only CSS.
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)

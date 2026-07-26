@@ -33,6 +33,14 @@ pub enum Command {
     SetQueue {
         songs: Vec<String>,
         start_position: usize,
+        /// Whether to start playing once it is loaded.
+        ///
+        /// True for everything a person asked for. False exactly once, when
+        /// restoring the queue from the last session: an app that starts making
+        /// noise because it was launched is hostile, and the point of restoring
+        /// is to remove the work of finding your place, not to take the
+        /// decision away.
+        start_playing: bool,
     },
 
     #[serde(rename = "play")]
@@ -358,12 +366,26 @@ mod tests {
         let json = serde_json::to_string(&Command::SetQueue {
             songs: vec!["1440857781".into(), "1440857782".into()],
             start_position: 1,
+            start_playing: true,
         })
         .unwrap();
         assert_eq!(
             json,
-            r#"{"cmd":"setQueue","songs":["1440857781","1440857782"],"startPosition":1}"#
+            r#"{"cmd":"setQueue","songs":["1440857781","1440857782"],"startPosition":1,"startPlaying":true}"#
         );
+    }
+
+    #[test]
+    fn a_restored_queue_asks_not_to_play() {
+        // The one case that sends false. If this key ever stops being sent,
+        // launching the app would start making noise on its own.
+        let json = serde_json::to_string(&Command::SetQueue {
+            songs: vec!["1".into()],
+            start_position: 0,
+            start_playing: false,
+        })
+        .unwrap();
+        assert!(json.contains(r#""startPlaying":false"#), "{json}");
     }
 
     #[test]

@@ -7,6 +7,7 @@ mod mpris;
 mod music;
 mod notify;
 mod player;
+mod session;
 mod settings;
 mod style;
 mod unplayable;
