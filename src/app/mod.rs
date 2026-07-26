@@ -134,6 +134,10 @@ pub enum Stage {
 pub struct AppModel {
     stage: Stage,
     player: PlayerState,
+    /// The first-run gate, while it is up. `Some` exactly when the app is
+    /// blocked, which is what stops it being presented twice.
+    onboarding: Option<adw::Dialog>,
+
     /// The last track MusicKit reported, kept so the bar can hold it through a
     /// queue reload — see `push_snapshot::showing`.
     last_item: Option<crate::player::protocol::Item>,
@@ -208,6 +212,23 @@ pub struct AppModel {
     loading_albums: bool,
     loading_artists: bool,
     loading_playlists: bool,
+    /// Whether a load has been *attempted*, distinct from whether it produced
+    /// anything. A failure leaves the collection empty, and "empty" alone would
+    /// mean trying again on every event.
+    tried_albums: bool,
+    tried_artists: bool,
+    tried_playlists: bool,
+    /// What each section's widgets were last built *for*.
+    ///
+    /// Rebuilding is expensive — every tile that binds decodes its cover on the
+    /// GTK thread — and switching sections was rebuilding unconditionally, so
+    /// returning to a section you had already visited cost the same half second
+    /// every time. `None` means stale; anything else is the fingerprint the
+    /// current widgets already satisfy.
+    built_rows: Option<String>,
+    built_albums: Option<String>,
+    built_artists: Option<String>,
+    built_playlists: Option<String>,
     /// Tile artwork already on disk. Shared between the grids on purpose: it
     /// is keyed by the artwork itself, so a cover fetched for one is a cover
     /// the other gets for free.
@@ -288,6 +309,19 @@ pub struct AppModel {
     notify_when_art_lands: Option<String>,
 }
 
+/// Logs how long a rebuild took, on the way out. Temporary instrumentation for
+/// "switching sections is slow" — it needs a number before it needs a fix.
+pub(crate) struct Timed(pub &'static str, pub std::time::Instant);
+
+impl Drop for Timed {
+    fn drop(&mut self) {
+        let ms = self.1.elapsed().as_millis();
+        if ms > 2 {
+            tracing::debug!(what = self.0, ms, "rebuild");
+        }
+    }
+}
+
 /// Something we can ask Apple to do to the user's account.
 ///
 /// Both answer 202 Accepted with an empty body — "acceptable, may not have
@@ -319,6 +353,9 @@ impl LibraryAction {
 #[derive(Debug)]
 pub enum AppMsg {
     SignIn,
+    /// Asks first — see `confirm_sign_out`.
+    SignOut,
+    SignOutConfirmed,
     PlayPause,
     /// Explicit, not a toggle. MPRIS sends `Play`, `Pause` and `PlayPause` as
     /// three distinct calls, and collapsing the first two into the toggle makes
@@ -885,17 +922,6 @@ impl Component for AppModel {
                                             set_title: &model.headline(),
                                             #[watch]
                                             set_description: Some(&model.detail()),
-
-                                            #[wrap(Some)]
-                                            set_child = &gtk::Button {
-                                                set_label: "Sign in to Apple Music",
-                                                set_halign: gtk::Align::Center,
-                                                add_css_class: "suggested-action",
-                                                add_css_class: "pill",
-                                                #[watch]
-                                                set_visible: matches!(model.stage, Stage::SignedOut),
-                                                connect_clicked => AppMsg::SignIn,
-                                            },
                                         },
 
                                         // Loading gets its own page: "nothing
@@ -1179,6 +1205,13 @@ impl Component for AppModel {
             loading_albums: false,
             loading_artists: false,
             loading_playlists: false,
+            tried_albums: false,
+            tried_artists: false,
+            tried_playlists: false,
+            built_rows: None,
+            built_albums: None,
+            built_artists: None,
+            built_playlists: None,
             tile_art: art_cache(),
             album_art_widgets: art_registry(),
             artist_art_widgets: art_registry(),
@@ -1200,6 +1233,7 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
+            onboarding: None,
             last_item: None,
             menu_sender: sender.clone(),
             last_command: std::cell::RefCell::new(None),
@@ -1225,6 +1259,12 @@ impl Component for AppModel {
             section.append(Some("_Keyboard Shortcuts"), Some("win.shortcuts"));
             section.append(Some("_About Tonearm"), Some("win.about"));
             primary_menu.append_section(None, &section);
+
+            // Its own section: signing out is an account action, not app
+            // furniture, and it should not sit next to About.
+            let account = gtk::gio::Menu::new();
+            account.append(Some("_Sign Out"), Some("win.sign-out"));
+            primary_menu.append_section(None, &account);
         }
 
         let toaster = &model.toaster;
@@ -1361,6 +1401,9 @@ impl Component for AppModel {
     /// The entry is the one widget holding text the model also owns, and the
     /// two must agree: switching scope swaps which query is live, and the box
     /// has to show that scope's text rather than the one you left behind.
+    /// Timed, temporarily, because "switching sections is slow" needs a number
+    /// before it needs a fix. `update_view` re-runs every `#[watch]` in the
+    /// view macro, and there is a lot of it.
     fn update_with_view(
         &mut self,
         widgets: &mut Self::Widgets,
@@ -1378,12 +1421,57 @@ impl Component for AppModel {
             widgets.search_entry.set_text(self.query());
         }
 
+        let painting = std::time::Instant::now();
         self.update_view(widgets, sender);
+        let ms = painting.elapsed().as_millis();
+        if ms > 4 {
+            // Only the slow ones: at ~60fps anything over 16ms drops a frame,
+            // and a message that costs more than a few is worth naming.
+            tracing::debug!(ms, "view refresh");
+        }
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
+        self.handle(msg, &sender, root);
+        self.sync_onboarding(&sender, root);
+    }
+
+    fn update_cmd(
+        &mut self,
+        msg: Self::CommandOutput,
+        sender: ComponentSender<Self>,
+        root: &Self::Root,
+    ) {
+        self.handle_cmd(msg, &sender, root);
+        self.sync_onboarding(&sender, root);
+    }
+}
+
+impl AppModel {
+    fn handle(
+        &mut self,
+        msg: AppMsg,
+        sender: &ComponentSender<Self>,
+        root: &adw::ApplicationWindow,
+    ) {
+        let sender = sender.clone();
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
+            AppMsg::SignOut => {
+                // The menu item is always there; asking to sign out when you
+                // already are should do nothing rather than prompt.
+                if matches!(self.stage, Stage::Ready) {
+                    self.confirm_sign_out(&sender, root);
+                }
+            }
+            AppMsg::SignOutConfirmed => {
+                tracing::info!("signing out");
+                // Tell MusicKit first: it drops Apple's session, and the
+                // sidecar's `authorizationStatusDidChange` will confirm it
+                // rather than us assuming.
+                self.send(Command::Unauthorize);
+                self.forget_session();
+            }
             AppMsg::PlayPause => self.send(Command::PlayPause),
             AppMsg::Play => self.send(Command::Play),
             AppMsg::Pause => self.send(Command::Pause),
@@ -1455,6 +1543,7 @@ impl Component for AppModel {
                 if view == self.view {
                     return;
                 }
+                let switch_started = std::time::Instant::now();
                 self.view = view;
                 // Switching section means switching what the content pane is
                 // about, so any album or artist pushed on top of it is now
@@ -1490,6 +1579,14 @@ impl Component for AppModel {
                         }
                     }
                 }
+                // What the *reducer* spent. If this is small and the section
+                // still takes a second to appear, the cost is in rendering
+                // rather than in here.
+                tracing::debug!(
+                    ?view,
+                    ms = switch_started.elapsed().as_millis(),
+                    "section switch"
+                );
             }
             AppMsg::AlbumActivated(position) => {
                 if let Some(item) = self.album_grid.get(position)
@@ -1650,6 +1747,7 @@ impl Component for AppModel {
                 self.settings.sort = sort.id().into();
                 self.settings.save();
                 tracing::info!(sort = sort.id(), "library sort");
+                self.built_rows = None;
                 // A rebuild resets the scroll, which is right here: the list
                 // the user was looking at no longer exists in that order.
                 self.rebuild_rows();
@@ -1682,6 +1780,7 @@ impl Component for AppModel {
             }
             AppMsg::ToggleSortDirection => {
                 self.sort_reversed = !self.sort_reversed;
+                self.built_rows = None;
                 self.settings.sort_reversed = self.sort_reversed;
                 self.settings.save();
                 self.rebuild_rows();
@@ -1733,12 +1832,13 @@ impl Component for AppModel {
         }
     }
 
-    fn update_cmd(
+    fn handle_cmd(
         &mut self,
-        msg: Self::CommandOutput,
-        sender: ComponentSender<Self>,
-        _root: &Self::Root,
+        msg: CommandMsg,
+        sender: &ComponentSender<Self>,
+        _root: &adw::ApplicationWindow,
     ) {
+        let sender = sender.clone();
         match msg {
             CommandMsg::AlbumPage { page, result } => {
                 let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
@@ -1781,6 +1881,7 @@ impl Component for AppModel {
                     Ok(albums) => {
                         tracing::info!(albums = albums.len(), "library albums loaded");
                         self.albums = albums;
+                        self.built_albums = None;
                         self.rebuild_albums();
                     }
                     Err(err) => {
@@ -1795,6 +1896,7 @@ impl Component for AppModel {
                     Ok(artists) => {
                         tracing::info!(artists = artists.len(), "library artists loaded");
                         self.artists = artists;
+                        self.built_artists = None;
                         self.rebuild_artists();
                     }
                     Err(err) => {
@@ -1809,6 +1911,7 @@ impl Component for AppModel {
                     Ok(playlists) => {
                         tracing::info!(playlists = playlists.len(), "library playlists loaded");
                         self.playlists = playlists;
+                        self.built_playlists = None;
                         self.rebuild_playlists();
                     }
                     Err(err) => {
@@ -1899,6 +2002,7 @@ impl Component for AppModel {
                 let unplayable = tracks.iter().filter(|t| !t.playable()).count();
                 tracing::info!(tracks = tracks.len(), unplayable, "library loaded");
                 self.all_tracks = tracks;
+                self.built_rows = None;
                 self.rebuild_rows();
             }
             CommandMsg::Catalog {
@@ -1956,6 +2060,7 @@ impl Component for AppModel {
                             exhausted = self.catalog_exhausted,
                             "catalog results"
                         );
+                        self.built_rows = None;
                         self.rebuild_rows();
                     }
                     Err(err) => {
@@ -2147,16 +2252,79 @@ impl AppModel {
             View::Songs | View::Search => self.load_library(sender),
             View::Albums => {
                 self.albums.clear();
+                self.tried_albums = false;
                 self.load_albums(sender);
             }
             View::Artists => {
                 self.artists.clear();
+                self.tried_artists = false;
                 self.load_artists(sender);
             }
             View::Playlists => {
                 self.playlists.clear();
+                self.tried_playlists = false;
                 self.load_playlists(sender);
             }
+        }
+    }
+
+    /// Drop everything that belonged to the signed-in user.
+    ///
+    /// Not just the tokens: the library, the grids, the catalog results and the
+    /// pushed pages all came from that account, and leaving them on screen
+    /// after a sign-out would show one person's music to whoever signs in
+    /// next. The unplayable-id cache stays — it is about Apple's catalog, not
+    /// about the user.
+    fn forget_session(&mut self) {
+        self.stage = Stage::SignedOut;
+        self.tokens = None;
+
+        self.all_tracks.clear();
+        self.albums.clear();
+        self.artists.clear();
+        self.playlists.clear();
+        self.tried_albums = false;
+        self.tried_artists = false;
+        self.tried_playlists = false;
+        self.built_rows = None;
+        self.built_albums = None;
+        self.built_artists = None;
+        self.built_playlists = None;
+        self.catalog.clear();
+        self.catalog_songs = 0;
+        self.library_query.clear();
+        self.catalog_query.clear();
+
+        self.rebuild_rows();
+        self.rebuild_albums();
+        self.rebuild_artists();
+        self.rebuild_playlists();
+
+        // Pages and the queue belonged to that session too.
+        self.pop_to_results();
+        self.show_queue = false;
+        self.last_item = None;
+        self.last_queue = None;
+        self.pending_start = None;
+        crate::style::set_bar_tint(None);
+        self.push_snapshot();
+    }
+
+    /// Put the first-run gate up or take it down, to match the session.
+    ///
+    /// Driven from one place rather than from each site that changes `stage`,
+    /// because there are four of them — tokens arriving, an authorization
+    /// change, a hook attaching, and signing out — and three of them would have
+    /// been easy to forget.
+    fn sync_onboarding(&mut self, sender: &ComponentSender<Self>, root: &adw::ApplicationWindow) {
+        match (matches!(self.stage, Stage::SignedOut), &self.onboarding) {
+            (true, None) => self.onboarding = Some(self.present_onboarding(sender, root)),
+            (false, Some(dialog)) => {
+                // `can_close` is false, so it will not go on its own.
+                dialog.force_close();
+                self.onboarding = None;
+            }
+            _ => {}
         }
     }
 

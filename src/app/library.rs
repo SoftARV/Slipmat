@@ -106,6 +106,23 @@ impl AppModel {
     /// filter can change membership arbitrarily on every keystroke, and these
     /// rows hold no state worth preserving (no popovers, no expanders).
     pub(super) fn rebuild_rows(&mut self) {
+        // Sort and direction as well as the query: all three change the order,
+        // and the widgets already on screen may satisfy the new request.
+        let fingerprint = format!(
+            "{}\u{1}{}\u{1}{}\u{1}{:?}",
+            self.query(),
+            self.sort.id(),
+            self.sort_reversed,
+            self.scope()
+        );
+        if self.built_rows.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        self.built_rows = Some(fingerprint);
+
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("rows", started);
+
         // Rebuilding resets the scroll. It is legitimate on load and on a
         // search change; anywhere else it is a bug, so say when it happens.
         tracing::debug!(query = %self.query(), "library: rebuilding rows");
@@ -180,9 +197,14 @@ impl AppModel {
 
     /// Load the library's albums, once. Revisiting the section is instant.
     pub(super) fn load_albums(&mut self, sender: &ComponentSender<Self>) {
-        if self.loading_albums || !self.albums.is_empty() {
+        // `tried` as well as "is it empty": a load that *failed* leaves the
+        // collection empty, and without this it was re-attempted on every
+        // sidecar event forever. Cleared by the section's reload button, which
+        // is how a failure is meant to be retried.
+        if self.loading_albums || self.tried_albums || !self.albums.is_empty() {
             return;
         }
+        self.tried_albums = true;
         let Some(client) = self.client() else { return };
         self.loading_albums = true;
         tracing::info!("loading library albums");
@@ -197,9 +219,14 @@ impl AppModel {
     }
 
     pub(super) fn load_artists(&mut self, sender: &ComponentSender<Self>) {
-        if self.loading_artists || !self.artists.is_empty() {
+        // `tried` as well as "is it empty": a load that *failed* leaves the
+        // collection empty, and without this it was re-attempted on every
+        // sidecar event forever. Cleared by the section's reload button, which
+        // is how a failure is meant to be retried.
+        if self.loading_artists || self.tried_artists || !self.artists.is_empty() {
             return;
         }
+        self.tried_artists = true;
         let Some(client) = self.client() else { return };
         self.loading_artists = true;
         tracing::info!("loading library artists");
@@ -215,6 +242,17 @@ impl AppModel {
 
     /// Rebuild the album grid from `albums` + the query.
     pub(super) fn rebuild_albums(&mut self) {
+        // Already showing exactly this? Then the widgets are correct and
+        // rebuilding them would only re-decode every cover — see `built_albums`.
+        let fingerprint = self.library_query.trim().to_lowercase();
+        if self.built_albums.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        self.built_albums = Some(fingerprint);
+
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("albums", started);
+
         let needle = self.library_query.trim().to_lowercase();
         let tiles: Vec<Tile> = self
             .albums
@@ -235,9 +273,14 @@ impl AppModel {
 
     /// Load the library's playlists, once.
     pub(super) fn load_playlists(&mut self, sender: &ComponentSender<Self>) {
-        if self.loading_playlists || !self.playlists.is_empty() {
+        // `tried` as well as "is it empty": a load that *failed* leaves the
+        // collection empty, and without this it was re-attempted on every
+        // sidecar event forever. Cleared by the section's reload button, which
+        // is how a failure is meant to be retried.
+        if self.loading_playlists || self.tried_playlists || !self.playlists.is_empty() {
             return;
         }
+        self.tried_playlists = true;
         let Some(client) = self.client() else { return };
         self.loading_playlists = true;
         tracing::info!("loading library playlists");
@@ -252,6 +295,17 @@ impl AppModel {
     }
 
     pub(super) fn rebuild_playlists(&mut self) {
+        // Already showing exactly this? Then the widgets are correct and
+        // rebuilding them would only re-decode every cover — see `built_playlists`.
+        let fingerprint = self.library_query.trim().to_lowercase();
+        if self.built_playlists.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        self.built_playlists = Some(fingerprint);
+
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("playlists", started);
+
         let needle = self.library_query.trim().to_lowercase();
         let tiles: Vec<Tile> = self
             .playlists
@@ -271,6 +325,17 @@ impl AppModel {
     }
 
     pub(super) fn rebuild_artists(&mut self) {
+        // Already showing exactly this? Then the widgets are correct and
+        // rebuilding them would only re-decode every cover — see `built_artists`.
+        let fingerprint = self.library_query.trim().to_lowercase();
+        if self.built_artists.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        self.built_artists = Some(fingerprint);
+
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("artists", started);
+
         let needle = self.library_query.trim().to_lowercase();
         let tiles: Vec<Tile> = self
             .artists

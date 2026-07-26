@@ -521,9 +521,32 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   `adw::PreferencesGroup`, `adw::AboutDialog`, `adw::StatusPage`,
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS
   unless there is no libadwaita widget for the job — say why before adding any.
-- **First run**: an `adw::StatusPage` explaining that Apple's sign-in window will
-  open once. It is the genuine Apple login (with 2FA); after it succeeds the
-  sidecar hides forever. Never re-show it except on explicit Sign Out → Sign In.
+- **First run**: a **modal that cannot be dismissed**, wearing the app's own
+  icon, saying what Tonearm is, that it needs an active subscription, and —
+  before the button, not after — that Apple's own sign-in page opens in a
+  separate window.
+
+  Blocking is the correct behaviour, not a nicety. Signed out, every control in
+  the app is a control that cannot work: the sidebar sections fire library
+  loads, the search box queries a catalog that answers 403, and the transport
+  talks to a player with no session. Leaving them reachable produced a 403 per
+  second against Apple for as long as the window was open, because the sidecar
+  pushes `refreshTokens` every second and each one re-ran the auto-load.
+
+  Raised and lowered from **one** place (`sync_onboarding`, called after every
+  message), because four different paths change `stage` and three of them would
+  have been easy to forget. A browser
+  window appearing out of a native app is alarming when it is a surprise, and
+  this is the one moment the web engine cannot be hidden, so it is explained
+  instead. After it succeeds the sidecar hides forever. Never re-show it except
+  on explicit Sign Out → Sign In.
+- **Sign Out** lives in the primary menu, in its own section — an account action
+  is not app furniture and should not sit beside About. It asks first, because
+  it drops Apple's session and getting back in means the login window and
+  whatever two-factor prompt that involves. It then forgets *everything* that
+  belonged to that account: library, grids, catalog results, pushed pages,
+  queue, the bar. The unplayable-id cache stays, because that is a fact about
+  Apple's catalog rather than about the user.
 - Sidecar restarting, no subscription, offline, no results: distinct
   `adw::StatusPage`s. Errors: `adw::Toast`.
 
@@ -629,6 +652,21 @@ Scroll a 500-track library and watch where the count stops. A few dozen means
 recycling. Five hundred means every row is real, and something upstream — a
 `Clamp` in the wrong place, a `Box` between the view and its `ScrolledWindow` —
 is asking the view for its full height.
+
+**A rebuild is expensive, so do not do one that changes nothing.** Every tile
+that binds decodes its cover on the GTK thread — measured at **2.5ms per
+cover** — and a rebuild binds far more of them than are visible. Switching
+sections used to rebuild unconditionally, so returning to a section already on
+screen cost ~500ms of re-decoding every time.
+
+Each section now records the fingerprint its widgets were built for (the query,
+plus sort and direction for the songs list) and returns early when it already
+matches. Anything that changes the underlying data sets the fingerprint to
+`None`. The first build of a section still costs its ~500ms, once, behind the
+spinner that is already showing.
+
+`RUST_LOG=tonearm=debug` reports `rebuild what=… ms=…` and `section switch`, so
+this stays measurable rather than remembered.
 
 A pushed page is not virtualised on purpose: its list sits in a `Box` under the
 header so the header scrolls with the content, which means GTK asks the list for
