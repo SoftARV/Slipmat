@@ -106,6 +106,20 @@ impl AppModel {
     /// filter can change membership arbitrarily on every keystroke, and these
     /// rows hold no state worth preserving (no popovers, no expanders).
     pub(super) fn rebuild_rows(&mut self) {
+        // Sort and direction as well as the query: all three change the order,
+        // and the widgets already on screen may satisfy the new request.
+        let fingerprint = format!(
+            "{}\u{1}{}\u{1}{}\u{1}{:?}",
+            self.query(),
+            self.sort.id(),
+            self.sort_reversed,
+            self.scope()
+        );
+        if self.built_rows.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        self.built_rows = Some(fingerprint);
+
         let started = std::time::Instant::now();
         let _timed = crate::app::Timed("rows", started);
 
@@ -228,6 +242,14 @@ impl AppModel {
 
     /// Rebuild the album grid from `albums` + the query.
     pub(super) fn rebuild_albums(&mut self) {
+        // Already showing exactly this? Then the widgets are correct and
+        // rebuilding them would only re-decode every cover — see `built_albums`.
+        let fingerprint = self.library_query.trim().to_lowercase();
+        if self.built_albums.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        self.built_albums = Some(fingerprint);
+
         let started = std::time::Instant::now();
         let _timed = crate::app::Timed("albums", started);
 
@@ -273,6 +295,14 @@ impl AppModel {
     }
 
     pub(super) fn rebuild_playlists(&mut self) {
+        // Already showing exactly this? Then the widgets are correct and
+        // rebuilding them would only re-decode every cover — see `built_playlists`.
+        let fingerprint = self.library_query.trim().to_lowercase();
+        if self.built_playlists.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        self.built_playlists = Some(fingerprint);
+
         let started = std::time::Instant::now();
         let _timed = crate::app::Timed("playlists", started);
 
@@ -295,6 +325,14 @@ impl AppModel {
     }
 
     pub(super) fn rebuild_artists(&mut self) {
+        // Already showing exactly this? Then the widgets are correct and
+        // rebuilding them would only re-decode every cover — see `built_artists`.
+        let fingerprint = self.library_query.trim().to_lowercase();
+        if self.built_artists.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        self.built_artists = Some(fingerprint);
+
         let started = std::time::Instant::now();
         let _timed = crate::app::Timed("artists", started);
 

@@ -218,6 +218,17 @@ pub struct AppModel {
     tried_albums: bool,
     tried_artists: bool,
     tried_playlists: bool,
+    /// What each section's widgets were last built *for*.
+    ///
+    /// Rebuilding is expensive — every tile that binds decodes its cover on the
+    /// GTK thread — and switching sections was rebuilding unconditionally, so
+    /// returning to a section you had already visited cost the same half second
+    /// every time. `None` means stale; anything else is the fingerprint the
+    /// current widgets already satisfy.
+    built_rows: Option<String>,
+    built_albums: Option<String>,
+    built_artists: Option<String>,
+    built_playlists: Option<String>,
     /// Tile artwork already on disk. Shared between the grids on purpose: it
     /// is keyed by the artwork itself, so a cover fetched for one is a cover
     /// the other gets for free.
@@ -1197,6 +1208,10 @@ impl Component for AppModel {
             tried_albums: false,
             tried_artists: false,
             tried_playlists: false,
+            built_rows: None,
+            built_albums: None,
+            built_artists: None,
+            built_playlists: None,
             tile_art: art_cache(),
             album_art_widgets: art_registry(),
             artist_art_widgets: art_registry(),
@@ -1732,6 +1747,7 @@ impl AppModel {
                 self.settings.sort = sort.id().into();
                 self.settings.save();
                 tracing::info!(sort = sort.id(), "library sort");
+                self.built_rows = None;
                 // A rebuild resets the scroll, which is right here: the list
                 // the user was looking at no longer exists in that order.
                 self.rebuild_rows();
@@ -1764,6 +1780,7 @@ impl AppModel {
             }
             AppMsg::ToggleSortDirection => {
                 self.sort_reversed = !self.sort_reversed;
+                self.built_rows = None;
                 self.settings.sort_reversed = self.sort_reversed;
                 self.settings.save();
                 self.rebuild_rows();
@@ -1864,6 +1881,7 @@ impl AppModel {
                     Ok(albums) => {
                         tracing::info!(albums = albums.len(), "library albums loaded");
                         self.albums = albums;
+                        self.built_albums = None;
                         self.rebuild_albums();
                     }
                     Err(err) => {
@@ -1878,6 +1896,7 @@ impl AppModel {
                     Ok(artists) => {
                         tracing::info!(artists = artists.len(), "library artists loaded");
                         self.artists = artists;
+                        self.built_artists = None;
                         self.rebuild_artists();
                     }
                     Err(err) => {
@@ -1892,6 +1911,7 @@ impl AppModel {
                     Ok(playlists) => {
                         tracing::info!(playlists = playlists.len(), "library playlists loaded");
                         self.playlists = playlists;
+                        self.built_playlists = None;
                         self.rebuild_playlists();
                     }
                     Err(err) => {
@@ -1982,6 +2002,7 @@ impl AppModel {
                 let unplayable = tracks.iter().filter(|t| !t.playable()).count();
                 tracing::info!(tracks = tracks.len(), unplayable, "library loaded");
                 self.all_tracks = tracks;
+                self.built_rows = None;
                 self.rebuild_rows();
             }
             CommandMsg::Catalog {
@@ -2039,6 +2060,7 @@ impl AppModel {
                             exhausted = self.catalog_exhausted,
                             "catalog results"
                         );
+                        self.built_rows = None;
                         self.rebuild_rows();
                     }
                     Err(err) => {
@@ -2264,6 +2286,10 @@ impl AppModel {
         self.tried_albums = false;
         self.tried_artists = false;
         self.tried_playlists = false;
+        self.built_rows = None;
+        self.built_albums = None;
+        self.built_artists = None;
+        self.built_playlists = None;
         self.catalog.clear();
         self.catalog_songs = 0;
         self.library_query.clear();

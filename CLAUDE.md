@@ -653,6 +653,21 @@ recycling. Five hundred means every row is real, and something upstream — a
 `Clamp` in the wrong place, a `Box` between the view and its `ScrolledWindow` —
 is asking the view for its full height.
 
+**A rebuild is expensive, so do not do one that changes nothing.** Every tile
+that binds decodes its cover on the GTK thread — measured at **2.5ms per
+cover** — and a rebuild binds far more of them than are visible. Switching
+sections used to rebuild unconditionally, so returning to a section already on
+screen cost ~500ms of re-decoding every time.
+
+Each section now records the fingerprint its widgets were built for (the query,
+plus sort and direction for the songs list) and returns early when it already
+matches. Anything that changes the underlying data sets the fingerprint to
+`None`. The first build of a section still costs its ~500ms, once, behind the
+spinner that is already showing.
+
+`RUST_LOG=tonearm=debug` reports `rebuild what=… ms=…` and `section switch`, so
+this stays measurable rather than remembered.
+
 A pushed page is not virtualised on purpose: its list sits in a `Box` under the
 header so the header scrolls with the content, which means GTK asks the list for
 its full height. An album is a dozen tracks. That is the right trade.
