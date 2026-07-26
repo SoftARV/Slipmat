@@ -83,10 +83,19 @@ impl AppModel {
     /// also what makes a stopped player keep its last track on screen rather
     /// than wiping itself.
     fn showing(&self) -> Option<&crate::player::protocol::Item> {
-        self.player.now_playing.as_ref().or(self
-            .last_item
+        self.player
+            .now_playing
             .as_ref()
-            .filter(|_| !self.player.queue.is_empty()))
+            // A queue loaded but never started has no *now playing item* —
+            // MusicKit only sets one when something begins. That is exactly the
+            // state a restored session is in, and rendering it faithfully left
+            // the bar empty next to a full queue. The queue's own current entry
+            // is the honest answer to "what is this player on".
+            .or_else(|| self.player.queue.get(self.player.queue_position))
+            .or(self
+                .last_item
+                .as_ref()
+                .filter(|_| !self.player.queue.is_empty()))
     }
 
     /// Flatten `PlayerState` into what the bar renders, and push it down.
@@ -120,6 +129,9 @@ impl AppModel {
             busy: self.player.state.is_busy(),
             has_next: self.player.has_next(),
             has_previous: self.player.has_previous(),
+            // Anything loaded counts, playing or not: a restored queue is
+            // paused by design, and greying the transport out would mean you
+            // could not press play on it.
             active: item.is_some(),
         };
         self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));

@@ -138,9 +138,6 @@ pub struct AppModel {
     /// blocked, which is what stops it being presented twice.
     onboarding: Option<adw::Dialog>,
 
-    /// Where to seek once a restored queue has actually arrived. `None` at all
-    /// other times — a restore is a one-shot.
-    restore_to_ms: Option<u64>,
     /// Whether the restore has been attempted this session, so a later token
     /// refresh cannot start it again.
     restored: bool,
@@ -1240,7 +1237,6 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
-            restore_to_ms: None,
             restored: false,
             onboarding: None,
             last_item: None,
@@ -1736,7 +1732,17 @@ impl AppModel {
                 self.play_entries(&entries, 0);
             }
             AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
-                Some(index) => self.send(Command::ChangeToIndex { index }),
+                Some(index) => {
+                    self.send(Command::ChangeToIndex { index });
+                    // Clicking a track in the queue is a request to *play* it.
+                    // `changeToMediaAtIndex` only moves the cursor, so on a
+                    // queue that is loaded but idle — a restored session, or a
+                    // paused one — it moved silently and looked like nothing
+                    // had happened.
+                    if !self.player.state.is_playing() {
+                        self.send(Command::Play);
+                    }
+                }
                 None => self.toast("That track is no longer in the queue"),
             },
             AppMsg::RemoveFromQueue(id) => match self.queue_index_of(&id) {
@@ -1811,6 +1817,7 @@ impl AppModel {
                         songs,
                         start_position: 0,
                         start_playing: true,
+                        start_time_ms: 0,
                     });
                     return;
                 }
@@ -2318,7 +2325,6 @@ impl AppModel {
         self.last_item = None;
         self.last_queue = None;
         self.pending_start = None;
-        self.restore_to_ms = None;
         crate::session::clear();
         crate::style::set_bar_tint(None);
         self.push_snapshot();

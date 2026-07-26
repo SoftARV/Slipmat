@@ -244,10 +244,8 @@ impl AppModel {
         self.sync_tick(sender);
         self.push_snapshot();
         // After the mirror has the new queue, confirm MusicKit put us on the
-        // track that was actually clicked...
+        // track that was actually clicked.
         self.verify_start();
-        // ...and, if this queue came from the last session, seek into it.
-        self.finish_restore();
 
         // Load the library the moment we're able to, rather than making the
         // user ask. Guarded on all three conditions so a later event — a

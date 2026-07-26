@@ -242,7 +242,7 @@ async function enqueue(method, songs) {
 }
 
 const commands = {
-  async setQueue({ songs, startPosition = 0, startPlaying = true }) {
+  async setQueue({ songs, startPosition = 0, startPlaying = true, startTimeMs = 0 }) {
     // BOTH keys, deliberately. MusicKit v3's setQueue forwards only
     // `startWith` to the queue descriptor:
     //
@@ -254,11 +254,15 @@ const commands = {
     // Deeper down the descriptor does accept either (`startWith ?? startPosition`),
     // so sending both is harmless and survives whichever layer a future
     // MusicKit build hands the options to.
+    // `startTime` is seconds, and it is how a restored queue comes back where
+    // it was left. Seeking afterwards does not work while nothing is playing:
+    // there is no current item to seek within.
     await music.setQueue({
       songs,
       startWith: startPosition,
       startPosition,
       startPlaying,
+      startTime: startTimeMs / 1000,
     })
   },
   play: () => music.play(),

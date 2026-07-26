@@ -145,7 +145,7 @@ impl AppModel {
     /// Put back what was playing when the app last closed.
     ///
     /// Loaded **paused**, and the position is applied only once MusicKit
-    /// confirms it is holding the queue we asked for — see `finish_restore`.
+    /// confirms it is holding the queue we asked for.
     pub(super) fn restore_session(&mut self) {
         let Some(session) = crate::session::load() else {
             return;
@@ -162,41 +162,16 @@ impl AppModel {
 
         self.pending_start = wanted.clone();
         self.last_queue = Some((session.songs.clone(), wanted));
-        // Zero is not worth a seek, and neither is a position the track has
-        // effectively already finished at — restoring two seconds from the end
-        // just skips to the next song.
-        self.restore_to_ms = (session.position_ms > 1_000).then_some(session.position_ms);
         self.send(Command::SetQueue {
             songs: session.songs,
             start_position: start,
+            // Loaded, not started.
             start_playing: false,
+            // Carried in the descriptor rather than seeked afterwards: a seek
+            // needs a current item to seek *within*, and a queue loaded without
+            // playing does not have one.
+            start_time_ms: session.position_ms,
         });
-    }
-
-    /// Seek to the restored position, once the restored queue is actually here.
-    ///
-    /// Same discipline as `verify_start`: the mirror holds the *previous* queue
-    /// for a moment after a `setQueue`, and seeking into that would land
-    /// somewhere arbitrary.
-    pub(super) fn finish_restore(&mut self) {
-        let Some(position_ms) = self.restore_to_ms else {
-            return;
-        };
-        let Some((sent, _)) = &self.last_queue else {
-            return;
-        };
-        if !holds(&self.player.queue, sent) {
-            return; // not our queue yet
-        }
-        // Past the end of the track it belongs to: start it over instead.
-        let duration = self.player.duration_ms;
-        self.restore_to_ms = None;
-        if duration > 0 && position_ms + 5_000 >= duration {
-            tracing::debug!("restored position was at the end; starting the track over");
-            return;
-        }
-        tracing::info!(position_ms, "restoring position");
-        self.send(Command::Seek { position_ms });
     }
 
     /// The catalog id of the track MusicKit is on, if any.
@@ -246,6 +221,7 @@ impl AppModel {
             songs,
             start_position: start,
             start_playing: true,
+            start_time_ms: 0,
         });
     }
 
@@ -316,6 +292,7 @@ impl AppModel {
             songs: retry,
             start_position: start,
             start_playing: true,
+            start_time_ms: 0,
         });
         true
     }

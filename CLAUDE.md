@@ -368,11 +368,21 @@ Two rules the restore follows:
   a crash, a `SIGKILL`, a session ending badly. Saving per track means the worst
   case is restoring the right track at its start rather than restoring nothing.
 
-The seek waits for MusicKit to confirm it holds the queue we asked for, the same
-way `verify_start` does and for the same reason: the mirror holds the *previous*
-queue for a moment after a `setQueue`, and seeking into that lands somewhere
-arbitrary. A position within five seconds of the end starts the track over
-instead — restoring two seconds from the end just skips to the next song.
+**The position rides in the queue descriptor, not a seek afterwards.**
+`setQueue` accepts `startTime`, and it has to be used: a seek needs a *current
+item* to seek within, and a queue loaded with `startPlaying: false` does not
+have one yet. The first attempt sent a seek once the queue arrived and it did
+nothing at all.
+
+**A loaded-but-never-started queue has no now-playing item either**, for the
+same reason. Rendering that faithfully left the Now Playing bar empty beside a
+full queue, so `showing()` falls back to the queue's own current entry — which
+is the honest answer to "what is this player on".
+
+**And `changeToMediaAtIndex` only moves the cursor.** On a queue that is loaded
+but idle it moves silently, so clicking a track in the queue looked like nothing
+happened. Clicking a track is a request to *play* it, so a jump now starts
+playback if it is not already running.
 
 ### Sidecar rules learned the hard way
 
