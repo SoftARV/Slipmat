@@ -554,6 +554,7 @@ cargo run                                    # dev (expects ./sidecar/node_modul
 RUST_LOG=tonearm=debug cargo run             # traces the NDJSON protocol both ways
 make sidecar                                 # npm install castLabs Electron (~200 MB)
 make sidecar-run                             # sidecar alone, window VISIBLE — isolates DRM bugs
+make gapless                                 # watch the audio stream across a track boundary
 cargo clippy --all-targets -- -D warnings    # the bar, before any commit
 make check                                   # fmt + clippy + test
 ```
@@ -578,6 +579,37 @@ Two gotchas around installing the sidecar, both of which fail confusingly:
   `node node_modules/electron/install.js`. Skip it and you get a 14 MB
   `node_modules` with no binary, and the failure only surfaces later as
   "Electron not installed". `make sidecar` runs both steps.
+
+### Verifying gapless
+
+The headline feature, and the one that fails silently. It has two halves, and
+they fail for different reasons:
+
+| Half | How it breaks | How to see it |
+| --- | --- | --- |
+| Rust must not drive the queue | feeding tracks one at a time (rule 3) | the `track transition` log line |
+| the decoder must not stop | MusicKit re-buffering at the boundary | the PipeWire stream disappearing |
+
+```bash
+make gapless                                  # terminal 1: watch the audio stream
+RUST_LOG=tonearm=info cargo run               # terminal 2: watch the transitions
+```
+
+Queue an album with a **true** gapless transition — a live record, a DJ mix,
+something segued — and let it run across the boundary. Then check all three:
+
+1. **The log.** Every boundary prints a `track transition` line. A natural one
+   must read `prompted_by="nothing — MusicKit advanced itself"` with `left_ms`
+   near zero. If `prompted_by` names a command on a track that ran to its end,
+   Rust is driving the queue and rule 3 is broken.
+2. **The stream.** `make gapless` should print *nothing* at the boundary. A
+   `remove` followed by a `new` is a torn-down decoder, which is audible no
+   matter what the log says.
+3. **Your ears.** Neither of the above can hear a 20 ms hiccup. They tell you
+   *where* a gap came from, not whether there was one.
+
+`left_ms` is also how you tell a boundary from a skip: a skip leaves seconds on
+the clock, a boundary leaves almost none.
 
 Debugging, in order — always isolate the layer first:
 

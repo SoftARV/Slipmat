@@ -80,6 +80,33 @@ pub enum Command {
     Quit,
 }
 
+impl Command {
+    /// The wire name, for logging. Kept next to the `serde` renames above so
+    /// the two cannot drift.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::SetQueue { .. } => "setQueue",
+            Self::Play => "play",
+            Self::Pause => "pause",
+            Self::PlayPause => "playPause",
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::ChangeToIndex { .. } => "changeToIndex",
+            Self::RemoveFromQueue { .. } => "removeFromQueue",
+            Self::Seek { .. } => "seek",
+            Self::SetVolume { .. } => "setVolume",
+            Self::SetShuffle { .. } => "setShuffle",
+            Self::SetRepeat { .. } => "setRepeat",
+            Self::RefreshTokens => "refreshTokens",
+            Self::ShowLogin => "showLogin",
+            Self::Authorize => "authorize",
+            Self::Unauthorize => "unauthorize",
+            Self::Quit => "quit",
+            Self::Hide => "hide",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RepeatMode {

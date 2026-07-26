@@ -134,6 +134,12 @@ pub enum Stage {
 pub struct AppModel {
     stage: Stage,
     player: PlayerState,
+    /// The last command sent to the sidecar, and when. Read only by the
+    /// gapless diagnostic, which needs to distinguish a transition **we** asked
+    /// for from one MusicKit made on its own — the second is the gapless path
+    /// and the first is not. `RefCell` because `send` takes `&self`.
+    last_command: std::cell::RefCell<Option<(std::time::Instant, String)>>,
+
     /// Live for the process lifetime, never persisted (rule 7).
     tokens: Option<Tokens>,
     sidecar: Option<sidecar::Handle>,
@@ -954,6 +960,7 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
+            last_command: std::cell::RefCell::new(None),
             tokens: None,
             sidecar: None,
             restarts: 0,
