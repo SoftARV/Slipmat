@@ -21,7 +21,6 @@ relm4::new_action_group!(AppMenuActionGroup, "win");
 relm4::new_stateless_action!(PreferencesAction, AppMenuActionGroup, "preferences");
 relm4::new_stateless_action!(ShortcutsAction, AppMenuActionGroup, "shortcuts");
 relm4::new_stateless_action!(AboutAction, AppMenuActionGroup, "about");
-relm4::new_stateless_action!(QuitAction, AppMenuActionGroup, "quit");
 relm4::new_stateless_action!(PlayPauseAction, AppMenuActionGroup, "play-pause");
 relm4::new_stateless_action!(NextAction, AppMenuActionGroup, "next");
 relm4::new_stateless_action!(PreviousAction, AppMenuActionGroup, "previous");
@@ -56,9 +55,21 @@ pub(super) fn register_actions(
     group.add_action(RelmAction::<AboutAction>::new_stateless(move |_| {
         s.input(AppMsg::ShowAbout)
     }));
-    group.add_action(RelmAction::<QuitAction>::new_stateless(move |_| {
-        relm4::main_application().quit()
-    }));
+    // **Application-scoped, not window-scoped.** A `win.` action resolves
+    // through whatever currently holds focus, and the first-run gate is an
+    // `adw::Dialog` presented into the window's own dialog host — so the one
+    // moment a user most needs a way out is the moment that scope is least
+    // certain. `app.quit` is reachable from any focus scope, and is the GNOME
+    // convention besides.
+    //
+    // It matters more than it looks: an `adw::Dialog` with `can_close(false)`
+    // also blocks the window's close request, so while the gate is up the title
+    // bar button does nothing either. Between that and Quit missing from the
+    // primary menu, a signed-out app had no visible way to exit at all.
+    let app = relm4::main_application();
+    let quit = gtk::gio::SimpleAction::new("quit", None);
+    quit.connect_activate(|_, _| relm4::main_application().quit());
+    app.add_action(&quit);
 
     // Transport, so the app answers the keyboard even when the bar does not
     // have focus. Media keys already arrive over MPRIS; these are the
@@ -92,10 +103,9 @@ pub(super) fn register_actions(
         move |_| s.input(AppMsg::ToggleSidebar),
     ));
 
-    let app = relm4::main_application();
     app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
     app.set_accelerators_for_action::<ShortcutsAction>(&["<Control>question"]);
-    app.set_accelerators_for_action::<QuitAction>(&["<Control>q"]);
+    app.set_accels_for_action("app.quit", &["<Control>q"]);
     app.set_accelerators_for_action::<PlayPauseAction>(&["<Control>k"]);
     app.set_accelerators_for_action::<NextAction>(&["<Control>Right"]);
     app.set_accelerators_for_action::<PreviousAction>(&["<Control>Left"]);
@@ -227,6 +237,21 @@ impl AppModel {
             .css_classes(["caption", "dim-label"])
             .build();
 
+        // A way out of the app, on the one screen that otherwise has none.
+        //
+        // This dialog blocks deliberately — signed out, every control behind it
+        // is a control that cannot work — but `can_close(false)` also stops the
+        // window's own close button, so without this the gate was a dead end
+        // for anyone who did not want to sign in right now. Plain, not
+        // destructive: quitting is ordinary, and colouring it red would suggest
+        // it throws something away.
+        let quit = gtk::Button::builder()
+            .label("Quit")
+            .halign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        quit.connect_clicked(|_| relm4::main_application().quit());
+
         let column = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .halign(gtk::Align::Center)
@@ -234,6 +259,7 @@ impl AppModel {
             .build();
         column.append(&button);
         column.append(&note);
+        column.append(&quit);
         page.set_child(Some(&column));
 
         let dialog = adw::Dialog::builder()

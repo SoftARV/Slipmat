@@ -1284,6 +1284,13 @@ impl Component for AppModel {
             let account = gtk::gio::Menu::new();
             account.append(Some("_Sign Out"), Some("win.sign-out"));
             primary_menu.append_section(None, &account);
+
+            // Quit was missing from this menu entirely, while the shortcuts
+            // dialog advertised `Ctrl`+`Q` — so the app claimed a way out it
+            // never showed. Last section, per the GNOME convention.
+            let quit = gtk::gio::Menu::new();
+            quit.append(Some("_Quit"), Some("app.quit"));
+            primary_menu.append_section(None, &quit);
         }
 
         let toaster = &model.toaster;
