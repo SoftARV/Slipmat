@@ -51,3 +51,28 @@ pub type DeadTracks = std::rc::Rc<std::cell::RefCell<std::collections::HashSet<S
 pub fn dead_tracks() -> DeadTracks {
     std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new()))
 }
+
+/// Count a recycled widget being built, and say so at `trace` level.
+///
+/// `setup` runs once per *widget*, not once per item, so this is the direct
+/// measurement of whether a view is virtualised: scroll a 500-item list and
+/// watch where the count stops. A few dozen means recycling; 500 means every
+/// row is real and something upstream is asking the view for its full height.
+///
+/// `RUST_LOG=tonearm=trace` to see it.
+pub fn count_widget(kind: &'static str) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // One counter per kind, kept in a small table rather than a static per
+    // call site — there are three of these and there will not be thirty.
+    static COUNTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<&'static str, AtomicUsize>>,
+    > = std::sync::OnceLock::new();
+    let table = COUNTS.get_or_init(Default::default);
+    let Ok(mut table) = table.lock() else { return };
+    let count = table
+        .entry(kind)
+        .or_default()
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
+    tracing::trace!(kind, widgets = count, "list widget built");
+}

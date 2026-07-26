@@ -320,7 +320,16 @@ the specific traps; do not re-introduce them.
 ```
 src/
   main.rs            # RelmApp bootstrap, tracing, icon; locate + spawn the sidecar
-  app.rs             # root Component: AppModel, AppMsg, CommandMsg, update, view
+  app/
+    mod.rs           # root Component: AppModel, AppMsg, CommandMsg, update, view!
+    view.rs          # which section is showing; the three encodings of that
+    library.rs       # loading + filtering songs, albums, artists, catalog search
+    queue.rs         # click → setQueue, and healing a queue MusicKit rejected
+    pages.rs         # the album / artist navigation stack
+    playback.rs      # mirrored state → Now Playing bar, MPRIS, notifications
+    supervise.rs     # keeping the sidecar alive; folding in its events
+    status.rs        # what the pane shows when it is not showing music
+    chrome.rs        # the menu, its accelerators, and the three dialogs
   settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
   secret.rs          # oo7 wrapper: store / load / clear the Music User Token
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
@@ -348,6 +357,14 @@ data/
   icons/hicolor/{16x16,...,512x512,scalable}/apps/dev.miguelrincon.Tonearm.{png,svg}
 Makefile             # make install → ~/.local (no sudo); make sidecar; make check
 ```
+
+`app/` is split by **what a thing does**, not by layer, so a change usually
+lands in one file. Every sibling is an `impl AppModel` block — legal, and able
+to touch private fields, because a child module can see its parent's. `mod.rs`
+keeps only the three things that have to be in one place: the model, the
+messages, and the `Component` impl holding `view!` and the reducer. The reducer
+stays whole because it is the map from action to work, and a map is only useful
+entire.
 
 Dependency direction is strictly one-way, as in the siblings:
 `main → app → components/*`, and `app → player|music → types`.
@@ -500,6 +517,19 @@ requested a cover has very likely been recycled onto a different album by the
 time the file lands, so the arrival is delivered to whichever tile is showing
 that artwork *now*, or to none. The disk cache (`AppModel::tile_art`) is shared
 across both grids, because it is keyed by the image itself.
+
+**Whether a view is actually virtualised is measurable, not a matter of
+opinion.** `RelmListItem::setup` runs once per *widget*, not once per item, so
+`components::count_widget` counts them and logs at `trace`:
+
+```bash
+RUST_LOG=tonearm=trace cargo run 2>&1 | grep "list widget built"
+```
+
+Scroll a 500-track library and watch where the count stops. A few dozen means
+recycling. Five hundred means every row is real, and something upstream — a
+`Clamp` in the wrong place, a `Box` between the view and its `ScrolledWindow` —
+is asking the view for its full height.
 
 A pushed page is not virtualised on purpose: its list sits in a `Box` under the
 header so the header scrolls with the content, which means GTK asks the list for

@@ -363,3 +363,45 @@ impl DetailPage {
         self.stack.set_visible_child_name("error");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_asks_the_collection_its_id_came_from() {
+        // Library ids 404 against /catalog and vice versa, so the flag set at
+        // parse time — not the id's shape — decides the endpoint.
+        let mut album = Album {
+            id: "1234".into(),
+            name: "Superestrella".into(),
+            artist: "Aitana".into(),
+            artwork: None,
+            year: "2020".into(),
+            track_count: 12,
+            library: false,
+        };
+        assert_eq!(PageKind::album(&album), PageKind::Album("1234".into()));
+        album.library = true;
+        album.id = "l.1234".into();
+        assert_eq!(
+            PageKind::album(&album),
+            PageKind::LibraryAlbum("l.1234".into())
+        );
+
+        let mut artist = Artist {
+            id: "9".into(),
+            name: "Aitana".into(),
+            artwork: None,
+            genres: String::new(),
+            library: false,
+        };
+        assert_eq!(PageKind::artist(&artist), PageKind::Artist("9".into()));
+        artist.library = true;
+        artist.id = "r.9".into();
+        assert_eq!(
+            PageKind::artist(&artist),
+            PageKind::LibraryArtist("r.9".into())
+        );
+    }
+}
