@@ -23,10 +23,17 @@ const { app, components, BrowserWindow, powerSaveBlocker, shell } = require('ele
 const path = require('node:path')
 const readline = require('node:readline')
 
-// `--debug`, or TONEARM_SHOW_SIDECAR=1 from the Rust side. Both keep the
-// window on screen. This is the fastest way to tell a frozen renderer from a
-// broken command: if playback works with the window visible and not without,
-// the problem is Chromium freezing a page it thinks nobody is looking at.
+// TONEARM_SHOW_SIDECAR=1 keeps the window on screen. This is the fastest way
+// to tell a frozen renderer from a broken command: if playback works with the
+// window visible and not without, the problem is Chromium freezing a page it
+// thinks nobody is looking at.
+//
+// **The env var, not a flag.** `npm run debug` used to pass `--debug`, which
+// never reached here: Electron reads it as Node's long-deprecated `--debug`
+// and exits before the app starts ("`node --debug` ... are invalid", make
+// Error 9). So the one documented tool for isolating an Apple or DRM problem
+// from a Rust one did not run at all. The argv check is kept because it costs
+// nothing and still works if the flag is passed somewhere Electron ignores it.
 const DEBUG =
   process.argv.includes('--debug') || process.env.TONEARM_SHOW_SIDECAR === '1'
 const APPLE_MUSIC = 'https://music.apple.com/'
@@ -308,6 +315,18 @@ function probeForMusicKit() {
         detail: 'MusicKit never appeared on music.apple.com',
       })
     }
+
+    // Electron defers executeJavaScript until the page stops loading, and it
+    // implements that by attaching a `did-stop-loading` listener per call. So
+    // probing a still-loading document queues one listener per tick and trips
+    // "MaxListenersExceededWarning: 11 did-stop-loading listeners added".
+    //
+    // Skipping the tick is the fix rather than raising maxListeners: there is
+    // nothing to find on a document that has not finished loading, so those
+    // calls were never going to answer anything. Deliberately checked *after*
+    // the deadline above, so a page that never finishes still times out and
+    // reports `hook-failed` instead of probing silently forever.
+    if (win.webContents.isLoadingMainFrame()) return
 
     let ready = false
     try {
