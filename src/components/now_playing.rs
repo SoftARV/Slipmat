@@ -62,8 +62,14 @@ const SEEK_SETTLE_MS: u64 = 1_500;
 /// seconds.
 const SEEK_HOLD: Duration = Duration::from_secs(10);
 
+/// How much one keyboard press or one scale step moves the volume.
+///
+/// Shared by the volume button's adjustment and the `Ctrl`+`Up`/`Down`
+/// accelerators, so the two cannot drift into disagreeing about what a step is.
+pub const VOLUME_STEP: f64 = 0.05;
+
 /// Everything the bar needs, flattened out of `PlayerState` at the boundary.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub title: String,
     pub artist: String,
@@ -80,6 +86,37 @@ pub struct Snapshot {
     pub queue_open: bool,
     /// Mirrored from MusicKit, never authored here (rule 3).
     pub repeat: Repeat,
+    /// 0.0–1.0. The volume button follows this rather than owning it, so a
+    /// change from the keyboard or from MPRIS moves the widget too.
+    pub volume: f64,
+}
+
+impl Default for Snapshot {
+    /// Hand-written for one field: **volume defaults to full, not to zero.**
+    ///
+    /// A derived `Default` starts every field at its zero value, and the volume
+    /// button watches this. The bar is built with a default snapshot before the
+    /// first real one arrives, so a zero here would push the button to silent
+    /// and echo that back as a genuine `SetVolume(0.0)` — the app would mute
+    /// itself on launch.
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            position_ms: 0,
+            duration_ms: 0,
+            playing: false,
+            busy: false,
+            has_next: false,
+            has_previous: false,
+            active: false,
+            shuffle: false,
+            queue_open: false,
+            repeat: Repeat::default(),
+            volume: 1.0,
+        }
+    }
 }
 
 /// What the repeat button is showing. Ours, not MusicKit's — `protocol` owns
@@ -135,7 +172,6 @@ pub struct NowPlaying {
     /// Drives [`ADVANCE_MS`]. Removed the moment playback stops, so a paused
     /// app is not waking up ten times a second.
     advance: Option<gtk::glib::SourceId>,
-    volume: f64,
     /// True from the first slider movement until the debounce commits. State
     /// updates must not yank the handle out from under the user — the single
     /// most annoying bug a music player can have.
@@ -460,7 +496,15 @@ impl SimpleComponent for NowPlaying {
                     // ScaleButton is not a Range, so it takes an Adjustment
                     // rather than set_range. Page increment 0.1 makes scroll
                     // wheel steps feel right.
-                    set_adjustment: &gtk::Adjustment::new(1.0, 0.0, 1.0, 0.05, 0.1, 0.0),
+                    set_adjustment: &gtk::Adjustment::new(
+                        1.0, 0.0, 1.0, VOLUME_STEP, 0.1, 0.0,
+                    ),
+                    // The button follows the mirror rather than owning the
+                    // volume, so `Ctrl`+`Up` and the Shell's own slider move it
+                    // too. Setting a value GTK already holds emits nothing, so
+                    // this cannot loop back through `VolumeChanged`.
+                    #[watch]
+                    set_value: model.snap.volume,
                     connect_value_changed[sender] => move |_, value| {
                         sender.input(NowPlayingInput::VolumeChanged(value));
                     },
@@ -481,7 +525,6 @@ impl SimpleComponent for NowPlaying {
             shown_ms: std::cell::Cell::new(0),
             synced_at: None,
             advance: None,
-            volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
             pending_seek: None,
@@ -554,7 +597,8 @@ impl SimpleComponent for NowPlaying {
                 }
             }
             NowPlayingInput::VolumeChanged(v) => {
-                self.volume = v;
+                // Sent, not stored — the snapshot is what the button reads
+                // back, same discipline as shuffle and repeat.
                 let _ = sender.output(NowPlayingOutput::SetVolume(v));
             }
             NowPlayingInput::ShuffleToggled(on) => {
@@ -829,7 +873,6 @@ mod tests {
             shown_ms: std::cell::Cell::new(0),
             synced_at: None,
             advance: None,
-            volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
             pending_seek: None,

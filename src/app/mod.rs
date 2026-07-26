@@ -47,7 +47,9 @@ use crate::components::detail_page::{DetailPage, PageKind, RowState};
 use crate::components::grid_item::{
     ArtCache, ArtRegistry, ArtRequest, GridItem, Tile, art_cache, art_registry,
 };
-use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Repeat};
+use crate::components::now_playing::{
+    NowPlaying, NowPlayingInput, NowPlayingOutput, Repeat, VOLUME_STEP,
+};
 use crate::components::queue_view::{QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::LibraryRowWidgets;
 use crate::components::track_row::{Entry, LibraryItem, RowMenuRequest};
@@ -370,6 +372,13 @@ pub enum AppMsg {
     Previous,
     Seek(u64),
     SetVolume(f64),
+    /// Nudge the volume by one [`VOLUME_STEP`]. Separate from `SetVolume`
+    /// because an accelerator's closure cannot see the model, so only the
+    /// reducer knows what the current volume is to step from.
+    ///
+    /// [`VOLUME_STEP`]: crate::components::now_playing::VOLUME_STEP
+    VolumeUp,
+    VolumeDown,
     SetShuffle(bool),
     SetRepeat(Repeat),
     SetSort(SortBy),
@@ -1495,11 +1504,9 @@ impl AppModel {
                 // old position and their progress bars drift.
                 self.mpris.seeked(position_ms);
             }
-            AppMsg::SetVolume(volume) => {
-                self.volume = volume;
-                self.send(Command::SetVolume { volume });
-                self.push_snapshot();
-            }
+            AppMsg::SetVolume(volume) => self.set_volume(volume),
+            AppMsg::VolumeUp => self.set_volume(self.volume + VOLUME_STEP),
+            AppMsg::VolumeDown => self.set_volume(self.volume - VOLUME_STEP),
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
                 if query == self.query() {

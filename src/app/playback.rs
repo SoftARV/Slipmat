@@ -19,7 +19,7 @@ use crate::components::now_playing::{NowPlayingInput, Repeat, Snapshot};
 use crate::components::queue_view::{QueueEntry, QueueViewInput};
 use crate::mpris::MprisState;
 use crate::music::types::Artwork;
-use crate::player::protocol::RepeatMode;
+use crate::player::protocol::{Command, RepeatMode};
 
 impl AppModel {
     /// Tell the rows which one is playing, so the list shows a play marker.
@@ -115,6 +115,9 @@ impl AppModel {
             shuffle: self.player.shuffle,
             queue_open: self.show_queue,
             repeat,
+            // Ours, not the sidecar's: MusicKit is told the volume and does not
+            // report one back, so `self.volume` is the only record of it.
+            volume: self.volume,
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
             album: item.map(|i| i.album.clone()).unwrap_or_default(),
@@ -178,6 +181,22 @@ impl AppModel {
             can_previous: self.player.has_previous(),
             volume: self.volume,
         });
+    }
+
+    /// Set the volume, from wherever the request came from.
+    ///
+    /// The clamp is the whole reason this is shared rather than inlined: the
+    /// keyboard steps arrive as `self.volume ± VOLUME_STEP` and will walk off
+    /// both ends of the range, and MusicKit takes a `volume` outside 0.0–1.0
+    /// without complaining about it.
+    pub(super) fn set_volume(&mut self, volume: f64) {
+        let volume = volume.clamp(0.0, 1.0);
+        if (volume - self.volume).abs() < f64::EPSILON {
+            return;
+        }
+        self.volume = volume;
+        self.send(Command::SetVolume { volume });
+        self.push_snapshot();
     }
 
     /// Start the repaint timer while playing, drop it otherwise.

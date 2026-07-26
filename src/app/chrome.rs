@@ -25,6 +25,8 @@ relm4::new_stateless_action!(QuitAction, AppMenuActionGroup, "quit");
 relm4::new_stateless_action!(PlayPauseAction, AppMenuActionGroup, "play-pause");
 relm4::new_stateless_action!(NextAction, AppMenuActionGroup, "next");
 relm4::new_stateless_action!(PreviousAction, AppMenuActionGroup, "previous");
+relm4::new_stateless_action!(VolumeUpAction, AppMenuActionGroup, "volume-up");
+relm4::new_stateless_action!(VolumeDownAction, AppMenuActionGroup, "volume-down");
 relm4::new_stateless_action!(ToggleQueueAction, AppMenuActionGroup, "toggle-queue");
 relm4::new_stateless_action!(ToggleSidebarAction, AppMenuActionGroup, "toggle-sidebar");
 relm4::new_stateless_action!(SignOutAction, AppMenuActionGroup, "sign-out");
@@ -74,6 +76,14 @@ pub(super) fn register_actions(
         s.input(AppMsg::Previous)
     }));
     let s = sender.clone();
+    group.add_action(RelmAction::<VolumeUpAction>::new_stateless(move |_| {
+        s.input(AppMsg::VolumeUp)
+    }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<VolumeDownAction>::new_stateless(move |_| {
+        s.input(AppMsg::VolumeDown)
+    }));
+    let s = sender.clone();
     group.add_action(RelmAction::<ToggleQueueAction>::new_stateless(move |_| {
         s.input(AppMsg::ToggleQueue)
     }));
@@ -86,9 +96,11 @@ pub(super) fn register_actions(
     app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
     app.set_accelerators_for_action::<ShortcutsAction>(&["<Control>question"]);
     app.set_accelerators_for_action::<QuitAction>(&["<Control>q"]);
-    app.set_accelerators_for_action::<PlayPauseAction>(&["<Control>space"]);
+    app.set_accelerators_for_action::<PlayPauseAction>(&["<Control>k"]);
     app.set_accelerators_for_action::<NextAction>(&["<Control>Right"]);
     app.set_accelerators_for_action::<PreviousAction>(&["<Control>Left"]);
+    app.set_accelerators_for_action::<VolumeUpAction>(&["<Control>Up"]);
+    app.set_accelerators_for_action::<VolumeDownAction>(&["<Control>Down"]);
     app.set_accelerators_for_action::<ToggleQueueAction>(&["<Control>u"]);
     // F9 is the GNOME convention for showing and hiding a sidebar.
     app.set_accelerators_for_action::<ToggleSidebarAction>(&["F9"]);
@@ -140,9 +152,11 @@ pub(super) fn show_shortcuts(parent: &adw::ApplicationWindow) {
 
     let playback = adw::ShortcutsSection::new(Some("Playback"));
     for (title, accel) in [
-        ("Play or pause", "<Control>space"),
+        ("Play or pause", "<Control>k"),
         ("Next track", "<Control>Right"),
         ("Previous track", "<Control>Left"),
+        ("Volume up", "<Control>Up"),
+        ("Volume down", "<Control>Down"),
     ] {
         playback.add(adw::ShortcutsItem::new(title, accel));
     }
