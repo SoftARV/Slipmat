@@ -59,6 +59,8 @@ pub struct Snapshot {
     pub has_previous: bool,
     pub active: bool,
     pub shuffle: bool,
+    /// Whether the queue sidebar is open, so the bar's toggle agrees with it.
+    pub queue_open: bool,
     /// Mirrored from MusicKit, never authored here (rule 3).
     pub repeat: Repeat,
 }
@@ -137,6 +139,9 @@ pub enum NowPlayingInput {
     Previous,
     ShuffleToggled(bool),
     RepeatCycled,
+    /// The queue button was clicked. Carries nothing: the app owns whether the
+    /// sidebar is open, and the button follows it rather than leading.
+    QueueToggled,
 }
 
 #[derive(Debug)]
@@ -148,6 +153,7 @@ pub enum NowPlayingOutput {
     SetVolume(f64),
     SetShuffle(bool),
     SetRepeat(Repeat),
+    ToggleQueue,
 }
 
 #[relm4::component(pub)]
@@ -328,12 +334,13 @@ impl SimpleComponent for NowPlaying {
                     connect_clicked => NowPlayingInput::Next,
                 },
 
-                // A ToggleButton would only have two states; repeat has
-                // three, so this is a plain button that cycles and shows where
-                // it is through its icon and the "accent" class.
+                // A ToggleButton, even though repeat has three states and a
+                // toggle has two. "Off" versus "on" is the distinction that
+                // needs to be *visible* — a plain button gave no indication at
+                // all that repeat was off — and which flavour of on it is comes
+                // through the icon. Clicking still cycles.
                 #[name = "repeat_button"]
-                gtk::Button {
-                    set_tooltip_text: Some("Repeat"),
+                gtk::ToggleButton {
                     add_css_class: "flat",
                     add_css_class: "circular",
                     #[watch]
@@ -341,8 +348,24 @@ impl SimpleComponent for NowPlaying {
                     #[watch]
                     set_tooltip_text: Some(model.snap.repeat.tooltip()),
                     #[watch]
+                    set_active: model.snap.repeat != Repeat::Off,
+                    #[watch]
                     set_sensitive: model.snap.active,
                     connect_clicked => NowPlayingInput::RepeatCycled,
+                },
+
+                // Lives here rather than in the header: pushing an album or
+                // playlist page replaces the header, and the queue was
+                // unreachable until you navigated back. The bar is on every
+                // page by definition.
+                gtk::ToggleButton {
+                    set_icon_name: "view-list-symbolic",
+                    set_tooltip_text: Some("Queue"),
+                    add_css_class: "flat",
+                    add_css_class: "circular",
+                    #[watch]
+                    set_active: model.snap.queue_open,
+                    connect_clicked => NowPlayingInput::QueueToggled,
                 },
 
                 gtk::ScaleButton {
@@ -432,6 +455,11 @@ impl SimpleComponent for NowPlaying {
                 // the snapshot, so it snaps back if MusicKit disagrees — the
                 // mirror stays the only source of truth (rule 3).
                 let _ = sender.output(NowPlayingOutput::SetShuffle(on));
+            }
+            NowPlayingInput::QueueToggled => {
+                // The button's state is a watch on the snapshot, so it follows
+                // the app rather than leading it — same discipline as shuffle.
+                let _ = sender.output(NowPlayingOutput::ToggleQueue);
             }
             NowPlayingInput::RepeatCycled => {
                 let _ = sender.output(NowPlayingOutput::SetRepeat(self.snap.repeat.next()));

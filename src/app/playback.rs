@@ -83,6 +83,7 @@ impl AppModel {
         };
         let snap = Snapshot {
             shuffle: self.player.shuffle,
+            queue_open: self.show_queue,
             repeat,
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),

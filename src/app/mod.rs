@@ -713,14 +713,6 @@ impl Component for AppModel {
                                             },
                                         },
 
-                                        pack_end = &gtk::ToggleButton {
-                                            set_icon_name: "view-list-symbolic",
-                                            set_tooltip_text: Some("Queue"),
-                                            #[watch]
-                                            set_active: model.show_queue,
-                                            connect_clicked => AppMsg::ToggleQueue,
-                                        },
-
                                         // Only in Songs: the grids have their
                                         // own natural order and sorting them
                                         // is a different question.
@@ -943,6 +935,7 @@ impl Component for AppModel {
                 NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
                 NowPlayingOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
                 NowPlayingOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
+                NowPlayingOutput::ToggleQueue => AppMsg::ToggleQueue,
             });
 
         let library: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
@@ -1384,6 +1377,8 @@ impl Component for AppModel {
             AppMsg::ToggleQueue => {
                 self.show_queue = !self.show_queue;
                 self.sync_page_controls();
+                // The bar's toggle reads this from the snapshot, so push one.
+                self.push_snapshot();
                 if self.show_queue {
                     self.queue_view.emit(QueueViewInput::ScrollToPlaying);
                 }
