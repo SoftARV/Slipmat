@@ -430,7 +430,9 @@ sidecar/
   package.json  main.js  preload.js    # ~200 lines of JS, total
 data/
   dev.miguelrincon.Tonearm.desktop
-  icons/hicolor/{16x16,...,512x512,scalable}/apps/dev.miguelrincon.Tonearm.{png,svg}
+  icons/hicolor/{scalable,symbolic}/apps/dev.miguelrincon.Tonearm{,-symbolic}.svg
+                       # the PNG sizes are rendered from the SVG by `make install`,
+                       # never committed — two copies of an icon always drift
 Makefile             # make install → ~/.local (no sudo); make sidecar; make check
 ```
 
@@ -688,6 +690,7 @@ its full height. An album is a dozen tracks. That is the right trade.
 cargo run                                    # dev (expects ./sidecar/node_modules)
 RUST_LOG=tonearm=debug cargo run             # traces the NDJSON protocol both ways
 make sidecar                                 # npm install castLabs Electron (~200 MB)
+                                             # — `make install` already does this
 make sidecar-run                             # sidecar alone, window VISIBLE — isolates DRM bugs
 make gapless                                 # watch the audio stream across a track boundary
 cargo clippy --all-targets -- -D warnings    # the bar, before any commit
