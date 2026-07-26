@@ -27,6 +27,10 @@ use crate::components::track_row::{Entry, LibraryItem, LibraryRowWidgets};
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
 use crate::music::types::{Album, Artist, Artwork};
 
+/// Header artwork, in logical pixels. The widget is pinned to exactly this so
+/// the `card` background cannot outgrow the picture inside it.
+const ART_PX: i32 = 160;
+
 /// What a page is about — and everything needed to ask Apple for it again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageKind {
@@ -93,10 +97,23 @@ impl DetailPage {
         view.add_css_class("navigation-sidebar");
         view.connect_activate(move |_, position| on_activate(position as usize));
 
+        // `halign: Center` and an explicit size are both load-bearing.
+        // `GtkImage` defaults to filling its allocation and centres the picture
+        // inside it, which is invisible until the `card` background is asked to
+        // paint that allocation — then a long album title widens the header box
+        // and the cover sits in the middle of a grey slab. Pinning the widget
+        // to the artwork's own size makes the card *be* the cover.
         let art = gtk::Image::builder()
-            .pixel_size(160)
+            .pixel_size(ART_PX)
+            .width_request(ART_PX)
+            .height_request(ART_PX)
+            .halign(gtk::Align::Center)
             .icon_name("media-optical-symbolic")
             .css_classes(["card"])
+            // Clip to the rounded corners `card` draws — and to the circle on
+            // an artist page. GTK4 rounds the background but not the content
+            // unless the widget is told to clip.
+            .overflow(gtk::Overflow::Hidden)
             .build();
 
         let title = gtk::Label::builder()
@@ -122,23 +139,23 @@ impl DetailPage {
             .build();
         play.connect_clicked(move |_| on_play());
 
-        let header = gtk::Box::builder()
+        let banner = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .halign(gtk::Align::Center)
             .margin_top(24)
             .margin_bottom(24)
             .build();
-        header.append(&art);
-        header.append(&title);
-        header.append(&subtitle);
-        header.append(&meta);
-        header.append(&play);
+        banner.append(&art);
+        banner.append(&title);
+        banner.append(&subtitle);
+        banner.append(&meta);
+        banner.append(&play);
 
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
-        body.append(&header);
+        body.append(&banner);
         body.append(&view);
 
         let content = gtk::ScrolledWindow::builder()
