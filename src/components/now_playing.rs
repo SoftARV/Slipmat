@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use relm4::adw::prelude::*;
-use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent, gtk};
+use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
 
 use crate::music::types::format_duration;
 
@@ -194,7 +194,11 @@ impl SimpleComponent for NowPlaying {
         gtk::Box {
             set_orientation: gtk::Orientation::Horizontal,
             set_spacing: 12,
-            set_margin_all: 10,
+            // Padding, not margin — the spacing is in `.np-bar`'s CSS.
+            //
+            // A margin sits *outside* the widget's background, so a 10px one
+            // left an untinted frame around the whole bar once it had a colour
+            // of its own. Padding is inside it, and the tint reaches the edges.
             add_css_class: "np-bar",
             // Deliberately no blanket `set_sensitive` here. Greying the whole
             // bar when nothing is playing also greyed the queue button, so you

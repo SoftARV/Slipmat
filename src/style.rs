@@ -152,7 +152,11 @@ pub fn set_accent(accent: Accent) {
     // Adwaita's yellow rather than a `.warning`, which means something else.
     let css = format!(
         "{accent_rules}
-         .favorite-star {{ color: #f5c211; }}"
+         .favorite-star {{ color: #f5c211; }}
+
+         /* Padding rather than a margin on the widget: the tint is a
+            background, and a margin would leave an untinted frame around it. */
+         .np-bar {{ padding: 10px; }}"
     );
 
     BASE.with(|p| p.load_from_string(&css));
