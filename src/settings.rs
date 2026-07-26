@@ -96,6 +96,8 @@ impl Section {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub theme: Theme,
+    /// Accent colour id; see `style::Accent`.
+    pub accent: String,
     /// How the Songs list is ordered. Stored as the id string, so an unknown
     /// value from a hand-edited or future ini falls back rather than breaking
     /// startup.
@@ -114,6 +116,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: Theme::default(),
+            // Apple Music red: the app's own subject says more than GNOME blue.
+            accent: "apple-red".into(),
             // Apple's own order.
             sort: "title".into(),
             sort_reversed: false,
@@ -158,6 +162,9 @@ impl Settings {
         if let Ok(show) = file.boolean(GROUP, "show-sidebar") {
             settings.show_sidebar = show;
         }
+        if let Ok(accent) = file.string(GROUP, "accent") {
+            settings.accent = accent.into();
+        }
         if let Ok(sort) = file.string(GROUP, "sort") {
             settings.sort = sort.into();
         }
@@ -183,6 +190,7 @@ impl Settings {
         file.set_boolean(GROUP, "notify-track-change", self.notify_track_change);
         file.set_string(GROUP, "section", self.section.as_str());
         file.set_boolean(GROUP, "show-sidebar", self.show_sidebar);
+        file.set_string(GROUP, "accent", &self.accent);
         file.set_string(GROUP, "sort", &self.sort);
         file.set_boolean(GROUP, "sort-reversed", self.sort_reversed);
 

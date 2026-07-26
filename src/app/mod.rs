@@ -364,6 +364,7 @@ pub enum AppMsg {
     ShowShortcuts,
     ShowAbout,
     SetTheme(u32),
+    SetAccent(crate::style::Accent),
     SetNotifyTrackChange(bool),
     ToggleQueue,
     /// A library row was activated; the position is resolved immediately.
@@ -409,7 +410,13 @@ pub enum CommandMsg {
     },
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
     /// cosmetic and must not become a toast.
-    Artwork(Option<PathBuf>),
+    Artwork {
+        path: Option<PathBuf>,
+        /// A colour taken from that cover, for the Now Playing bar. Carried
+        /// here rather than in its own message because the two are read from
+        /// one decode and must be applied together.
+        tint: Option<(u8, u8, u8)>,
+    },
     /// An album page's contents. Tagged with the page id: by the time this
     /// lands the user may have gone back, and filling a page that is no longer
     /// on the stack is at best wasted work.
@@ -1489,6 +1496,13 @@ impl Component for AppModel {
                 Some(index) => self.send(Command::RemoveFromQueue { index }),
                 None => self.toast("That track is no longer in the queue"),
             },
+            AppMsg::SetAccent(accent) => {
+                self.settings.accent = accent.id().into();
+                self.settings.save();
+                // Live: the provider is replaced, and every widget already
+                // referencing the accent variables repaints itself.
+                crate::style::set_accent(accent);
+            }
             AppMsg::SetSort(sort) => {
                 if sort == self.sort {
                     return;
@@ -1816,12 +1830,16 @@ impl Component for AppModel {
                 tracing::warn!(%err, "library load failed");
                 self.toast(&format!("Couldn't load your library: {err}"));
             }
-            CommandMsg::Artwork(path) => {
+            CommandMsg::Artwork { path, tint } => {
                 if path.is_none() {
                     // Cosmetic. The bar falls back to a generic icon.
                     tracing::debug!("artwork unavailable");
                 }
                 self.art_path = path.clone();
+                // Recolour the bar from the cover that just landed. Read off
+                // the GTK thread alongside the fetch, so this is only the CSS
+                // swap.
+                crate::style::set_bar_tint(tint);
                 self.now_playing.emit(NowPlayingInput::ArtworkReady(path));
 
                 // A notification was held back for this track so it would not

@@ -195,6 +195,7 @@ impl SimpleComponent for NowPlaying {
             set_orientation: gtk::Orientation::Horizontal,
             set_spacing: 12,
             set_margin_all: 10,
+            add_css_class: "np-bar",
             // Deliberately no blanket `set_sensitive` here. Greying the whole
             // bar when nothing is playing also greyed the queue button, so you
             // could not open the queue to start something — the one moment you

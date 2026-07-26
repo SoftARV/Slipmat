@@ -195,7 +195,12 @@ impl AppModel {
             Some(t) => {
                 let art = Artwork::new(t);
                 sender.oneshot_command(async move {
-                    CommandMsg::Artwork(artwork::fetch(art, ART_SIZE).await.ok())
+                    let path = artwork::fetch(art, ART_SIZE).await.ok();
+                    // Read here, not on the GTK thread (rule 8), and carried in
+                    // the same message: the cover and the colour taken from it
+                    // must never be applied a frame apart.
+                    let tint = path.as_deref().and_then(artwork::tint);
+                    CommandMsg::Artwork { path, tint }
                 });
                 true
             }

@@ -266,7 +266,9 @@ impl RelmListItem for LibraryItem {
                 gtk::Image {
                     set_icon_name: Some("starred-symbolic"),
                     set_visible: false,
-                    add_css_class: "accent",
+                    // Yellow, not the accent: a favourite is a star everywhere
+                    // else it appears, including on the phone this syncs with.
+                    add_css_class: "favorite-star",
                 },
 
                 #[name = "trailing"]

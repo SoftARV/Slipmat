@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use relm4::gtk::gdk_pixbuf;
 
 use crate::music::types::Artwork;
 
@@ -72,6 +73,65 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
     Ok(())
+}
+
+/// A colour to tint the Now Playing bar with, taken from a cover.
+///
+/// Not the average — averaging a cover gives mud, because most album art is
+/// mostly background. This picks the most *colourful* pixel at a usable
+/// lightness, which is what the eye reads as "the colour of that sleeve".
+///
+/// Runs off the GTK thread (rule 8): decoding even a small JPEG is milliseconds,
+/// and it happens on every track change.
+pub fn tint(path: &Path) -> Option<(u8, u8, u8)> {
+    // 32x32 is plenty. The question is "what colour is this", not "what is in
+    // it", and scaling down is also a cheap way to average out noise.
+    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(path, 32, 32, false).ok()?;
+    let channels = pixbuf.n_channels() as usize;
+    let rowstride = pixbuf.rowstride() as usize;
+    let width = pixbuf.width() as usize;
+    let height = pixbuf.height() as usize;
+    let bytes = pixbuf.read_pixel_bytes();
+
+    let mut best: Option<(f32, (u8, u8, u8))> = None;
+    let mut sum = (0u32, 0u32, 0u32);
+    let mut counted = 0u32;
+
+    for y in 0..height {
+        for x in 0..width {
+            let i = y * rowstride + x * channels;
+            let (r, g, b) = (*bytes.get(i)?, *bytes.get(i + 1)?, *bytes.get(i + 2)?);
+            sum = (sum.0 + r as u32, sum.1 + g as u32, sum.2 + b as u32);
+            counted += 1;
+
+            let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+            let max = rf.max(gf).max(bf);
+            let min = rf.min(gf).min(bf);
+            let lightness = (max + min) / 2.0;
+            let chroma = max - min;
+
+            // Penalise the very dark and the very pale: black bars and white
+            // borders are colourful in neither sense, and both are everywhere
+            // in album art.
+            let usable = 1.0 - (lightness - 0.5).abs() * 1.6;
+            let score = chroma * usable.max(0.0);
+            if score > best.map(|(s, _)| s).unwrap_or(0.0) {
+                best = Some((score, (r, g, b)));
+            }
+        }
+    }
+
+    // A sleeve with no colour at all — a black-and-white cover — still gets a
+    // tint, just a neutral one, rather than nothing.
+    match best {
+        Some((score, rgb)) if score > 0.08 => Some(rgb),
+        _ if counted > 0 => Some((
+            (sum.0 / counted) as u8,
+            (sum.1 / counted) as u8,
+            (sum.2 / counted) as u8,
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

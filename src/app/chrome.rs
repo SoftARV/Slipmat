@@ -12,6 +12,7 @@ use relm4::adw::prelude::*;
 use relm4::{ComponentSender, adw, gtk};
 
 use super::{AppModel, AppMsg};
+use crate::style::Accent;
 
 // The primary menu's action group. GTK menu items invoke `GAction`s by name;
 // each of these bridges to an `AppMsg` so the reducer stays the only place
@@ -184,6 +185,20 @@ impl AppModel {
             });
         }
         appearance.add(&theme);
+
+        let names: Vec<&str> = Accent::ALL.iter().map(|a| a.label()).collect();
+        let accent = adw::ComboRow::builder()
+            .title("Accent Colour")
+            .model(&gtk::StringList::new(&names))
+            .selected(Accent::parse(&self.settings.accent).index())
+            .build();
+        {
+            let sender = sender.clone();
+            accent.connect_selected_notify(move |row| {
+                sender.input(AppMsg::SetAccent(Accent::from_index(row.selected())));
+            });
+        }
+        appearance.add(&accent);
 
         let notifications = adw::PreferencesGroup::builder()
             .title("Notifications")
