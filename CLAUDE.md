@@ -291,9 +291,13 @@ value of `0`. Ratings come in catalog and library flavours per type (`songs`,
 `albums`, `playlists`, `music-videos`, `stations`), which is the same
 two-id-spaces trap as everything else here.
 
-None of this is implemented yet. It is written down because rule 2 says not to
-trust training data on this API, and this was checked against
-`developer.apple.com`'s own JSON rather than remembered.
+Add-to-library and favourites are wired to the row context menu. Ratings are
+not — they are a third mechanism nobody has asked for yet.
+
+**Nothing shows state.** A 202 means accepted, so a star drawn from it would be
+a star that might be lying; showing it truthfully means reading it back per
+track, which is a request per row. The menu therefore *acts* and toasts, and
+says "Sent to your library" rather than "Added".
 
 ### Sidecar rules learned the hard way
 

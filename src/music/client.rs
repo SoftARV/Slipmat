@@ -110,6 +110,25 @@ impl Client {
         }
     }
 
+    /// As [`Client::get`], for the endpoints that write. Same origin-locked
+    /// headers — they are enforced on every method, not just reads — and the
+    /// user token is not optional here: every write is on behalf of a person.
+    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        let req = self
+            .http
+            .post(format!("{API_BASE}{path}"))
+            .bearer_auth(&self.developer_token)
+            .header("Origin", WEB_ORIGIN)
+            .header("Referer", WEB_REFERER)
+            // Apple rejects a POST with no body outright; an empty JSON object
+            // is the smallest thing it accepts.
+            .header("Content-Length", "0");
+        match &self.music_user_token {
+            Some(t) => req.header("Music-User-Token", t.as_str()),
+            None => req,
+        }
+    }
+
     /// Map a response status to something the UI can act on.
     ///
     /// `signed_in` matters: a 401 while holding a live user token is not a
@@ -198,6 +217,42 @@ impl Client {
         // `From<LibraryArtistResource>` already marks these as library-owned.
         self.all_library::<LibraryArtistResource, Artist>("artists", "&include=catalog", max)
             .await
+    }
+
+    /// Add catalog resources to the user's library.
+    ///
+    /// **202 Accepted with an empty body** is success, and Apple's own wording
+    /// for it is "although the modification request was acceptable, it may not
+    /// have completed". So this returning `Ok` means *accepted*, not *done* —
+    /// nothing may call it and then claim the item is in the library.
+    pub async fn add_to_library(&self, kind: &str, id: &str) -> Result<()> {
+        self.accepted(
+            &format!("/me/library?ids[{kind}]={id}"),
+            "adding to library",
+        )
+        .await
+    }
+
+    /// Favourite a resource — the star, not the older love/dislike rating.
+    pub async fn add_to_favorites(&self, kind: &str, id: &str) -> Result<()> {
+        self.accepted(&format!("/me/favorites?ids[{kind}]={id}"), "favouriting")
+            .await
+    }
+
+    /// The shared POST-and-check for both. Neither returns a body worth
+    /// parsing; what matters is that Apple accepted it.
+    async fn accepted(&self, path: &str, what: &'static str) -> Result<()> {
+        let res = self
+            .post(path)
+            .send()
+            .await
+            .map_err(Self::transport_error)
+            .context(what)?;
+
+        if !res.status().is_success() {
+            return Err(self.explain(res).await);
+        }
+        Ok(())
     }
 
     /// Every playlist in the user's library.

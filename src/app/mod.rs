@@ -282,6 +282,34 @@ pub struct AppModel {
     notify_when_art_lands: Option<String>,
 }
 
+/// Something we can ask Apple to do to the user's account.
+///
+/// Both answer 202 Accepted with an empty body — "acceptable, may not have
+/// completed" — so neither can be treated as done, only as sent. That is why
+/// nothing here toggles a checkbox: showing state would mean reading it back,
+/// and a star that lies is worse than no star.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryAction {
+    AddToLibrary,
+    Favorite,
+}
+
+impl LibraryAction {
+    fn sent(self) -> &'static str {
+        match self {
+            Self::AddToLibrary => "Adding to your library…",
+            Self::Favorite => "Favouriting…",
+        }
+    }
+
+    fn done(self) -> &'static str {
+        match self {
+            Self::AddToLibrary => "Sent to your library",
+            Self::Favorite => "Favourited",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum AppMsg {
     SignIn,
@@ -304,6 +332,11 @@ pub enum AppMsg {
     Enqueue {
         catalog_id: String,
         next: bool,
+    },
+    /// Write to the user's Apple Music account: save a track, or star it.
+    LibraryWrite {
+        catalog_id: String,
+        action: LibraryAction,
     },
     /// Repaint the seek bar from the interpolated position.
     Tick,
@@ -400,6 +433,12 @@ pub enum CommandMsg {
     LibraryAlbums(Result<Vec<Album>, String>),
     LibraryArtists(Result<Vec<Artist>, String>),
     LibraryPlaylists(Result<Vec<Playlist>, String>),
+    /// A library write came back. `Ok` means Apple **accepted** it, not that
+    /// it is done — see `Client::add_to_library`.
+    LibraryWritten {
+        action: LibraryAction,
+        result: Result<(), String>,
+    },
     /// A grid tile's cover is on disk, or could not be fetched.
     TileArt {
         key: String,
@@ -1426,6 +1465,31 @@ impl Component for AppModel {
                 // the user was looking at no longer exists in that order.
                 self.rebuild_rows();
             }
+            AppMsg::LibraryWrite { catalog_id, action } => {
+                let Some(client) = self.client() else {
+                    self.toast("Not connected yet");
+                    return;
+                };
+                // Said out loud before the request goes out: these are
+                // fire-and-forget, and a click with no feedback at all reads as
+                // a click that did not register.
+                self.toast(action.sent());
+                tracing::info!(?action, "library write");
+                sender.oneshot_command(async move {
+                    let result = match action {
+                        LibraryAction::AddToLibrary => {
+                            client.add_to_library("songs", &catalog_id).await
+                        }
+                        LibraryAction::Favorite => {
+                            client.add_to_favorites("songs", &catalog_id).await
+                        }
+                    };
+                    CommandMsg::LibraryWritten {
+                        action,
+                        result: result.map_err(|err| format!("{err:#}")),
+                    }
+                });
+            }
             AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
             AppMsg::Enqueue { catalog_id, next } => {
                 let songs = vec![catalog_id];
@@ -1577,6 +1641,15 @@ impl Component for AppModel {
                     }
                 }
             }
+            CommandMsg::LibraryWritten { action, result } => match result {
+                // "Sent", not "added": Apple's 202 means accepted, and the
+                // change may still be in flight on their side.
+                Ok(()) => self.toast(action.done()),
+                Err(err) => {
+                    tracing::warn!(?action, %err, "library write failed");
+                    self.toast(&err);
+                }
+            },
             CommandMsg::TileArt { key, path } => {
                 self.tile_art_pending.remove(&key);
                 let Some(path) = path else {
@@ -1747,8 +1820,18 @@ impl AppModel {
     /// `ListView` recycles the widget under it while it is open.
     fn show_row_menu(&self, req: RowMenuRequest) {
         let menu = gtk::gio::Menu::new();
-        menu.append(Some("Play _Next"), Some("row.play-next"));
-        menu.append(Some("Add to _Queue"), Some("row.play-later"));
+
+        let queue = gtk::gio::Menu::new();
+        queue.append(Some("Play _Next"), Some("row.play-next"));
+        queue.append(Some("Add to _Queue"), Some("row.play-later"));
+        menu.append_section(None, &queue);
+
+        // A second section, because these leave the app and change the user's
+        // account — a different kind of act from reordering a queue.
+        let account = gtk::gio::Menu::new();
+        account.append(Some("Add to _Library"), Some("row.add-to-library"));
+        account.append(Some("_Favourite"), Some("row.favorite"));
+        menu.append_section(None, &account);
 
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_has_arrow(false);
@@ -1767,6 +1850,22 @@ impl AppModel {
                 sender.input(AppMsg::Enqueue {
                     catalog_id: id.clone(),
                     next,
+                });
+            });
+            actions.add_action(&action);
+        }
+
+        for (name, what) in [
+            ("add-to-library", LibraryAction::AddToLibrary),
+            ("favorite", LibraryAction::Favorite),
+        ] {
+            let action = gtk::gio::SimpleAction::new(name, None);
+            let id = req.catalog_id.clone();
+            let sender = self.menu_sender.clone();
+            action.connect_activate(move |_, _| {
+                sender.input(AppMsg::LibraryWrite {
+                    catalog_id: id.clone(),
+                    action: what,
                 });
             });
             actions.add_action(&action);
