@@ -284,12 +284,18 @@ re-read rather than assume.
 | Favourite (the star) | `POST /v1/me/favorites?ids[<type>]=…` — **add only**, see below |
 | Love / dislike | `PUT /v1/me/ratings/{type}/{id}`, body `{"type":"rating","attributes":{"value": 1 \| -1}}` |
 
-**Un-favouriting is not possible with this token.** Apple documents no
+**Un-favouriting is not possible over REST with this token.** Apple documents no
 counterpart to the add, and `DELETE /v1/me/favorites?ids[songs]=…` — the obvious
 inverse — answers `400 Insufficient Permissions`:
 `'Favorites:DELETE:IdsQuery' entities require permissions that are not in the
-request`. The harvested web-player token does not carry it and there is no way
-to ask for it from here, so the row menu offers no removal.
+request`. So the row menu offers no removal.
+
+Worth knowing before anyone concludes it is impossible: **`music.apple.com` can
+un-favourite**, using the same session we borrow. So a route exists — just not
+this one. The likely candidate is MusicKit JS inside the sidecar, the way
+playback already works, rather than a REST call from Rust. Untried, and it would
+be the first time the sidecar is used for anything but audio, which is a real
+cost to weigh.
 
 **Favourites and ratings are different things.** `favorites` is the modern star;
 `ratings` is the older love/dislike pair, whose only legal values are `1` and
@@ -311,11 +317,17 @@ says "Sent to your library" rather than "Added".
 `LibrarySongs.Attributes` is a **documented, closed list**, and two things about
 it matter:
 
-- **`dateAdded` cannot be had.** It is not in the dictionary, and
+- **`dateAdded` cannot be had per song.** It is not in the dictionary, and
   `extend=dateAdded` does not produce it either — **measured as 0 of 541**
-  against a real library. There is therefore no "Recently Added" sort: offering
-  one that silently orders by title is worse than not offering it. If a route to
-  it ever turns up, that is the sort to add back.
+  against a real library. There is therefore no "Recently Added" *sort*:
+  offering one that silently orders by title is worse than not offering it.
+
+  There *is* `GET /v1/me/library/recently-added`, which returns a
+  `ResourceCollectionResponse` — a mixed list of **albums and playlists** in
+  recently-added order, the same thing Apple Music's own "Recently Added"
+  screen shows. That is a plausible future *view*, not a sort of the songs
+  list: it never promises individual songs, and it documents no `limit` or
+  `offset`. Untried.
 - **`inFavorites` *is* on it**, with `&extend=inFavorites` — **41 of 541**.
   Whether a track is starred comes back with the library, so a row shows it
   without a read-back or a request per row. This is the exception to "202 means
