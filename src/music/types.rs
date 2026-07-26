@@ -276,11 +276,12 @@ pub(crate) struct ArtistRelationships {
 pub(crate) struct SongAttributes {
     #[serde(default)]
     pub name: String,
-    /// When the user saved it. ISO 8601.
+    /// When the user saved it, if Apple ever tells us.
     ///
-    /// **Not a default attribute** — `LibrarySongs.Attributes` does not list
-    /// it, and it only arrives when the request asks for `extend=dateAdded`.
-    /// Empty otherwise, which is why sorting by it silently fell back to title.
+    /// **It does not.** `dateAdded` is not in `LibrarySongs.Attributes` and
+    /// `extend=dateAdded` does not produce it — measured as 0 of 541 tracks
+    /// against a real library. Kept as the place it would land, and as the
+    /// reason there is no "Recently Added" sort.
     #[serde(default)]
     pub date_added: String,
     /// `"2016-05-27"` or `"2016"`; we only ever want the year.

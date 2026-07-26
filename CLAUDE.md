@@ -304,13 +304,20 @@ says "Sent to your library" rather than "Added".
 `LibrarySongs.Attributes` is a **documented, closed list**, and two things about
 it matter:
 
-- **`dateAdded` is not on it.** It only arrives with `&extend=dateAdded` on the
-  request. Without that the field is simply absent, which is why sorting by
-  "Recently Added" silently fell back to title — every value tied.
-- **`inFavorites` *is* on it.** Whether a track is starred comes back for free
-  with the library, so the row can show it without a read-back or a request per
-  row. This is the exception to "202 means you cannot know the state": for
-  favourites on library songs, you can.
+- **`dateAdded` cannot be had.** It is not in the dictionary, and
+  `extend=dateAdded` does not produce it either — **measured as 0 of 541**
+  against a real library. There is therefore no "Recently Added" sort: offering
+  one that silently orders by title is worse than not offering it. If a route to
+  it ever turns up, that is the sort to add back.
+- **`inFavorites` *is* on it**, with `&extend=inFavorites` — **41 of 541**.
+  Whether a track is starred comes back with the library, so a row shows it
+  without a read-back or a request per row. This is the exception to "202 means
+  you cannot know the state": for favourites on library songs, you can.
+
+Both numbers came from a counter left in `all_library_songs`, which still logs
+`starred` on every load. Two rounds were lost to guessing which attributes Apple
+honours before anyone measured; the counter stays so the next question is
+settled the same way.
 
 Library membership is the same shape of fact: a track that came from
 `/me/library/…` is in the library by definition, so `Track::in_library` is set

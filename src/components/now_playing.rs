@@ -36,6 +36,11 @@ const METADATA_WIDTH: i32 = 240;
 /// the bar advances its own display between them. Nothing else is recomputed.
 const ADVANCE_MS: u64 = 100;
 
+/// How far the slider may be allowed to run ahead of a correction before it
+/// gives in and jumps back. Below this it holds still and lets the real
+/// position catch up; above it, something discontinuous happened.
+const BACKSTEP_TOLERANCE_MS: u64 = 1_500;
+
 const SCRUB_COMMIT_MS: u64 = 250;
 
 /// How close the sidecar's reported position must get to a seek target before
@@ -121,6 +126,8 @@ pub struct NowPlaying {
     /// between them. `None` while paused — a paused player's position is a
     /// fact, not something to extrapolate from.
     synced_at: Option<std::time::Instant>,
+    /// The last position actually drawn, so the slider can be kept monotonic.
+    shown_ms: std::cell::Cell<u64>,
     /// Drives [`ADVANCE_MS`]. Removed the moment playback stops, so a paused
     /// app is not waking up ten times a second.
     advance: Option<gtk::glib::SourceId>,
@@ -428,6 +435,7 @@ impl SimpleComponent for NowPlaying {
             snap: Snapshot::default(),
             artwork: None,
             shown_artwork: std::cell::RefCell::new(None),
+            shown_ms: std::cell::Cell::new(0),
             synced_at: None,
             advance: None,
             volume: 1.0,
@@ -448,8 +456,16 @@ impl SimpleComponent for NowPlaying {
                 // Everything except the position comes straight from the
                 // sidecar. The position is ours to defend while the user is
                 // driving it — see `settle_position`.
-                self.snap.position_ms = self.settle_position(held, incoming);
-                self.synced_at = Some(std::time::Instant::now());
+                let settled = self.settle_position(held, incoming);
+                // Restart the extrapolation only on a genuinely new reading.
+                // MusicKit reports roughly once a second while the app pushes a
+                // snapshot twice a second, so resetting on every snapshot would
+                // rebase half of them onto an unchanged value and the slider
+                // would stall, then leap.
+                if settled != self.snap.position_ms || self.synced_at.is_none() {
+                    self.synced_at = Some(std::time::Instant::now());
+                }
+                self.snap.position_ms = settled;
                 self.retime(&sender);
             }
             NowPlayingInput::Advance => {
@@ -654,11 +670,26 @@ impl NowPlaying {
     /// Clamped to the track length so a late snapshot cannot run the slider
     /// past the end, and never extrapolated while paused.
     fn shown_position_ms(&self) -> u64 {
+        let base = self.snap.position_ms;
         let Some(at) = self.synced_at.filter(|_| self.snap.playing) else {
-            return self.snap.position_ms;
+            self.shown_ms.set(base);
+            return base;
         };
         let ahead = at.elapsed().as_millis() as u64;
-        (self.snap.position_ms + ahead).min(self.snap.duration_ms.max(self.snap.position_ms))
+        let candidate = (base + ahead).min(self.snap.duration_ms.max(base));
+
+        // A clock only runs forwards. MusicKit's reports are not perfectly
+        // even, and a small backward correction is far more noticeable than
+        // being a few tens of milliseconds optimistic — but a *large* jump is a
+        // seek or a new track, and must be obeyed.
+        let last = self.shown_ms.get();
+        let shown = if candidate < last && last - candidate < BACKSTEP_TOLERANCE_MS {
+            last
+        } else {
+            candidate
+        };
+        self.shown_ms.set(shown);
+        shown
     }
 
     /// `Artist — Album`, collapsing gracefully when either is missing rather
@@ -682,6 +713,7 @@ mod tests {
             snap,
             artwork: None,
             shown_artwork: std::cell::RefCell::new(None),
+            shown_ms: std::cell::Cell::new(0),
             synced_at: None,
             advance: None,
             volume: 1.0,

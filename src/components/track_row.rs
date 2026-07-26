@@ -138,6 +138,8 @@ pub struct LibraryItem {
 /// The widgets a row publishes while it is on screen.
 #[derive(Debug, Clone)]
 pub struct LibraryRowWidgets {
+    /// The favourite star, so it can be repainted without rebuilding the list.
+    pub star: gtk::Image,
     pub icon: gtk::Image,
     pub root: gtk::Box,
 }
@@ -366,6 +368,7 @@ impl RelmListItem for LibraryItem {
                     self.registry.borrow_mut().insert(
                         id.clone(),
                         LibraryRowWidgets {
+                            star: widgets.star.clone(),
                             icon: widgets.icon.clone(),
                             root: root.clone(),
                         },

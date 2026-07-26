@@ -129,6 +129,20 @@ impl Client {
         }
     }
 
+    /// As [`Client::post`], for the one write that removes something.
+    fn delete(&self, path: &str) -> reqwest::RequestBuilder {
+        let req = self
+            .http
+            .delete(format!("{API_BASE}{path}"))
+            .bearer_auth(&self.developer_token)
+            .header("Origin", WEB_ORIGIN)
+            .header("Referer", WEB_REFERER);
+        match &self.music_user_token {
+            Some(t) => req.header("Music-User-Token", t.as_str()),
+            None => req,
+        }
+    }
+
     /// Map a response status to something the UI can act on.
     ///
     /// `signed_in` matters: a 401 while holding a live user token is not a
@@ -187,34 +201,25 @@ impl Client {
     /// stops as soon as a round comes back short, which is the same termination
     /// condition with far fewer waits.
     pub async fn all_library_songs(&self, max: usize) -> Result<Vec<Track>> {
-        // Both are **extended** attributes: `LibrarySongs.Attributes` lists
-        // them, but the response omits them unless `extend` asks. Without
-        // `dateAdded` every track ties on an empty string and "Recently Added"
-        // silently degrades to title; without `inFavorites` no row can show a
-        // star. Comma-separated, one request.
+        // `extend=inFavorites` is what puts the star on a row: it is listed in
+        // `LibrarySongs.Attributes` but omitted from the response unless asked
+        // for. Measured against a real library: 41 of 541 came back starred.
+        //
+        // `dateAdded` is **not** obtainable this way. It is not in that
+        // dictionary and `extend` does not produce it — measured as 0 of 541 —
+        // which is why there is no "Recently Added" sort. If a route to it
+        // turns up, that is the sort to add back.
         let mut songs = self
-            .all_library::<Resource<SongAttributes>, Track>(
-                "songs",
-                "&extend=dateAdded,inFavorites",
-                max,
-            )
+            .all_library::<Resource<SongAttributes>, Track>("songs", "&extend=inFavorites", max)
             .await?;
         for song in &mut songs {
             song.in_library = true;
         }
 
-        // Say how many actually came back. Guessing at which attributes Apple
-        // honours has cost two rounds already; this turns "it doesn't work"
-        // into a number. If either is 0 against a real library, `extend` is not
-        // doing what the docs imply and the feature needs a different route.
-        let dated = songs.iter().filter(|s| !s.date_added.is_empty()).count();
+        // Kept: this is how the `dateAdded` question got settled, and it is
+        // how the next one will be.
         let starred = songs.iter().filter(|s| s.favorite).count();
-        tracing::info!(
-            total = songs.len(),
-            dated,
-            starred,
-            "library attributes present"
-        );
+        tracing::info!(total = songs.len(), starred, "library attributes present");
 
         Ok(songs)
     }
@@ -255,7 +260,7 @@ impl Client {
     /// nothing may call it and then claim the item is in the library.
     pub async fn add_to_library(&self, kind: &str, id: &str) -> Result<()> {
         self.accepted(
-            &format!("/me/library?ids[{kind}]={id}"),
+            self.post(&format!("/me/library?ids[{kind}]={id}")),
             "adding to library",
         )
         .await
@@ -263,15 +268,32 @@ impl Client {
 
     /// Favourite a resource — the star, not the older love/dislike rating.
     pub async fn add_to_favorites(&self, kind: &str, id: &str) -> Result<()> {
-        self.accepted(&format!("/me/favorites?ids[{kind}]={id}"), "favouriting")
-            .await
+        self.accepted(
+            self.post(&format!("/me/favorites?ids[{kind}]={id}")),
+            "favouriting",
+        )
+        .await
+    }
+
+    /// Remove a favourite.
+    ///
+    /// **Undocumented.** Apple publishes "Add resource to favorites" and no
+    /// counterpart, so this is the obvious REST inverse and nothing more. It
+    /// fails loudly if Apple disagrees rather than reporting a success that did
+    /// not happen — `inFavorites` comes back on the next library load and would
+    /// contradict us.
+    pub async fn remove_from_favorites(&self, kind: &str, id: &str) -> Result<()> {
+        self.accepted(
+            self.delete(&format!("/me/favorites?ids[{kind}]={id}")),
+            "removing a favourite",
+        )
+        .await
     }
 
     /// The shared POST-and-check for both. Neither returns a body worth
     /// parsing; what matters is that Apple accepted it.
-    async fn accepted(&self, path: &str, what: &'static str) -> Result<()> {
-        let res = self
-            .post(path)
+    async fn accepted(&self, request: reqwest::RequestBuilder, what: &'static str) -> Result<()> {
+        let res = request
             .send()
             .await
             .map_err(Self::transport_error)
@@ -309,7 +331,7 @@ impl Client {
         let tracks = self
             .all_library::<Resource<SongAttributes>, Track>(
                 &format!("playlists/{id}/tracks"),
-                "&extend=dateAdded,inFavorites",
+                "&extend=inFavorites",
                 PLAYLIST_MAX,
             )
             .await?;

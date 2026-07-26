@@ -294,6 +294,7 @@ pub struct AppModel {
 pub enum LibraryAction {
     AddToLibrary,
     Favorite,
+    Unfavorite,
 }
 
 impl LibraryAction {
@@ -301,6 +302,7 @@ impl LibraryAction {
         match self {
             Self::AddToLibrary => "Adding to your library…",
             Self::Favorite => "Favouriting…",
+            Self::Unfavorite => "Removing favourite…",
         }
     }
 
@@ -308,6 +310,7 @@ impl LibraryAction {
         match self {
             Self::AddToLibrary => "Sent to your library",
             Self::Favorite => "Favourited",
+            Self::Unfavorite => "Favourite removed",
         }
     }
 }
@@ -439,6 +442,7 @@ pub enum CommandMsg {
     /// A library write came back. `Ok` means Apple **accepted** it, not that
     /// it is done — see `Client::add_to_library`.
     LibraryWritten {
+        catalog_id: String,
         action: LibraryAction,
         result: Result<(), String>,
     },
@@ -1518,8 +1522,12 @@ impl Component for AppModel {
                         LibraryAction::Favorite => {
                             client.add_to_favorites("songs", &catalog_id).await
                         }
+                        LibraryAction::Unfavorite => {
+                            client.remove_from_favorites("songs", &catalog_id).await
+                        }
                     };
                     CommandMsg::LibraryWritten {
+                        catalog_id,
                         action,
                         result: result.map_err(|err| format!("{err:#}")),
                     }
@@ -1682,10 +1690,25 @@ impl Component for AppModel {
                     }
                 }
             }
-            CommandMsg::LibraryWritten { action, result } => match result {
-                // "Sent", not "added": Apple's 202 means accepted, and the
-                // change may still be in flight on their side.
-                Ok(()) => self.toast(action.done()),
+            CommandMsg::LibraryWritten {
+                catalog_id,
+                action,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // "Sent", not "added": Apple's 202 means accepted, and the
+                    // change may still be in flight on their side.
+                    self.toast(action.done());
+                    // The star, however, we can move now. `inFavorites` is only
+                    // re-read on a library reload, and making someone reload to
+                    // see their own click is absurd — so mirror it locally and
+                    // repaint just that row.
+                    match action {
+                        LibraryAction::Favorite => self.set_favorite(&catalog_id, true),
+                        LibraryAction::Unfavorite => self.set_favorite(&catalog_id, false),
+                        LibraryAction::AddToLibrary => {}
+                    }
+                }
                 Err(err) => {
                     tracing::warn!(?action, %err, "library write failed");
                     self.toast(&err);
@@ -1877,7 +1900,9 @@ impl AppModel {
         if !req.in_library {
             account.append(Some("Add to _Library"), Some("row.add-to-library"));
         }
-        if !req.favorite {
+        if req.favorite {
+            account.append(Some("Remove _Favourite"), Some("row.unfavorite"));
+        } else {
             account.append(Some("_Favourite"), Some("row.favorite"));
         }
         if account.n_items() > 0 {
@@ -1909,6 +1934,7 @@ impl AppModel {
         for (name, what) in [
             ("add-to-library", LibraryAction::AddToLibrary),
             ("favorite", LibraryAction::Favorite),
+            ("unfavorite", LibraryAction::Unfavorite),
         ] {
             let action = gtk::gio::SimpleAction::new(name, None);
             let id = req.catalog_id.clone();
@@ -1937,6 +1963,29 @@ impl AppModel {
             gtk::glib::idle_add_local_once(move || p.unparent());
         });
         popover.popup();
+    }
+
+    /// Record a favourite locally and repaint the row, without rebuilding the
+    /// list — a rebuild would throw away the scroll position, and this is the
+    /// same discipline as the play marker.
+    fn set_favorite(&mut self, catalog_id: &str, on: bool) {
+        for track in &mut self.all_tracks {
+            if track.catalog_id.as_deref() == Some(catalog_id) {
+                track.favorite = on;
+            }
+        }
+        for page in &mut self.pages {
+            page.set_favorite(catalog_id, on);
+        }
+        // Every list, for the same reason `set_row_playing` asks every list:
+        // the track may be on a page and in the results behind it.
+        let lists =
+            std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
+        for registry in lists {
+            if let Some(w) = registry.borrow().get(catalog_id) {
+                w.star.set_visible(on);
+            }
+        }
     }
 
     fn toast(&self, text: &str) {

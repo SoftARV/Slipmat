@@ -105,27 +105,17 @@ pub enum SortBy {
     Title,
     Artist,
     Album,
-    /// Newest first — the only ones that descend, because "recently added,
-    /// oldest first" is not a thing anybody wants.
-    RecentlyAdded,
     Year,
 }
 
 impl SortBy {
-    pub(super) const ALL: [Self; 5] = [
-        Self::Title,
-        Self::Artist,
-        Self::Album,
-        Self::RecentlyAdded,
-        Self::Year,
-    ];
+    pub(super) const ALL: [Self; 4] = [Self::Title, Self::Artist, Self::Album, Self::Year];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Title => "Title",
             Self::Artist => "Artist",
             Self::Album => "Album",
-            Self::RecentlyAdded => "Recently Added",
             Self::Year => "Year",
         }
     }
@@ -136,7 +126,6 @@ impl SortBy {
             Self::Title => "title",
             Self::Artist => "artist",
             Self::Album => "album",
-            Self::RecentlyAdded => "recent",
             Self::Year => "year",
         }
     }
@@ -145,7 +134,6 @@ impl SortBy {
         match s {
             "artist" => Self::Artist,
             "album" => Self::Album,
-            "recent" => Self::RecentlyAdded,
             "year" => Self::Year,
             _ => Self::Title,
         }
@@ -157,7 +145,7 @@ impl SortBy {
     /// means the direction toggle always means the same thing on screen — the
     /// arrow points the way the list actually runs.
     pub(super) fn descends_by_default(self) -> bool {
-        matches!(self, Self::RecentlyAdded | Self::Year)
+        matches!(self, Self::Year)
     }
 
     /// Order two tracks. Every arm falls back to title, so the list is stable —
@@ -175,9 +163,7 @@ impl SortBy {
                 .then_with(|| a.track_number.cmp(&b.track_number))
                 .then_with(by_title),
             // Ascending here; `descends_by_default` flips it for display, so
-            // "Recently Added" reads newest-first without this arm having to
-            // know about direction.
-            Self::RecentlyAdded => a.date_added.cmp(&b.date_added).then_with(by_title),
+            // Year reads newest-first without this arm knowing about direction.
             Self::Year => a.year.cmp(&b.year).then_with(by_title),
         }
     }
@@ -269,20 +255,20 @@ mod tests {
     }
 
     #[test]
-    fn recently_added_reads_newest_first_and_flips_on_request() {
+    fn year_reads_newest_first_and_flips_on_request() {
         let mut v = vec![
-            track("old", "", 0, "2020-01-01T00:00:00Z", ""),
+            track("old", "", 0, "", "1999"),
             track("undated", "", 0, "", ""),
-            track("new", "", 0, "2026-07-01T00:00:00Z", ""),
+            track("new", "", 0, "", "2026"),
         ];
-        // Dates read newest-first without anyone asking — that is what
-        // "Recently Added" means.
+        // Years read newest-first without anyone asking, and something Apple
+        // gave no year for is not the newest thing you own.
         assert_eq!(
-            displayed(SortBy::RecentlyAdded, false, &mut v),
+            displayed(SortBy::Year, false, &mut v),
             ["new", "old", "undated"]
         );
         assert_eq!(
-            displayed(SortBy::RecentlyAdded, true, &mut v),
+            displayed(SortBy::Year, true, &mut v),
             ["undated", "old", "new"]
         );
     }

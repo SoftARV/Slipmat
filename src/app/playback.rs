@@ -88,7 +88,12 @@ impl AppModel {
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
             album: item.map(|i| i.album.clone()).unwrap_or_default(),
-            position_ms: self.player.interpolated_position_ms(),
+            // **Raw**, not interpolated. The bar carries the position forward
+            // itself between snapshots; sending an already-extrapolated value
+            // meant two extrapolators stacked on one clock, so the slider ran
+            // ahead and then lurched backwards every time a real position event
+            // reset the truth underneath it.
+            position_ms: self.player.position_ms,
             duration_ms: self.player.duration_ms,
             playing: self.player.state.is_playing(),
             busy: self.player.state.is_busy(),
