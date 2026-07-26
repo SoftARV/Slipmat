@@ -1873,8 +1873,18 @@ impl AppModel {
         popover.insert_action_group("row", Some(&actions));
 
         // Unparent on close, or it leaks and keeps the row widget alive after
-        // the list has recycled it out from under us.
-        popover.connect_closed(|p| p.unparent());
+        // the list has recycled it out from under us — but **not during** the
+        // close.
+        //
+        // GTK closes a PopoverMenu *before* activating the item you clicked. So
+        // unparenting here tore down the action group a moment before the
+        // action fired, and every menu item silently did nothing: no command
+        // left Rust, and the sidecar logged nothing because nothing was sent.
+        // Deferring to an idle lets the activation land first.
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            gtk::glib::idle_add_local_once(move || p.unparent());
+        });
         popover.popup();
     }
 
