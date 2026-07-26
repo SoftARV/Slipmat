@@ -106,6 +106,9 @@ impl AppModel {
     /// filter can change membership arbitrarily on every keystroke, and these
     /// rows hold no state worth preserving (no popovers, no expanders).
     pub(super) fn rebuild_rows(&mut self) {
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("rows", started);
+
         // Rebuilding resets the scroll. It is legitimate on load and on a
         // search change; anywhere else it is a bug, so say when it happens.
         tracing::debug!(query = %self.query(), "library: rebuilding rows");
@@ -225,6 +228,9 @@ impl AppModel {
 
     /// Rebuild the album grid from `albums` + the query.
     pub(super) fn rebuild_albums(&mut self) {
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("albums", started);
+
         let needle = self.library_query.trim().to_lowercase();
         let tiles: Vec<Tile> = self
             .albums
@@ -267,6 +273,9 @@ impl AppModel {
     }
 
     pub(super) fn rebuild_playlists(&mut self) {
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("playlists", started);
+
         let needle = self.library_query.trim().to_lowercase();
         let tiles: Vec<Tile> = self
             .playlists
@@ -286,6 +295,9 @@ impl AppModel {
     }
 
     pub(super) fn rebuild_artists(&mut self) {
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("artists", started);
+
         let needle = self.library_query.trim().to_lowercase();
         let tiles: Vec<Tile> = self
             .artists

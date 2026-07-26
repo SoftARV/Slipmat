@@ -298,6 +298,19 @@ pub struct AppModel {
     notify_when_art_lands: Option<String>,
 }
 
+/// Logs how long a rebuild took, on the way out. Temporary instrumentation for
+/// "switching sections is slow" — it needs a number before it needs a fix.
+pub(crate) struct Timed(pub &'static str, pub std::time::Instant);
+
+impl Drop for Timed {
+    fn drop(&mut self) {
+        let ms = self.1.elapsed().as_millis();
+        if ms > 2 {
+            tracing::debug!(what = self.0, ms, "rebuild");
+        }
+    }
+}
+
 /// Something we can ask Apple to do to the user's account.
 ///
 /// Both answer 202 Accepted with an empty body — "acceptable, may not have
@@ -1373,6 +1386,9 @@ impl Component for AppModel {
     /// The entry is the one widget holding text the model also owns, and the
     /// two must agree: switching scope swaps which query is live, and the box
     /// has to show that scope's text rather than the one you left behind.
+    /// Timed, temporarily, because "switching sections is slow" needs a number
+    /// before it needs a fix. `update_view` re-runs every `#[watch]` in the
+    /// view macro, and there is a lot of it.
     fn update_with_view(
         &mut self,
         widgets: &mut Self::Widgets,
@@ -1390,7 +1406,14 @@ impl Component for AppModel {
             widgets.search_entry.set_text(self.query());
         }
 
+        let painting = std::time::Instant::now();
         self.update_view(widgets, sender);
+        let ms = painting.elapsed().as_millis();
+        if ms > 4 {
+            // Only the slow ones: at ~60fps anything over 16ms drops a frame,
+            // and a message that costs more than a few is worth naming.
+            tracing::debug!(ms, "view refresh");
+        }
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
@@ -1505,6 +1528,7 @@ impl AppModel {
                 if view == self.view {
                     return;
                 }
+                let switch_started = std::time::Instant::now();
                 self.view = view;
                 // Switching section means switching what the content pane is
                 // about, so any album or artist pushed on top of it is now
@@ -1540,6 +1564,14 @@ impl AppModel {
                         }
                     }
                 }
+                // What the *reducer* spent. If this is small and the section
+                // still takes a second to appear, the cost is in rendering
+                // rather than in here.
+                tracing::debug!(
+                    ?view,
+                    ms = switch_started.elapsed().as_millis(),
+                    "section switch"
+                );
             }
             AppMsg::AlbumActivated(position) => {
                 if let Some(item) = self.album_grid.get(position)
