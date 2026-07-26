@@ -1,2 +1,10 @@
 /target
 /sidecar/node_modules
+
+# makepkg build output. The PKGBUILDs are source; everything makepkg creates
+# beside them is not — including the ~330 MB it downloads.
+/packaging/aur/*/src/
+/packaging/aur/*/pkg/
+/packaging/aur/*/*.pkg.tar.*
+/packaging/aur/*/*.tar.gz
+/packaging/aur/*/.SRCINFO

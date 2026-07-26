@@ -14,7 +14,6 @@ mod unplayable;
 
 use relm4::RelmApp;
 use relm4::gtk;
-use relm4::gtk::gdk;
 use tracing_subscriber::EnvFilter;
 
 pub(crate) const APP_ID: &str = "dev.miguelrincon.Tonearm";
@@ -49,7 +48,12 @@ fn main() {
 /// standard idiom, works on X11, and lets a dev build resolve the icon
 /// pre-install. Must run after `RelmApp::new`, which initialised GTK.
 fn setup_icon() {
-    if let Some(display) = gdk::Display::default() {
+    // Only in a dev build. `CARGO_MANIFEST_DIR` is the directory the binary was
+    // *compiled* in, which in a package is a build root that will not exist on
+    // the machine that runs it — and baking it into a release binary is what
+    // makes `makepkg` warn that the package references `$srcdir`.
+    #[cfg(debug_assertions)]
+    if let Some(display) = relm4::gtk::gdk::Display::default() {
         let theme = gtk::IconTheme::for_display(&display);
         theme.add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/data/icons"));
     }
