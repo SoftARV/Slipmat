@@ -93,9 +93,7 @@ follows from that one difference:
 | MPRIS          | `mpris-server`         | 0.10                                       |
 | HTTP           | `reqwest`              | 0.12 (`json`, `rustls-tls`, no default features) |
 | Serde          | `serde`, `serde_json`  | 1                                          |
-| Secret storage | `oo7`                  | 0.6 (Secret Service / GNOME Keyring)       |
 | Async runtime  | `tokio`                | 1 (`rt-multi-thread`, `process`, `io-util`)|
-| Timestamps     | `chrono`               | 0.4                                        |
 | Logging        | `tracing`              | 0.1                                        |
 | Sidecar shell  | castLabs ECS           | `github:castlabs/electron-releases#v43.0.0+wvcus` |
 
@@ -193,9 +191,16 @@ must not render an empty, healthy-looking list".
 
 ### 7. Tokens never touch disk, logs, or error strings
 
-The **Music User Token** goes to the Secret Service (GNOME Keyring) via `oo7`.
-The **developer token** is **re-harvested from `MusicKit.getInstance()` on every
-launch and never cached** — if Apple rotates it we follow automatically.
+**No token is persisted at all** — not to a file, and not to the keyring either.
+
+This rule originally said the Music User Token should go to the Secret Service
+via `oo7`. It never did: `secret.rs` was never written, `oo7` was a dependency
+nothing imported, and the README told people to install a keyring they did not
+need. The rule is amended rather than the code, because what the code does is
+*stronger*: both tokens are re-harvested from `MusicKit.getInstance()` on every
+launch, the sidecar's own session cookie is what persists the login exactly as
+it would in a browser, and there is nothing at rest for anyone to find.
+
 `settings.rs` persists *preferences*; a token is not one. Never `tracing` a
 token, never interpolate one into an error.
 
@@ -403,7 +408,6 @@ src/
     chrome.rs        # the menu, its accelerators, and the three dialogs
   settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
   style.rs           # accent colour + the Now Playing tint. The only CSS.
-  secret.rs          # oo7 wrapper: store / load / clear the Music User Token
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)
   player/

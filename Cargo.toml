@@ -22,7 +22,6 @@ mpris-server = "0.10"
 
 # Secret Service (GNOME Keyring). The Music User Token lives here, never in the
 # config file and never in a log. 0.6 is the current stable line (0.7 is alpha).
-oo7 = "0.6"
 
 # api.music.apple.com. rustls so we don't drag in a system OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = [
@@ -40,7 +39,6 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util"] }
 
 # Track durations and the position clock.
-chrono = "0.4"
 thiserror = "2"
 
 tracing = "0.1"
