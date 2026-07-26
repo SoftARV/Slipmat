@@ -77,6 +77,11 @@ impl PlayerState {
                 self.last_tick = Some(Instant::now());
                 false
             }
+            Event::Modes { shuffle, repeat } => {
+                self.shuffle = *shuffle;
+                self.repeat = *repeat;
+                true
+            }
             Event::Queue(queue) => {
                 self.apply_queue(queue);
                 true

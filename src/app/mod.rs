@@ -1428,15 +1428,22 @@ impl Component for AppModel {
             }
             AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
             AppMsg::Enqueue { catalog_id, next } => {
+                let songs = vec![catalog_id];
                 if self.player.queue.is_empty() {
-                    // Nothing to insert into. `playNext` on an empty queue is a
-                    // silent no-op in MusicKit — exactly the class of failure
-                    // this project keeps refusing to ship.
-                    self.toast("Play something first, then add to the queue");
+                    // Nothing to insert into: `playNext` on an empty queue is a
+                    // silent no-op in MusicKit. Start the queue instead —
+                    // "add to queue" with no queue plainly means "make one",
+                    // and refusing was a worse answer than doing it.
+                    tracing::info!("starting a queue from one track");
+                    self.pending_start = songs.first().cloned();
+                    self.last_queue = Some((songs.clone(), songs.first().cloned()));
+                    self.send(Command::SetQueue {
+                        songs,
+                        start_position: 0,
+                    });
                     return;
                 }
                 tracing::info!(next, "enqueueing one track");
-                let songs = vec![catalog_id];
                 self.send(if next {
                     Command::PlayNext { songs }
                 } else {

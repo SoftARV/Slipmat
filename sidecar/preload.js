@@ -168,6 +168,14 @@ function on(name, fn) {
   }
 }
 
+// MusicKit: shuffleMode 0 off / 1 on; repeatMode 0 none / 1 one / 2 all.
+function emitModes() {
+  emit('modes', {
+    shuffle: (pick(() => music.shuffleMode) ?? 0) === 1,
+    repeat: ['none', 'one', 'all'][pick(() => music.repeatMode) ?? 0] ?? 'none',
+  })
+}
+
 function wireEvents() {
   on('playbackStateDidChange', () =>
     emit('playbackState', { state: stateName(pick(() => music.playbackState) ?? 0) }))
@@ -183,6 +191,11 @@ function wireEvents() {
       positionMs: Math.round((pick(() => music.currentPlaybackTime) || 0) * 1000),
       durationMs: Math.round((pick(() => music.currentPlaybackDuration) || 0) * 1000),
     }))
+
+  // Shuffle and repeat. Without these the Rust mirror never learns the mode,
+  // so its toggle reads false forever and every click sends "on" again.
+  on('shuffleModeDidChange', emitModes)
+  on('repeatModeDidChange', emitModes)
 
   on('queueItemsDidChange', () => emit('queue', currentQueue()))
   on('queuePositionDidChange', () => emit('queue', currentQueue()))
@@ -211,9 +224,21 @@ async function enqueue(method, songs) {
   if (!Array.isArray(songs) || songs.length === 0) {
     throw new Error(`${method} called with no songs`)
   }
-  // The descriptor takes `song` for one and `songs` for many; passing a
-  // one-element array to the plural form is accepted and keeps this single-path.
+
+  const before = pick(() => music.queue?.items?.length) ?? 0
   await music[method]({ songs })
+  const after = pick(() => music.queue?.items?.length) ?? 0
+
+  // `queueItemsDidChange` does not fire for playNext/playLater in this
+  // MusicKit build, so the mirror would keep showing the old queue and the
+  // insert would look like it did nothing. Push it ourselves.
+  emit('queue', currentQueue())
+
+  // And say so if the queue genuinely did not grow — silently doing nothing is
+  // the failure this project keeps refusing to ship.
+  if (after <= before) {
+    throw new Error(`${method} did not change the queue (still ${after} items)`)
+  }
 }
 
 const commands = {
@@ -270,10 +295,18 @@ const commands = {
   },
   setShuffle: ({ shuffle }) => {
     music.shuffleMode = shuffle ? 1 : 0
+    // Echoed explicitly. MusicKit does not reliably fire
+    // shuffleModeDidChange for a *programmatic* change, and a mode the Rust
+    // side never hears about is a toggle that springs back.
+    emitModes()
+    // Turning shuffle off restores the queue's original order, so the queue
+    // itself has changed even though no item was added or removed.
+    emit('queue', currentQueue())
   },
   setRepeat: ({ mode }) => {
     // MusicKit: 0 none, 1 one, 2 all
     music.repeatMode = mode === 'one' ? 1 : mode === 'all' ? 2 : 0
+    emitModes()
   },
   authorize: () => music.authorize(),
   unauthorize: () => music.unauthorize(),

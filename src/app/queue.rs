@@ -236,13 +236,30 @@ impl AppModel {
             return; // queue hasn't arrived yet; try again on the next event
         }
 
-        // One shot either way: acting or giving up both clear the flag, so a
-        // correction can never bounce against MusicKit's own echo.
-        self.pending_start = None;
-
         let id_of = |item: &crate::player::protocol::Item| {
             item.catalog_id.clone().or_else(|| item.id.clone())
         };
+
+        // **Wait for the queue we actually sent.** The mirror still holds the
+        // previous one for a few milliseconds after `setQueue`, and playing the
+        // same playlist twice means both have the same length and the same
+        // ids — so "is a queue loaded" is not enough to tell them apart. An
+        // earlier version corrected 3ms after sending, against the old queue,
+        // and jumped to whatever sat at that index. Compare *sorted* ids: with
+        // shuffle on, MusicKit's order is deliberately not ours.
+        if let Some((sent, _)) = &self.last_queue {
+            let mut theirs: Vec<String> = self.player.queue.iter().filter_map(id_of).collect();
+            let mut ours = sent.clone();
+            theirs.sort_unstable();
+            ours.sort_unstable();
+            if theirs != ours {
+                return; // not our queue yet
+            }
+        }
+
+        // One shot either way: acting or giving up both clear the flag, so a
+        // correction can never bounce against MusicKit's own echo.
+        self.pending_start = None;
         let Some(index) = self
             .player
             .queue

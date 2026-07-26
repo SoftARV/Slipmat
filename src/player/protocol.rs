@@ -168,6 +168,20 @@ pub enum Event {
     #[serde(rename = "hook-failed")]
     HookFailed { detail: String },
 
+    /// Shuffle and repeat, as MusicKit currently has them.
+    ///
+    /// Pushed on change *and* echoed after we set either, because MusicKit does
+    /// not reliably fire its own change events for a programmatic change — and
+    /// a mode the mirror never hears about is a toggle that springs back the
+    /// instant you click it.
+    #[serde(rename = "modes")]
+    Modes {
+        #[serde(default)]
+        shuffle: bool,
+        #[serde(default)]
+        repeat: RepeatMode,
+    },
+
     /// A non-fatal gap — usually an event name this MusicKit version lacks.
     #[serde(rename = "hook-warning")]
     HookWarning { detail: String },
