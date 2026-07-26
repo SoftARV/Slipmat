@@ -58,6 +58,46 @@ pub struct Snapshot {
     pub has_next: bool,
     pub has_previous: bool,
     pub active: bool,
+    pub shuffle: bool,
+    /// Mirrored from MusicKit, never authored here (rule 3).
+    pub repeat: Repeat,
+}
+
+/// What the repeat button is showing. Ours, not MusicKit's — `protocol` owns
+/// the wire type and `components/` never sees it (rule 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Repeat {
+    #[default]
+    Off,
+    All,
+    One,
+}
+
+impl Repeat {
+    /// What clicking the button does: off → all → one → off. The order the
+    /// GNOME music apps use, and the one Apple Music itself uses.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::All,
+            Self::All => Self::One,
+            Self::One => Self::Off,
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Off | Self::All => "media-playlist-repeat-symbolic",
+            Self::One => "media-playlist-repeat-song-symbolic",
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            Self::Off => "Repeat: off",
+            Self::All => "Repeat: all",
+            Self::One => "Repeat: this track",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -95,6 +135,8 @@ pub enum NowPlayingInput {
     PlayPause,
     Next,
     Previous,
+    ShuffleToggled(bool),
+    RepeatCycled,
 }
 
 #[derive(Debug)]
@@ -104,6 +146,8 @@ pub enum NowPlayingOutput {
     Previous,
     Seek(u64),
     SetVolume(f64),
+    SetShuffle(bool),
+    SetRepeat(Repeat),
 }
 
 #[relm4::component(pub)]
@@ -231,6 +275,24 @@ impl SimpleComponent for NowPlaying {
                 set_valign: gtk::Align::Center,
                 set_spacing: 4,
 
+                // Shuffle and repeat flank the transport rather than sitting
+                // in it: they change what "next" *means* rather than doing
+                // anything now, and a toggle that looks like a transport button
+                // gets pressed by accident.
+                gtk::ToggleButton {
+                    set_icon_name: "media-playlist-shuffle-symbolic",
+                    set_tooltip_text: Some("Shuffle"),
+                    add_css_class: "flat",
+                    add_css_class: "circular",
+                    #[watch]
+                    set_active: model.snap.shuffle,
+                    #[watch]
+                    set_sensitive: model.snap.active,
+                    connect_clicked[sender] => move |b| {
+                        sender.input(NowPlayingInput::ShuffleToggled(b.is_active()));
+                    },
+                },
+
                 gtk::Button {
                     set_icon_name: "media-skip-backward-symbolic",
                     set_tooltip_text: Some("Previous"),
@@ -264,6 +326,23 @@ impl SimpleComponent for NowPlaying {
                     #[watch]
                     set_sensitive: model.snap.has_next,
                     connect_clicked => NowPlayingInput::Next,
+                },
+
+                // A ToggleButton would only have two states; repeat has
+                // three, so this is a plain button that cycles and shows where
+                // it is through its icon and the "accent" class.
+                #[name = "repeat_button"]
+                gtk::Button {
+                    set_tooltip_text: Some("Repeat"),
+                    add_css_class: "flat",
+                    add_css_class: "circular",
+                    #[watch]
+                    set_icon_name: model.snap.repeat.icon(),
+                    #[watch]
+                    set_tooltip_text: Some(model.snap.repeat.tooltip()),
+                    #[watch]
+                    set_sensitive: model.snap.active,
+                    connect_clicked => NowPlayingInput::RepeatCycled,
                 },
 
                 gtk::ScaleButton {
@@ -347,6 +426,15 @@ impl SimpleComponent for NowPlaying {
             NowPlayingInput::VolumeChanged(v) => {
                 self.volume = v;
                 let _ = sender.output(NowPlayingOutput::SetVolume(v));
+            }
+            NowPlayingInput::ShuffleToggled(on) => {
+                // Sent, not stored. The button's own state is a `#[watch]` on
+                // the snapshot, so it snaps back if MusicKit disagrees — the
+                // mirror stays the only source of truth (rule 3).
+                let _ = sender.output(NowPlayingOutput::SetShuffle(on));
+            }
+            NowPlayingInput::RepeatCycled => {
+                let _ = sender.output(NowPlayingOutput::SetRepeat(self.snap.repeat.next()));
             }
             NowPlayingInput::PlayPause => {
                 let _ = sender.output(NowPlayingOutput::PlayPause);

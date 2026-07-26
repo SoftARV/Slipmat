@@ -15,10 +15,11 @@ use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 
 use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, TICK_MS, artwork, notify};
-use crate::components::now_playing::{NowPlayingInput, Snapshot};
+use crate::components::now_playing::{NowPlayingInput, Repeat, Snapshot};
 use crate::components::queue_view::{QueueEntry, QueueViewInput};
 use crate::mpris::MprisState;
 use crate::music::types::Artwork;
+use crate::player::protocol::RepeatMode;
 
 impl AppModel {
     /// Tell the rows which one is playing, so the list shows a play marker.
@@ -73,7 +74,16 @@ impl AppModel {
     /// the interpolated position moves without any event arriving.
     pub(super) fn push_snapshot(&self) {
         let item = self.player.now_playing.as_ref();
+        // Protocol type in, ours out — `components/` never sees `RepeatMode`
+        // (rule 9). The mapping lives here because this is the boundary.
+        let repeat = match self.player.repeat {
+            RepeatMode::None => Repeat::Off,
+            RepeatMode::All => Repeat::All,
+            RepeatMode::One => Repeat::One,
+        };
         let snap = Snapshot {
+            shuffle: self.player.shuffle,
+            repeat,
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
             album: item.map(|i| i.album.clone()).unwrap_or_default(),

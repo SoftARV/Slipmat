@@ -120,7 +120,7 @@ pub struct DetailPage {
     title: gtk::Label,
     subtitle: gtk::Label,
     meta: gtk::Label,
-    play: gtk::Button,
+    actions: gtk::Box,
     error: adw::StatusPage,
     empty: adw::StatusPage,
 }
@@ -129,14 +129,15 @@ impl DetailPage {
     /// Build a page showing its spinner. The content arrives later, through
     /// [`DetailPage::show`].
     ///
-    /// `on_activate` is handed the row index that was clicked; `on_play` fires
-    /// for the header's Play button.
+    /// `on_activate` is handed the row index that was clicked; `on_play` and
+    /// `on_shuffle` fire for the header's two buttons.
     pub fn new(
         id: u64,
         heading: &str,
         state: RowState,
         on_activate: impl Fn(usize) + 'static,
         on_play: impl Fn() + 'static,
+        on_shuffle: impl Fn() + 'static,
     ) -> Self {
         let list: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
         let view = list.view.clone();
@@ -163,11 +164,26 @@ impl DetailPage {
 
         let play = gtk::Button::builder()
             .label("Play")
-            .halign(gtk::Align::Center)
             .css_classes(["suggested-action", "pill"])
-            .visible(false)
             .build();
         play.connect_clicked(move |_| on_play());
+
+        let shuffle = gtk::Button::builder()
+            .icon_name("media-playlist-shuffle-symbolic")
+            .tooltip_text("Shuffle")
+            .css_classes(["pill"])
+            .build();
+        shuffle.connect_clicked(move |_| on_shuffle());
+
+        // One box so both appear and disappear together — a Shuffle button
+        // beside nothing is as useless as a Play button beside nothing.
+        let actions = gtk::Box::builder()
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        actions.append(&play);
+        actions.append(&shuffle);
 
         let banner = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -180,7 +196,7 @@ impl DetailPage {
         banner.append(&title);
         banner.append(&subtitle);
         banner.append(&meta);
-        banner.append(&play);
+        banner.append(&actions);
 
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -252,7 +268,7 @@ impl DetailPage {
             title,
             subtitle,
             meta,
-            play,
+            actions,
             error,
             empty,
         }
@@ -377,10 +393,10 @@ impl DetailPage {
         });
         self.list.extend_from_iter(items);
 
-        // Only offer Play where there is something to play — an artist page
+        // Only offer them where there is something to play — an artist page
         // lists albums, and a Play button that does nothing is a bug you have
         // to click to find.
-        self.play
+        self.actions
             .set_visible(entries.iter().any(|e| e.catalog_id().is_some()));
 
         let anything = !entries.is_empty();

@@ -47,7 +47,7 @@ use crate::components::detail_page::{DetailPage, PageKind, RowState};
 use crate::components::grid_item::{
     ArtCache, ArtRegistry, ArtRequest, GridItem, Tile, art_cache, art_registry,
 };
-use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput};
+use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Repeat};
 use crate::components::queue_view::{QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::LibraryRowWidgets;
 use crate::components::track_row::{Entry, LibraryItem};
@@ -57,7 +57,7 @@ use crate::components::{
 use crate::mpris::Mpris;
 use crate::music::types::{Album, Artist, Artwork, Playlist, Track};
 use crate::notify;
-use crate::player::protocol::{Command, Tokens};
+use crate::player::protocol::{Command, RepeatMode, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
 use crate::settings::{Section, Settings, Theme};
 
@@ -289,6 +289,8 @@ pub enum AppMsg {
     Previous,
     Seek(u64),
     SetVolume(f64),
+    SetShuffle(bool),
+    SetRepeat(Repeat),
     /// Repaint the seek bar from the interpolated position.
     Tick,
     /// Play the visible list, starting at this row.
@@ -322,8 +324,11 @@ pub enum AppMsg {
         page: u64,
         row: usize,
     },
-    /// Play everything on a page, from the top.
-    PlayPage(u64),
+    /// Play everything on a page — from the top, or shuffled.
+    PlayPage {
+        page: u64,
+        shuffle: bool,
+    },
     /// Push an album or artist page — catalog or library, which the `PageKind`
     /// carries so the fetch knows which endpoint to ask.
     OpenPage(PageKind),
@@ -871,6 +876,8 @@ impl Component for AppModel {
                 NowPlayingOutput::Previous => AppMsg::Previous,
                 NowPlayingOutput::Seek(ms) => AppMsg::Seek(ms),
                 NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
+                NowPlayingOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
+                NowPlayingOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
             });
 
         let library: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
@@ -1319,11 +1326,16 @@ impl Component for AppModel {
                     None => {}
                 }
             }
-            AppMsg::PlayPage(id) => {
-                let Some(page) = self.pages.iter().find(|p| p.id == id) else {
+            AppMsg::PlayPage { page, shuffle } => {
+                let Some(target) = self.pages.iter().find(|p| p.id == page) else {
                     return;
                 };
-                let entries = page.entries.clone();
+                let entries = target.entries.clone();
+                // Shuffle mode goes to MusicKit *before* the queue, so its own
+                // shuffle applies to the queue as it loads. Shuffling the ids
+                // ourselves would work once and then leave the player in
+                // sequential mode, which is not what pressing Shuffle means.
+                self.send(Command::SetShuffle { shuffle });
                 self.play_entries(&entries, 0);
             }
             AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
@@ -1334,6 +1346,22 @@ impl Component for AppModel {
                 Some(index) => self.send(Command::RemoveFromQueue { index }),
                 None => self.toast("That track is no longer in the queue"),
             },
+            AppMsg::SetShuffle(on) => {
+                // Sent and forgotten: the mirror updates when MusicKit echoes
+                // it back, so the button never claims a state the player is not
+                // actually in (rule 3).
+                tracing::info!(on, "shuffle");
+                self.send(Command::SetShuffle { shuffle: on });
+            }
+            AppMsg::SetRepeat(mode) => {
+                let mode = match mode {
+                    Repeat::Off => RepeatMode::None,
+                    Repeat::All => RepeatMode::All,
+                    Repeat::One => RepeatMode::One,
+                };
+                tracing::info!(?mode, "repeat");
+                self.send(Command::SetRepeat { mode });
+            }
             AppMsg::PlayFrom(index) => {
                 let visible = self.visible_entries();
                 self.play_entries(&visible, index);
