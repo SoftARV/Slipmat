@@ -80,6 +80,36 @@ impl Entry {
 }
 
 #[derive(Debug, Clone)]
+/// What a right-click on a row is asking for: a menu, for this track, here.
+pub struct RowMenuRequest {
+    pub catalog_id: String,
+    /// Where in `over` the click landed, so the popover points at the pointer
+    /// rather than at the middle of the row.
+    pub at: (i32, i32),
+    pub over: gtk::Box,
+}
+
+/// Who shows a row's context menu, once installed.
+type RowMenuHandler = std::rc::Rc<dyn Fn(RowMenuRequest)>;
+
+thread_local! {
+    /// Who shows the row menu.
+    ///
+    /// A thread-local rather than a field on `LibraryItem`, because the gesture
+    /// is created in `setup`, which is a *static* method with no access to any
+    /// item — and threading a callback through every construction site of every
+    /// list, for one menu, is a worse trade. Set once at startup; GTK is
+    /// single-threaded, so there is exactly one.
+    static ROW_MENU: std::cell::RefCell<Option<RowMenuHandler>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the handler that shows a row's context menu. Called once, from the
+/// root component's `init`.
+pub fn set_row_menu(handler: impl Fn(RowMenuRequest) + 'static) {
+    ROW_MENU.with(|m| *m.borrow_mut() = Some(std::rc::Rc::new(handler)));
+}
+
 pub struct LibraryItem {
     pub entry: Entry,
     /// Who is playing, shared with every other row. Read at `bind`, never
@@ -155,6 +185,11 @@ pub fn row_icon(playing: bool, playable: bool) -> (&'static str, &'static [&'sta
 }
 
 pub struct LibraryItemWidgets {
+    /// What this recycled widget is showing **right now**. The context-menu
+    /// gesture is attached once in `setup` and lives as long as the widget, so
+    /// it cannot capture a track — it reads this, which `bind` rewrites every
+    /// time the row is reused. The same recycling rule as everything else here.
+    showing: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     icon: gtk::Image,
     title: gtk::Label,
     subtitle: gtk::Label,
@@ -168,6 +203,8 @@ impl RelmListItem for LibraryItem {
 
     fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         crate::components::count_widget("track-row");
+
+        let showing: std::rc::Rc<std::cell::RefCell<Option<String>>> = Default::default();
 
         view! {
             root = gtk::Box {
@@ -222,9 +259,33 @@ impl RelmListItem for LibraryItem {
             }
         }
 
+        // Secondary button only. A GtkGestureClick that claims *any* button
+        // swallows the sequence — that is what silently killed scrubbing on the
+        // seek scale — so this is scoped to button 3 and never sees the primary
+        // click that activates a row.
+        let menu = gtk::GestureClick::new();
+        menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let asked = showing.clone();
+        let root_for_menu = root.clone();
+        menu.connect_pressed(move |gesture, _, x, y| {
+            let Some(id) = asked.borrow().clone() else {
+                return; // an album or artist row: nothing to enqueue
+            };
+            if let Some(request) = ROW_MENU.with(|m| m.borrow().clone()) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                request(RowMenuRequest {
+                    catalog_id: id,
+                    at: (x as i32, y as i32),
+                    over: root_for_menu.clone(),
+                });
+            }
+        });
+        root.add_controller(menu);
+
         (
             root,
             LibraryItemWidgets {
+                showing,
                 icon,
                 title,
                 subtitle,
@@ -235,6 +296,13 @@ impl RelmListItem for LibraryItem {
     }
 
     fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
+        // Before anything else: tell the context-menu gesture what it is
+        // pointing at now. `None` for a row with nothing to enqueue.
+        *widgets.showing.borrow_mut() = match &self.entry {
+            Entry::Song(track) if self.playable() => track.catalog_id.clone(),
+            _ => None,
+        };
+
         widgets.title.set_label(self.entry.title());
         widgets.subtitle.set_label(&self.entry.subtitle());
 
@@ -292,6 +360,8 @@ mod tests {
         Entry::Song(Track {
             id: TrackId("i.test".into()),
             catalog_id: Some("1".into()),
+            date_added: String::new(),
+            year: String::new(),
             title: "Title".into(),
             artist: artist.into(),
             album: album.into(),

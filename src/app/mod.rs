@@ -47,17 +47,17 @@ use crate::components::detail_page::{DetailPage, PageKind, RowState};
 use crate::components::grid_item::{
     ArtCache, ArtRegistry, ArtRequest, GridItem, Tile, art_cache, art_registry,
 };
-use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput};
+use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, Repeat};
 use crate::components::queue_view::{QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::LibraryRowWidgets;
-use crate::components::track_row::{Entry, LibraryItem};
+use crate::components::track_row::{Entry, LibraryItem, RowMenuRequest};
 use crate::components::{
     CurrentTrack, DeadTracks, RowRegistry, current_track, dead_tracks, row_registry,
 };
 use crate::mpris::Mpris;
 use crate::music::types::{Album, Artist, Artwork, Playlist, Track};
 use crate::notify;
-use crate::player::protocol::{Command, Tokens};
+use crate::player::protocol::{Command, RepeatMode, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
 use crate::settings::{Section, Settings, Theme};
 
@@ -79,7 +79,7 @@ mod view;
 use chrome::{icon, register_actions, show_about, show_shortcuts};
 use supervise::{respawn_sidecar, start_sidecar};
 
-pub use view::{SearchScope, View};
+pub use view::{SearchScope, SortBy, View};
 
 const TICK_MS: u32 = 500;
 
@@ -134,6 +134,10 @@ pub enum Stage {
 pub struct AppModel {
     stage: Stage,
     player: PlayerState,
+    /// Kept for the row context menu, whose GTK actions outlive the `update`
+    /// call that built them.
+    menu_sender: ComponentSender<AppModel>,
+
     /// The last command sent to the sidecar, and when. Read only by the
     /// gapless diagnostic, which needs to distinguish a transition **we** asked
     /// for from one MusicKit made on its own — the second is the gapless path
@@ -185,6 +189,8 @@ pub struct AppModel {
     /// Which sidebar section is showing. `scope()` derives the search scope
     /// from it; never store both.
     view: View,
+    /// How the Songs list is ordered. Applied in `visible_entries`.
+    sort: SortBy,
     /// The user's library albums and artists, loaded on first visit rather than
     /// at startup — launching should not wait on three collections.
     albums: Vec<Album>,
@@ -289,6 +295,16 @@ pub enum AppMsg {
     Previous,
     Seek(u64),
     SetVolume(f64),
+    SetShuffle(bool),
+    SetRepeat(Repeat),
+    SetSort(SortBy),
+    /// A row was right-clicked; show its menu there.
+    ShowRowMenu(RowMenuRequest),
+    /// Grow the queue MusicKit already holds, without rebuilding it.
+    Enqueue {
+        catalog_id: String,
+        next: bool,
+    },
     /// Repaint the seek bar from the interpolated position.
     Tick,
     /// Play the visible list, starting at this row.
@@ -322,8 +338,11 @@ pub enum AppMsg {
         page: u64,
         row: usize,
     },
-    /// Play everything on a page, from the top.
-    PlayPage(u64),
+    /// Play everything on a page — from the top, or shuffled.
+    PlayPage {
+        page: u64,
+        shuffle: bool,
+    },
     /// Push an album or artist page — catalog or library, which the `PageKind`
     /// carries so the fetch knows which endpoint to ask.
     OpenPage(PageKind),
@@ -663,6 +682,18 @@ impl Component for AppModel {
                                             connect_clicked => AppMsg::ToggleQueue,
                                         },
 
+                                        // Only in Songs: the grids have their
+                                        // own natural order and sorting them
+                                        // is a different question.
+                                        #[name = "sort_button"]
+                                        pack_end = &gtk::MenuButton {
+                                            set_icon_name: "view-sort-descending-symbolic",
+                                            set_tooltip_text: Some("Sort"),
+                                            add_css_class: "flat",
+                                            #[watch]
+                                            set_visible: model.view == View::Songs,
+                                        },
+
                                         pack_end = &gtk::Button {
                                             set_icon_name: "view-refresh-symbolic",
                                             set_tooltip_text: Some("Reload library"),
@@ -871,12 +902,21 @@ impl Component for AppModel {
                 NowPlayingOutput::Previous => AppMsg::Previous,
                 NowPlayingOutput::Seek(ms) => AppMsg::Seek(ms),
                 NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
+                NowPlayingOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
+                NowPlayingOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
             });
 
         let library: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
         let activate = sender.clone();
         library.view.connect_activate(move |_, position| {
             activate.input(AppMsg::LibraryActivated(position));
+        });
+
+        // One handler for every list's rows. `setup` is a static method with no
+        // item to carry a callback, so this is installed once, here.
+        let menu_sender = sender.clone();
+        crate::components::track_row::set_row_menu(move |req| {
+            menu_sender.input(AppMsg::ShowRowMenu(req));
         });
 
         let queue_view = QueueView::builder()
@@ -939,6 +979,7 @@ impl Component for AppModel {
             library_query: String::new(),
             catalog_query: String::new(),
             view: View::from(settings.section),
+            sort: SortBy::parse(&settings.sort),
             albums: Vec::new(),
             artists: Vec::new(),
             playlists: Vec::new(),
@@ -969,6 +1010,7 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
+            menu_sender: sender.clone(),
             last_command: std::cell::RefCell::new(None),
             progress_mark: std::cell::Cell::new((0, 0)),
             tokens: None,
@@ -1023,6 +1065,39 @@ impl Component for AppModel {
             label.add_css_class("dim-label");
             row.set_header(Some(&label));
         });
+
+        // The sort menu, built imperatively so the radio state can be bound to
+        // a stateful action rather than hand-managed across five items.
+        {
+            let menu = gtk::gio::Menu::new();
+            for option in SortBy::ALL {
+                let item = gtk::gio::MenuItem::new(Some(option.label()), None);
+                item.set_action_and_target_value(Some("sort.by"), Some(&option.id().to_variant()));
+                menu.append_item(&item);
+            }
+            widgets.sort_button.set_menu_model(Some(&menu));
+
+            // A stateful action gives the popover its radio dots for free, and
+            // keeps the checked item honest when the setting is restored.
+            let action = gtk::gio::SimpleAction::new_stateful(
+                "by",
+                Some(&String::static_variant_type()),
+                &model.sort.id().to_variant(),
+            );
+            let sort_sender = sender.clone();
+            action.connect_activate(move |action, target| {
+                let Some(id) = target.and_then(|t| t.str().map(str::to_owned)) else {
+                    return;
+                };
+                action.set_state(&id.to_variant());
+                sort_sender.input(AppMsg::SetSort(SortBy::parse(&id)));
+            });
+            let group = gtk::gio::SimpleActionGroup::new();
+            group.add_action(&action);
+            widgets
+                .sort_button
+                .insert_action_group("sort", Some(&group));
+        }
 
         // Open on the section we were last in. Selecting fires `row-selected`,
         // which posts SetView — harmless, since the model is already on that
@@ -1319,11 +1394,16 @@ impl Component for AppModel {
                     None => {}
                 }
             }
-            AppMsg::PlayPage(id) => {
-                let Some(page) = self.pages.iter().find(|p| p.id == id) else {
+            AppMsg::PlayPage { page, shuffle } => {
+                let Some(target) = self.pages.iter().find(|p| p.id == page) else {
                     return;
                 };
-                let entries = page.entries.clone();
+                let entries = target.entries.clone();
+                // Shuffle mode goes to MusicKit *before* the queue, so its own
+                // shuffle applies to the queue as it loads. Shuffling the ids
+                // ourselves would work once and then leave the player in
+                // sequential mode, which is not what pressing Shuffle means.
+                self.send(Command::SetShuffle { shuffle });
                 self.play_entries(&entries, 0);
             }
             AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
@@ -1334,6 +1414,51 @@ impl Component for AppModel {
                 Some(index) => self.send(Command::RemoveFromQueue { index }),
                 None => self.toast("That track is no longer in the queue"),
             },
+            AppMsg::SetSort(sort) => {
+                if sort == self.sort {
+                    return;
+                }
+                self.sort = sort;
+                self.settings.sort = sort.id().into();
+                self.settings.save();
+                tracing::info!(sort = sort.id(), "library sort");
+                // A rebuild resets the scroll, which is right here: the list
+                // the user was looking at no longer exists in that order.
+                self.rebuild_rows();
+            }
+            AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
+            AppMsg::Enqueue { catalog_id, next } => {
+                if self.player.queue.is_empty() {
+                    // Nothing to insert into. `playNext` on an empty queue is a
+                    // silent no-op in MusicKit — exactly the class of failure
+                    // this project keeps refusing to ship.
+                    self.toast("Play something first, then add to the queue");
+                    return;
+                }
+                tracing::info!(next, "enqueueing one track");
+                let songs = vec![catalog_id];
+                self.send(if next {
+                    Command::PlayNext { songs }
+                } else {
+                    Command::PlayLater { songs }
+                });
+            }
+            AppMsg::SetShuffle(on) => {
+                // Sent and forgotten: the mirror updates when MusicKit echoes
+                // it back, so the button never claims a state the player is not
+                // actually in (rule 3).
+                tracing::info!(on, "shuffle");
+                self.send(Command::SetShuffle { shuffle: on });
+            }
+            AppMsg::SetRepeat(mode) => {
+                let mode = match mode {
+                    Repeat::Off => RepeatMode::None,
+                    Repeat::All => RepeatMode::All,
+                    Repeat::One => RepeatMode::One,
+                };
+                tracing::info!(?mode, "repeat");
+                self.send(Command::SetRepeat { mode });
+            }
             AppMsg::PlayFrom(index) => {
                 let visible = self.visible_entries();
                 self.play_entries(&visible, index);
@@ -1608,6 +1733,45 @@ impl AppModel {
         self.view.scope()
     }
 
+    /// Show a row's context menu where it was clicked.
+    ///
+    /// Built fresh each time and parented to the row: a single long-lived
+    /// popover would have to be re-parented on every click anyway, and a
+    /// `ListView` recycles the widget under it while it is open.
+    fn show_row_menu(&self, req: RowMenuRequest) {
+        let menu = gtk::gio::Menu::new();
+        menu.append(Some("Play _Next"), Some("row.play-next"));
+        menu.append(Some("Add to _Queue"), Some("row.play-later"));
+
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popover.set_has_arrow(false);
+        popover.set_halign(gtk::Align::Start);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(req.at.0, req.at.1, 1, 1)));
+        popover.set_parent(&req.over);
+
+        // The actions live on the popover, so they go away with it rather than
+        // accumulating on the window one right-click at a time.
+        let actions = gtk::gio::SimpleActionGroup::new();
+        for (name, next) in [("play-next", true), ("play-later", false)] {
+            let action = gtk::gio::SimpleAction::new(name, None);
+            let id = req.catalog_id.clone();
+            let sender = self.menu_sender.clone();
+            action.connect_activate(move |_, _| {
+                sender.input(AppMsg::Enqueue {
+                    catalog_id: id.clone(),
+                    next,
+                });
+            });
+            actions.add_action(&action);
+        }
+        popover.insert_action_group("row", Some(&actions));
+
+        // Unparent on close, or it leaks and keeps the row widget alive after
+        // the list has recycled it out from under us.
+        popover.connect_closed(|p| p.unparent());
+        popover.popup();
+    }
+
     fn toast(&self, text: &str) {
         self.toaster.add_toast(adw::Toast::new(text));
     }
@@ -1623,6 +1787,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            date_added: String::new(),
+            year: String::new(),
             artist: "Aitana".into(),
             album: "Superestrella".into(),
             duration_ms: 200_000,

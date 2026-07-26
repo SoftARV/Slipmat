@@ -36,6 +36,7 @@ impl AppModel {
 
         let activate = sender.clone();
         let play = sender.clone();
+        let shuffle = sender.clone();
         let page = DetailPage::new(
             id,
             kind.heading(),
@@ -44,7 +45,18 @@ impl AppModel {
                 dead: self.dead_rows.clone(),
             },
             move |row| activate.input(AppMsg::DetailActivated { page: id, row }),
-            move || play.input(AppMsg::PlayPage(id)),
+            move || {
+                play.input(AppMsg::PlayPage {
+                    page: id,
+                    shuffle: false,
+                })
+            },
+            move || {
+                shuffle.input(AppMsg::PlayPage {
+                    page: id,
+                    shuffle: true,
+                })
+            },
         );
         page.set_end_controls(!self.show_queue);
         self.nav.push(page.widget());

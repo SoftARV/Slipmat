@@ -44,12 +44,18 @@ impl AppModel {
         match self.scope() {
             SearchScope::Library => {
                 let needle = self.query().trim().to_lowercase();
-                self.all_tracks
+                let mut tracks: Vec<Track> = self
+                    .all_tracks
                     .iter()
                     .filter(|t| needle.is_empty() || matches(t, &needle))
                     .cloned()
-                    .map(Entry::Song)
-                    .collect()
+                    .collect();
+                // Sorted here rather than in `all_tracks`, so changing the
+                // order never has to re-fetch and Apple's own load order stays
+                // available underneath.
+                let sort = self.sort;
+                tracks.sort_by(|a, b| sort.compare(a, b));
+                tracks.into_iter().map(Entry::Song).collect()
             }
             // Apple already ranked these; filtering them again locally would
             // only throw away results that matched for reasons we cannot see.
@@ -338,6 +344,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            date_added: String::new(),
+            year: String::new(),
             artist: "Aitana".into(),
             album: "Superestrella".into(),
             duration_ms: 200_000,
