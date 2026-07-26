@@ -458,23 +458,19 @@ impl SimpleComponent for NowPlaying {
                 // driving it — see `settle_position`.
                 let settled = self.settle_position(held, incoming);
 
-                // Restart the extrapolation only on a genuinely new reading.
-                // MusicKit reports roughly once a second while the app pushes a
-                // snapshot twice a second, so rebasing on every snapshot would
-                // rebase half of them onto an unchanged value and the slider
-                // would stall, then leap.
-                //
-                // Compared against `held` — the value from *before* `self.snap`
-                // was replaced. Comparing against `self.snap.position_ms` here
-                // compares the incoming reading with itself, is therefore never
-                // true, and leaves `synced_at` pinned to the first sync of the
-                // session: the offset then grows without bound and the slider
-                // reads minutes into a track that just started.
-                if settled != held || self.synced_at.is_none() {
-                    self.synced_at = Some(std::time::Instant::now());
-                    // The sidecar is authoritative, so a new reading resets the
+                // Decided once: calling this again afterwards would ask about
+                // the state we just changed.
+                let action =
+                    base_action(self.snap.playing, settled, held, self.synced_at.is_some());
+                match action {
+                    Base::Clear => self.synced_at = None,
+                    Base::Reset => self.synced_at = Some(std::time::Instant::now()),
+                    Base::Keep => {}
+                }
+                if action != Base::Keep {
+                    // The sidecar is authoritative, so a new base resets the
                     // monotonic floor. Otherwise a stale one survives a track
-                    // change and holds the slider mid-song.
+                    // change and strands the slider mid-song.
                     self.shown_ms.set(settled);
                 }
                 self.snap.position_ms = settled;
@@ -579,6 +575,40 @@ impl SimpleComponent for NowPlaying {
             }
             shown.clone_from(&self.artwork);
         }
+    }
+}
+
+/// What to do with the extrapolation base when a snapshot arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Base {
+    /// Stop extrapolating. Nothing is playing, so the position is a fact.
+    Clear,
+    /// Start counting from now, against the reading just received.
+    Reset,
+    /// Carry on. The reading has not moved, so re-anchoring it to `now` would
+    /// stall the slider and then make it leap.
+    Keep,
+}
+
+/// Decide what happens to the base.
+///
+/// The two rules that matter, both learned from bugs:
+///
+/// - **Not playing means no base at all.** Keeping one across a pause meant
+///   resuming extrapolated from *before* the pause, so the slider jumped
+///   forward by however long the pause lasted and then snapped back. The same
+///   thing happens on every track change, where the state passes through
+///   Waiting and Loading for a second or two before audio actually starts.
+/// - **Only rebase on a reading that moved.** MusicKit reports about once a
+///   second while snapshots go out twice a second, so rebasing on every one
+///   would anchor half of them to an unchanged position.
+fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) -> Base {
+    if !playing {
+        Base::Clear
+    } else if settled_ms != held_ms || !have_base {
+        Base::Reset
+    } else {
+        Base::Keep
     }
 }
 
@@ -981,5 +1011,36 @@ mod tests {
         // Duration can be 0 before the first metadata arrives; the position
         // must survive that rather than being clamped to nothing.
         assert_eq!(advance(4_000, 100, 0, 4_000), 4_100);
+    }
+
+    #[test]
+    fn pausing_drops_the_base_so_resuming_starts_from_now() {
+        // The reported bug: pause, wait, play — the slider leapt forward by
+        // roughly the length of the pause and then snapped back, because the
+        // base still pointed at the moment before the pause.
+        assert_eq!(base_action(false, 42_000, 42_000, true), Base::Clear);
+        // ...and resuming with the position unchanged must still rebase.
+        assert_eq!(base_action(true, 42_000, 42_000, false), Base::Reset);
+    }
+
+    #[test]
+    fn a_track_change_rebases_even_though_it_passes_through_loading() {
+        // Playing -> Waiting -> Loading -> Playing takes a second or two before
+        // audio starts. Without dropping the base across it, the slider ran for
+        // that whole gap and then snapped back once real positions arrived.
+        assert_eq!(base_action(false, 0, 180_000, true), Base::Clear);
+        assert_eq!(base_action(true, 0, 180_000, false), Base::Reset);
+    }
+
+    #[test]
+    fn an_unchanged_reading_keeps_its_base() {
+        // MusicKit reports about once a second; snapshots go out twice a
+        // second. Rebasing the repeats would stall the slider, then leap it.
+        assert_eq!(base_action(true, 20_000, 20_000, true), Base::Keep);
+    }
+
+    #[test]
+    fn a_moved_reading_rebases() {
+        assert_eq!(base_action(true, 21_000, 20_000, true), Base::Reset);
     }
 }
