@@ -3,6 +3,10 @@ SPDX-FileCopyrightText: 2026 Miguel Rincon
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
+<p align="center">
+  <img src="docs/screenshots/icon.png" width="128" alt="Tonearm icon">
+</p>
+
 # Tonearm
 
 A native GNOME client for Apple Music.
