@@ -111,6 +111,11 @@ pub struct Album {
     /// `2024`, or empty when Apple did not say.
     pub year: String,
     pub track_count: u32,
+    /// True when `id` is a **library** id (`l.…`) rather than a catalog one.
+    /// They are not interchangeable: a library id 404s against
+    /// `/catalog/…/albums` and vice versa. Set explicitly by whichever client
+    /// method parsed it, never sniffed from the id's shape.
+    pub library: bool,
 }
 
 /// An artist, as a search result or a page header.
@@ -121,6 +126,10 @@ pub struct Artist {
     pub artwork: Option<Artwork>,
     /// Apple's genre list, joined — "Pop, Latin".
     pub genres: String,
+    /// As [`Album::library`]. Library artists also carry **no artwork** — Apple
+    /// simply does not return it for `/me/library/artists`, so the grid draws
+    /// initials instead of waiting for a picture that is never coming.
+    pub library: bool,
 }
 
 // --- Apple's wire shapes. Private: they never escape this module. ------------
@@ -244,6 +253,8 @@ impl From<Resource<AlbumAttributes>> for Album {
                 .map(|a| a.release_date.chars().take(4).collect())
                 .unwrap_or_default(),
             track_count: a.as_ref().map(|a| a.track_count).unwrap_or(0),
+            // Catalog unless a library method says otherwise.
+            library: false,
             artwork: a
                 .and_then(|a| a.artwork)
                 .filter(|art| !art.url.is_empty())
@@ -272,6 +283,7 @@ impl From<Resource<ArtistAttributes>> for Artist {
                 .as_ref()
                 .map(|a| a.genre_names.join(", "))
                 .unwrap_or_default(),
+            library: false,
             artwork: a
                 .and_then(|a| a.artwork)
                 .filter(|art| !art.url.is_empty())

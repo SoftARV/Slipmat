@@ -164,7 +164,50 @@ impl Client {
     /// stops as soon as a round comes back short, which is the same termination
     /// condition with far fewer waits.
     pub async fn all_library_songs(&self, max: usize) -> Result<Vec<Track>> {
-        let mut all: Vec<Track> = Vec::new();
+        self.all_library::<SongAttributes, Track>("songs", max)
+            .await
+    }
+
+    /// Every album in the user's library.
+    pub async fn all_library_albums(&self, max: usize) -> Result<Vec<Album>> {
+        let mut albums = self
+            .all_library::<AlbumAttributes, Album>("albums", max)
+            .await?;
+        // Marked here rather than guessed from the id's shape later: these ids
+        // only work against `/me/library/albums`, and the page that opens one
+        // has to know which endpoint to ask.
+        for album in &mut albums {
+            album.library = true;
+        }
+        Ok(albums)
+    }
+
+    /// Every artist in the user's library.
+    ///
+    /// Apple returns **no artwork** for library artists — only a name. The grid
+    /// draws initials rather than waiting for a picture that never arrives.
+    pub async fn all_library_artists(&self, max: usize) -> Result<Vec<Artist>> {
+        let mut artists = self
+            .all_library::<ArtistAttributes, Artist>("artists", max)
+            .await?;
+        for artist in &mut artists {
+            artist.library = true;
+        }
+        Ok(artists)
+    }
+
+    /// Walk a `/me/library/{kind}` collection to its end, or to `max`.
+    ///
+    /// Generic over Apple's wire shape `A` and our type `T` because songs,
+    /// albums and artists paginate identically — three copies of this loop
+    /// would drift, and the concurrency and short-page logic below is the
+    /// fiddly part worth having once.
+    async fn all_library<A, T>(&self, kind: &'static str, max: usize) -> Result<Vec<T>>
+    where
+        A: serde::de::DeserializeOwned + Send + 'static,
+        T: From<Resource<A>> + Send + 'static,
+    {
+        let mut all: Vec<T> = Vec::new();
         let mut offset = 0usize;
 
         while all.len() < max {
@@ -175,12 +218,12 @@ impl Client {
             let mut tasks = tokio::task::JoinSet::new();
             for (slot, at) in offsets.iter().copied().enumerate() {
                 let client = self.clone();
-                tasks.spawn(async move { (slot, client.library_songs_page(at).await) });
+                tasks.spawn(async move { (slot, client.library_page::<A, T>(kind, at).await) });
             }
 
             // Collect by slot so the library keeps Apple's ordering regardless
             // of which request finishes first.
-            let mut pages: Vec<Option<Vec<Track>>> = vec![None; LIBRARY_CONCURRENCY];
+            let mut pages: Vec<Option<Vec<T>>> = (0..LIBRARY_CONCURRENCY).map(|_| None).collect();
             while let Some(joined) = tasks.join_next().await {
                 let (slot, page) = joined.context("library page task panicked")?;
                 pages[slot] = Some(page?);
@@ -207,29 +250,29 @@ impl Client {
         Ok(all)
     }
 
-    async fn library_songs_page(&self, offset: usize) -> Result<Vec<Track>> {
+    async fn library_page<A, T>(&self, kind: &str, offset: usize) -> Result<Vec<T>>
+    where
+        A: serde::de::DeserializeOwned,
+        T: From<Resource<A>>,
+    {
         let res = self
             .get(&format!(
-                "/me/library/songs?limit={LIBRARY_PAGE}&offset={offset}"
+                "/me/library/{kind}?limit={LIBRARY_PAGE}&offset={offset}"
             ))
             .send()
             .await
-            .map_err(|err| {
-                if err.is_connect() {
-                    ApiError::Offline
-                } else {
-                    ApiError::Other(StatusCode::BAD_GATEWAY)
-                }
-            })
-            .context("requesting library songs")?;
+            .map_err(Self::transport_error)
+            .with_context(|| format!("requesting library {kind}"))?;
 
         if !res.status().is_success() {
             return Err(self.explain(res).await);
         }
 
-        let parsed: Response<Resource<SongAttributes>> =
-            res.json().await.context("decoding library songs")?;
-        Ok(parsed.data.into_iter().map(Track::from).collect())
+        let parsed: Response<Resource<A>> = res
+            .json()
+            .await
+            .with_context(|| format!("decoding library {kind}"))?;
+        Ok(parsed.data.into_iter().map(T::from).collect())
     }
 
     /// Catalog search. Needs only the developer token — no user token, no
@@ -287,11 +330,21 @@ impl Client {
     /// `include=tracks` saves a round trip: the relationship comes back inside
     /// the album resource rather than needing a second call.
     pub async fn album(&self, id: &str) -> Result<(Album, Vec<Track>)> {
-        let res = self
-            .get(&format!(
+        let resource = self
+            .album_resource(&format!(
                 "/catalog/{}/albums/{id}?include=tracks",
                 self.storefront
             ))
+            .await?;
+        let tracks = album_tracks(&resource);
+        Ok((Album::from(resource.into_album()), tracks))
+    }
+
+    /// Fetch one album resource, whichever collection it lives in. The catalog
+    /// and library responses have the same shape; only the URL differs.
+    async fn album_resource(&self, path: &str) -> Result<AlbumResource> {
+        let res = self
+            .get(path)
             .send()
             .await
             .map_err(Self::transport_error)
@@ -302,24 +355,87 @@ impl Client {
         }
 
         let parsed: Response<AlbumResource> = res.json().await.context("decoding album")?;
-        let resource = parsed.data.into_iter().next().context("album not found")?;
-        let tracks = resource
-            .relationships
-            .as_ref()
-            .and_then(|r| r.tracks.as_ref())
-            .map(|t| t.data.iter().cloned().map(Track::from).collect())
-            .unwrap_or_default();
+        parsed.data.into_iter().next().context("album not found")
+    }
 
-        Ok((Album::from(resource.into_album()), tracks))
+    /// One album from the user's library, with the tracks they saved.
+    ///
+    /// Distinct from [`Client::album`] only in the URL: library ids 404 against
+    /// `/catalog`. The response shape is identical, so the parsing is shared.
+    pub async fn library_album(&self, id: &str) -> Result<(Album, Vec<Track>)> {
+        let resource = self
+            .album_resource(&format!("/me/library/albums/{id}?include=tracks"))
+            .await?;
+        let tracks = album_tracks(&resource);
+        let mut album = Album::from(resource.into_album());
+        album.library = true;
+        Ok((album, tracks))
+    }
+
+    /// One artist from the user's library, with the albums they saved.
+    pub async fn library_artist_albums(&self, id: &str) -> Result<(Artist, Vec<Album>)> {
+        let resource = self
+            .artist_resource(&format!("/me/library/artists/{id}?include=albums"))
+            .await?;
+
+        let mut albums = artist_albums_of(&resource);
+
+        // `include=` is documented for catalog resources and merely *works* for
+        // library ones. If Apple ever stops honouring it the relationship comes
+        // back absent, which would render as an artist who owns no albums —
+        // a silent wrong answer. Ask the relationship endpoint directly instead.
+        if albums.is_empty() {
+            tracing::debug!(%id, "library artist had no included albums; asking directly");
+            albums = self
+                .library_pageless_albums(&format!("/me/library/artists/{id}/albums"))
+                .await
+                .unwrap_or_default();
+        }
+
+        for album in &mut albums {
+            album.library = true;
+        }
+
+        let mut artist = Artist::from(resource.into_artist());
+        artist.library = true;
+        Ok((artist, albums))
+    }
+
+    /// A one-shot relationship fetch — no paging. Used only as the fallback
+    /// above, where a first page of albums is better than none.
+    async fn library_pageless_albums(&self, path: &str) -> Result<Vec<Album>> {
+        let res = self
+            .get(path)
+            .send()
+            .await
+            .map_err(Self::transport_error)
+            .context("requesting library artist albums")?;
+
+        if !res.status().is_success() {
+            return Err(self.explain(res).await);
+        }
+
+        let parsed: Response<Resource<AlbumAttributes>> =
+            res.json().await.context("decoding library artist albums")?;
+        Ok(parsed.data.into_iter().map(Album::from).collect())
     }
 
     /// An artist's albums, newest first as Apple orders them.
     pub async fn artist_albums(&self, id: &str) -> Result<(Artist, Vec<Album>)> {
-        let res = self
-            .get(&format!(
+        let resource = self
+            .artist_resource(&format!(
                 "/catalog/{}/artists/{id}?include=albums",
                 self.storefront
             ))
+            .await?;
+        let albums = artist_albums_of(&resource);
+        Ok((Artist::from(resource.into_artist()), albums))
+    }
+
+    /// As [`Client::album_resource`], for artists.
+    async fn artist_resource(&self, path: &str) -> Result<ArtistResource> {
+        let res = self
+            .get(path)
             .send()
             .await
             .map_err(Self::transport_error)
@@ -330,15 +446,7 @@ impl Client {
         }
 
         let parsed: Response<ArtistResource> = res.json().await.context("decoding artist")?;
-        let resource = parsed.data.into_iter().next().context("artist not found")?;
-        let albums = resource
-            .relationships
-            .as_ref()
-            .and_then(|r| r.albums.as_ref())
-            .map(|a| a.data.iter().cloned().map(Album::from).collect())
-            .unwrap_or_default();
-
-        Ok((Artist::from(resource.into_artist()), albums))
+        parsed.data.into_iter().next().context("artist not found")
     }
 
     fn transport_error(err: reqwest::Error) -> ApiError {
@@ -378,6 +486,26 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+/// The tracks Apple attached to an album via `include=tracks`, or none.
+fn album_tracks(resource: &AlbumResource) -> Vec<Track> {
+    resource
+        .relationships
+        .as_ref()
+        .and_then(|r| r.tracks.as_ref())
+        .map(|t| t.data.iter().cloned().map(Track::from).collect())
+        .unwrap_or_default()
+}
+
+/// The albums Apple attached to an artist via `include=albums`, or none.
+fn artist_albums_of(resource: &ArtistResource) -> Vec<Album> {
+    resource
+        .relationships
+        .as_ref()
+        .and_then(|r| r.albums.as_ref())
+        .map(|a| a.data.iter().cloned().map(Album::from).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

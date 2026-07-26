@@ -32,16 +32,52 @@ use crate::music::types::{Album, Artist, Artwork};
 const ART_PX: i32 = 160;
 
 /// What a page is about — and everything needed to ask Apple for it again.
+///
+/// Catalog and library are separate variants rather than one variant plus a
+/// flag, because they are genuinely different endpoints: a library id (`l.…`)
+/// 404s against `/catalog`, and a catalog id 404s against `/me/library`. Making
+/// the compiler ask which one you have keeps the two from being mixed up in a
+/// year's time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageKind {
     Album(String),
     Artist(String),
+    LibraryAlbum(String),
+    LibraryArtist(String),
 }
 
 impl PageKind {
     pub fn id(&self) -> &str {
         match self {
-            Self::Album(id) | Self::Artist(id) => id,
+            Self::Album(id)
+            | Self::Artist(id)
+            | Self::LibraryAlbum(id)
+            | Self::LibraryArtist(id) => id,
+        }
+    }
+
+    /// The right variant for an album, from the flag it was parsed with.
+    pub fn album(album: &Album) -> Self {
+        if album.library {
+            Self::LibraryAlbum(album.id.clone())
+        } else {
+            Self::Album(album.id.clone())
+        }
+    }
+
+    pub fn artist(artist: &Artist) -> Self {
+        if artist.library {
+            Self::LibraryArtist(artist.id.clone())
+        } else {
+            Self::Artist(artist.id.clone())
+        }
+    }
+
+    /// What to put in the header until the real name arrives.
+    pub fn heading(&self) -> &'static str {
+        match self {
+            Self::Album(_) | Self::LibraryAlbum(_) => "Album",
+            Self::Artist(_) | Self::LibraryArtist(_) => "Artist",
         }
     }
 }

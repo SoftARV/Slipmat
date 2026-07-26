@@ -307,6 +307,7 @@ mod tests {
             artwork: None,
             year: year.into(),
             track_count: 9,
+            library: false,
         })
     }
 

@@ -6,6 +6,7 @@
 
 pub mod artwork;
 pub mod detail_page;
+pub mod grid_item;
 pub mod now_playing;
 pub mod queue_view;
 pub mod track_row;
