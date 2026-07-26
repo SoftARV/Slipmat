@@ -79,10 +79,23 @@ impl Entry {
     }
 }
 
+/// What the recycled widget is currently showing, for the context-menu gesture
+/// — which is older than any particular track and must not capture one.
 #[derive(Debug, Clone)]
+struct RowFacts {
+    catalog_id: String,
+    in_library: bool,
+    favorite: bool,
+}
+
 /// What a right-click on a row is asking for: a menu, for this track, here.
+#[derive(Debug)]
 pub struct RowMenuRequest {
     pub catalog_id: String,
+    /// Already saved, so "Add to Library" is not offered.
+    pub in_library: bool,
+    /// Already starred, so "Favourite" is not offered.
+    pub favorite: bool,
     /// Where in `over` the click landed, so the popover points at the pointer
     /// rather than at the middle of the row.
     pub at: (i32, i32),
@@ -185,11 +198,12 @@ pub fn row_icon(playing: bool, playable: bool) -> (&'static str, &'static [&'sta
 }
 
 pub struct LibraryItemWidgets {
+    star: gtk::Image,
     /// What this recycled widget is showing **right now**. The context-menu
     /// gesture is attached once in `setup` and lives as long as the widget, so
     /// it cannot capture a track — it reads this, which `bind` rewrites every
     /// time the row is reused. The same recycling rule as everything else here.
-    showing: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    showing: std::rc::Rc<std::cell::RefCell<Option<RowFacts>>>,
     icon: gtk::Image,
     title: gtk::Label,
     subtitle: gtk::Label,
@@ -204,7 +218,7 @@ impl RelmListItem for LibraryItem {
     fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         crate::components::count_widget("track-row");
 
-        let showing: std::rc::Rc<std::cell::RefCell<Option<String>>> = Default::default();
+        let showing: std::rc::Rc<std::cell::RefCell<Option<RowFacts>>> = Default::default();
 
         view! {
             root = gtk::Box {
@@ -243,6 +257,16 @@ impl RelmListItem for LibraryItem {
                     },
                 },
 
+                // Only ever visible for a favourited track. Read straight off
+                // `inFavorites`, which the library endpoint returns — no
+                // read-back, no request per row.
+                #[name = "star"]
+                gtk::Image {
+                    set_icon_name: Some("starred-symbolic"),
+                    set_visible: false,
+                    add_css_class: "accent",
+                },
+
                 #[name = "trailing"]
                 gtk::Label {
                     set_valign: gtk::Align::Center,
@@ -268,13 +292,15 @@ impl RelmListItem for LibraryItem {
         let asked = showing.clone();
         let root_for_menu = root.clone();
         menu.connect_pressed(move |gesture, _, x, y| {
-            let Some(id) = asked.borrow().clone() else {
+            let Some(shown) = asked.borrow().clone() else {
                 return; // an album or artist row: nothing to enqueue
             };
             if let Some(request) = ROW_MENU.with(|m| m.borrow().clone()) {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 request(RowMenuRequest {
-                    catalog_id: id,
+                    catalog_id: shown.catalog_id,
+                    in_library: shown.in_library,
+                    favorite: shown.favorite,
                     at: (x as i32, y as i32),
                     over: root_for_menu.clone(),
                 });
@@ -285,6 +311,7 @@ impl RelmListItem for LibraryItem {
         (
             root,
             LibraryItemWidgets {
+                star,
                 showing,
                 icon,
                 title,
@@ -299,7 +326,13 @@ impl RelmListItem for LibraryItem {
         // Before anything else: tell the context-menu gesture what it is
         // pointing at now. `None` for a row with nothing to enqueue.
         *widgets.showing.borrow_mut() = match &self.entry {
-            Entry::Song(track) if self.playable() => track.catalog_id.clone(),
+            Entry::Song(track) if self.playable() => {
+                track.catalog_id.clone().map(|catalog_id| RowFacts {
+                    catalog_id,
+                    in_library: track.in_library,
+                    favorite: track.favorite,
+                })
+            }
             _ => None,
         };
 
@@ -310,6 +343,13 @@ impl RelmListItem for LibraryItem {
         let opens = self.entry.opens_a_page();
         widgets.chevron.set_visible(opens);
         widgets.trailing.set_visible(!opens);
+
+        // Set unconditionally: this widget was showing a different track a
+        // moment ago, and a star left over from it is a lie about this one.
+        widgets.star.set_visible(match &self.entry {
+            Entry::Song(track) => track.favorite,
+            _ => false,
+        });
 
         match &self.entry {
             Entry::Song(track) => {
@@ -360,6 +400,8 @@ mod tests {
         Entry::Song(Track {
             id: TrackId("i.test".into()),
             catalog_id: Some("1".into()),
+            favorite: false,
+            in_library: false,
             date_added: String::new(),
             year: String::new(),
             title: "Title".into(),

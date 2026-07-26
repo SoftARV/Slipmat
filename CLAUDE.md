@@ -299,6 +299,23 @@ a star that might be lying; showing it truthfully means reading it back per
 track, which is a request per row. The menu therefore *acts* and toasts, and
 says "Sent to your library" rather than "Added".
 
+### Library song attributes, and what you have to ask for
+
+`LibrarySongs.Attributes` is a **documented, closed list**, and two things about
+it matter:
+
+- **`dateAdded` is not on it.** It only arrives with `&extend=dateAdded` on the
+  request. Without that the field is simply absent, which is why sorting by
+  "Recently Added" silently fell back to title — every value tied.
+- **`inFavorites` *is* on it.** Whether a track is starred comes back for free
+  with the library, so the row can show it without a read-back or a request per
+  row. This is the exception to "202 means you cannot know the state": for
+  favourites on library songs, you can.
+
+Library membership is the same shape of fact: a track that came from
+`/me/library/…` is in the library by definition, so `Track::in_library` is set
+by the client method that fetched it — never guessed from the id.
+
 ### Sidecar rules learned the hard way
 
 M1 took five rounds to get audio out, and every failure was silent. These are

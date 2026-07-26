@@ -187,8 +187,16 @@ impl Client {
     /// stops as soon as a round comes back short, which is the same termination
     /// condition with far fewer waits.
     pub async fn all_library_songs(&self, max: usize) -> Result<Vec<Track>> {
-        self.all_library::<Resource<SongAttributes>, Track>("songs", "", max)
-            .await
+        // `extend=dateAdded` because it is **not** a default attribute of
+        // LibrarySongs — without it the field comes back absent and sorting by
+        // "Recently Added" silently falls back to title.
+        let mut songs = self
+            .all_library::<Resource<SongAttributes>, Track>("songs", "&extend=dateAdded", max)
+            .await?;
+        for song in &mut songs {
+            song.in_library = true;
+        }
+        Ok(songs)
     }
 
     /// Every album in the user's library.
@@ -281,7 +289,7 @@ impl Client {
         let tracks = self
             .all_library::<Resource<SongAttributes>, Track>(
                 &format!("playlists/{id}/tracks"),
-                "",
+                "&extend=dateAdded",
                 PLAYLIST_MAX,
             )
             .await?;
@@ -520,7 +528,10 @@ impl Client {
         let resource = self
             .album_resource(&format!("/me/library/albums/{id}?include=tracks"))
             .await?;
-        let tracks = album_tracks(&resource);
+        let mut tracks = album_tracks(&resource);
+        for track in &mut tracks {
+            track.in_library = true;
+        }
         let mut album = Album::from(resource.into_album());
         album.library = true;
         Ok((album, tracks))

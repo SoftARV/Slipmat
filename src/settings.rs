@@ -100,6 +100,8 @@ pub struct Settings {
     /// value from a hand-edited or future ini falls back rather than breaking
     /// startup.
     pub sort: String,
+    /// Whether the user flipped the sort's natural direction.
+    pub sort_reversed: bool,
     pub section: Section,
     pub show_sidebar: bool,
     /// Notify when the track changes. Off by default (`bool`'s default): a
@@ -114,6 +116,7 @@ impl Default for Settings {
             theme: Theme::default(),
             // Apple's own order.
             sort: "title".into(),
+            sort_reversed: false,
             section: Section::default(),
             // Visible on a first run: a sidebar nobody has hidden yet should
             // be there to be found.
@@ -158,6 +161,9 @@ impl Settings {
         if let Ok(sort) = file.string(GROUP, "sort") {
             settings.sort = sort.into();
         }
+        if let Ok(rev) = file.boolean(GROUP, "sort-reversed") {
+            settings.sort_reversed = rev;
+        }
         tracing::debug!(?settings, "loaded settings");
         settings
     }
@@ -178,6 +184,7 @@ impl Settings {
         file.set_string(GROUP, "section", self.section.as_str());
         file.set_boolean(GROUP, "show-sidebar", self.show_sidebar);
         file.set_string(GROUP, "sort", &self.sort);
+        file.set_boolean(GROUP, "sort-reversed", self.sort_reversed);
 
         if let Err(err) = std::fs::create_dir_all(dir) {
             tracing::warn!(?err, "could not create config directory");

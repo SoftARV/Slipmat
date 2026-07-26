@@ -309,6 +309,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            favorite: false,
+            in_library: false,
             date_added: String::new(),
             year: String::new(),
             artist: "Aitana".into(),

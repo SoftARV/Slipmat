@@ -191,6 +191,8 @@ pub struct AppModel {
     view: View,
     /// How the Songs list is ordered. Applied in `visible_entries`.
     sort: SortBy,
+    /// Whether the user flipped the sort's natural direction.
+    sort_reversed: bool,
     /// The user's library albums and artists, loaded on first visit rather than
     /// at startup — launching should not wait on three collections.
     albums: Vec<Album>,
@@ -326,6 +328,7 @@ pub enum AppMsg {
     SetShuffle(bool),
     SetRepeat(Repeat),
     SetSort(SortBy),
+    ToggleSortDirection,
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
     /// Grow the queue MusicKit already holds, without rebuilding it.
@@ -467,7 +470,15 @@ impl Component for AppModel {
                     #[wrap(Some)]
                     set_content = &adw::OverlaySplitView {
                         set_sidebar_position: gtk::PackType::End,
+                        // The split view owns the sidebar's width, not the
+                        // sidebar. Its child used to carry a 340px
+                        // width_request, which the collapse animation then had
+                        // to violate on every frame — hence GTK warning that a
+                        // GtkRevealer was being measured smaller than its
+                        // minimum every time the queue closed.
+                        set_min_sidebar_width: 300.0,
                         set_max_sidebar_width: 380.0,
+                        set_sidebar_width_fraction: 0.28,
                         #[watch]
                         set_show_sidebar: model.show_queue,
 
@@ -1012,6 +1023,7 @@ impl Component for AppModel {
             catalog_query: String::new(),
             view: View::from(settings.section),
             sort: SortBy::parse(&settings.sort),
+            sort_reversed: settings.sort_reversed,
             albums: Vec::new(),
             artists: Vec::new(),
             playlists: Vec::new(),
@@ -1102,11 +1114,20 @@ impl Component for AppModel {
         // a stateful action rather than hand-managed across five items.
         {
             let menu = gtk::gio::Menu::new();
+
+            // Its own section, because reversing is a different question from
+            // choosing a key — and it stays put while the radio list changes.
+            let direction = gtk::gio::Menu::new();
+            direction.append(Some("_Reverse Order"), Some("sort.reverse"));
+            menu.append_section(None, &direction);
+
+            let keys = gtk::gio::Menu::new();
             for option in SortBy::ALL {
                 let item = gtk::gio::MenuItem::new(Some(option.label()), None);
                 item.set_action_and_target_value(Some("sort.by"), Some(&option.id().to_variant()));
-                menu.append_item(&item);
+                keys.append_item(&item);
             }
+            menu.prepend_section(None, &keys);
             widgets.sort_button.set_menu_model(Some(&menu));
 
             // A stateful action gives the popover its radio dots for free, and
@@ -1126,6 +1147,25 @@ impl Component for AppModel {
             });
             let group = gtk::gio::SimpleActionGroup::new();
             group.add_action(&action);
+
+            // Stateful, so the menu draws its own checkmark rather than us
+            // rebuilding the model every time it flips.
+            let reverse = gtk::gio::SimpleAction::new_stateful(
+                "reverse",
+                None,
+                &model.sort_reversed.to_variant(),
+            );
+            let rev_sender = sender.clone();
+            reverse.connect_activate(move |action, _| {
+                let now = !action
+                    .state()
+                    .and_then(|s| s.get::<bool>())
+                    .unwrap_or(false);
+                action.set_state(&now.to_variant());
+                rev_sender.input(AppMsg::ToggleSortDirection);
+            });
+            group.add_action(&reverse);
+
             widgets
                 .sort_button
                 .insert_action_group("sort", Some(&group));
@@ -1485,6 +1525,12 @@ impl Component for AppModel {
                     }
                 });
             }
+            AppMsg::ToggleSortDirection => {
+                self.sort_reversed = !self.sort_reversed;
+                self.settings.sort_reversed = self.sort_reversed;
+                self.settings.save();
+                self.rebuild_rows();
+            }
             AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
             AppMsg::Enqueue { catalog_id, next } => {
                 let songs = vec![catalog_id];
@@ -1823,10 +1869,20 @@ impl AppModel {
 
         // A second section, because these leave the app and change the user's
         // account — a different kind of act from reordering a queue.
+        //
+        // Each item appears only when it would do something. Offering "Add to
+        // Library" for a track read *out of* the library, or "Favourite" for
+        // one already starred, is a menu that lies about the state of things.
         let account = gtk::gio::Menu::new();
-        account.append(Some("Add to _Library"), Some("row.add-to-library"));
-        account.append(Some("_Favourite"), Some("row.favorite"));
-        menu.append_section(None, &account);
+        if !req.in_library {
+            account.append(Some("Add to _Library"), Some("row.add-to-library"));
+        }
+        if !req.favorite {
+            account.append(Some("_Favourite"), Some("row.favorite"));
+        }
+        if account.n_items() > 0 {
+            menu.append_section(None, &account);
+        }
 
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_has_arrow(false);
@@ -1898,6 +1954,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            favorite: false,
+            in_library: false,
             date_added: String::new(),
             year: String::new(),
             artist: "Aitana".into(),

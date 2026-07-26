@@ -240,7 +240,6 @@ impl Component for QueueView {
 
     view! {
         adw::ToolbarView {
-            set_width_request: 340,
 
             add_top_bar = &adw::HeaderBar {
                 // The queue is the rightmost pane while it is open, so the

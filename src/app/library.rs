@@ -55,6 +55,11 @@ impl AppModel {
                 // available underneath.
                 let sort = self.sort;
                 tracks.sort_by(|a, b| sort.compare(a, b));
+                // Reversed rather than sorted the other way, so ties keep the
+                // stable order the comparator already gave them.
+                if sort.descends_by_default() != self.sort_reversed {
+                    tracks.reverse();
+                }
                 tracks.into_iter().map(Entry::Song).collect()
             }
             // Apple already ranked these; filtering them again locally would
@@ -344,6 +349,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            favorite: false,
+            in_library: false,
             date_added: String::new(),
             year: String::new(),
             artist: "Aitana".into(),
