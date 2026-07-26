@@ -156,9 +156,18 @@ impl AppModel {
                     has_user_token = tokens.music_user_token.is_some(),
                     "tokens harvested"
                 );
-                if tokens.authorized {
-                    self.stage = Stage::Ready;
-                }
+                // **Symmetric**, like `HookReady` and `Authorization` above and
+                // below. Promoting without ever demoting was a real bug: a
+                // `tokens` event carrying `authorized=false` left the stage on
+                // `Ready`, so for the moment before the matching
+                // `Authorization` event arrived the app believed it was signed
+                // in while holding no user token — and the auto-load below
+                // fired a request that could only ever 403.
+                self.stage = if tokens.authorized {
+                    Stage::Ready
+                } else {
+                    Stage::SignedOut
+                };
                 self.tokens = Some(tokens.clone());
             }
             Event::Authorization { authorized } => {
@@ -251,11 +260,10 @@ impl AppModel {
         // user ask. Guarded on all three conditions so a later event — a
         // reconnect, a token refresh — can't kick off a second load over the
         // top of the first.
-        if matches!(self.stage, Stage::Ready)
-            && self.all_tracks.is_empty()
-            && !self.loading_library
-            && self.tokens.is_some()
-        {
+        if matches!(self.stage, Stage::Ready) && !self.loading_library {
+            // `load_library` owns the rest of the decision — whether it has
+            // already been tried, and whether there is a user token to try
+            // with. Duplicating those here is how the two drifted apart.
             self.load_library(sender);
         }
 

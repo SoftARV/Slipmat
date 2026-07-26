@@ -224,6 +224,7 @@ pub struct AppModel {
     tried_albums: bool,
     tried_artists: bool,
     tried_playlists: bool,
+    tried_library: bool,
     /// What each section's widgets were last built *for*.
     ///
     /// Rebuilding is expensive — every tile that binds decodes its cover on the
@@ -1224,6 +1225,7 @@ impl Component for AppModel {
             tried_albums: false,
             tried_artists: false,
             tried_playlists: false,
+            tried_library: false,
             built_rows: None,
             built_albums: None,
             built_artists: None,
@@ -2290,7 +2292,10 @@ impl AppModel {
     /// it does nothing at all.
     fn reload(&mut self, view: View, sender: &ComponentSender<Self>) {
         match view {
-            View::Songs | View::Search => self.load_library(sender),
+            View::Songs | View::Search => {
+                self.tried_library = false;
+                self.load_library(sender);
+            }
             View::Albums => {
                 self.albums.clear();
                 self.tried_albums = false;
@@ -2327,6 +2332,7 @@ impl AppModel {
         self.tried_albums = false;
         self.tried_artists = false;
         self.tried_playlists = false;
+        self.tried_library = false;
         self.built_rows = None;
         self.built_albums = None;
         self.built_artists = None;
