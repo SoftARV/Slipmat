@@ -23,6 +23,11 @@ use crate::music::types::format_duration;
 /// every one of those would force a re-buffer per pixel. Waiting for a short
 /// pause turns a drag into a single seek while still feeling immediate,
 /// because the elapsed label moves with the handle straight away.
+/// How much of the bar the track title and artist may claim, in logical pixels.
+/// Fixed rather than proportional so the seek scale does not jump about as
+/// tracks with different name lengths come and go.
+const METADATA_WIDTH: i32 = 240;
+
 const SCRUB_COMMIT_MS: u64 = 250;
 
 /// How close the sidecar's reported position must get to a seek target before
@@ -123,15 +128,27 @@ impl SimpleComponent for NowPlaying {
                 add_css_class: "np-cover",
             },
 
+            // Deliberately **not** hexpand, and width-limited.
+            //
+            // A GtkBox hands every child up to its *natural* width before any
+            // hexpand child gets a share of what's left, and an ellipsizing
+            // label's natural width is its whole untruncated string. So
+            // "Castlevania Sound Team — Akumajo Dracula Judgment Original
+            // Soundtrack" was claiming the space and squeezing the seek scale
+            // down to its 220px minimum. Capping `max_width_chars` caps the
+            // natural width; the fixed request keeps the bar from reflowing
+            // every time the track changes.
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 set_valign: gtk::Align::Center,
-                set_hexpand: true,
+                set_hexpand: false,
+                set_width_request: METADATA_WIDTH,
                 set_spacing: 2,
 
                 gtk::Label {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
+                    set_max_width_chars: 1,
                     add_css_class: "heading",
                     // Track and album names are plain text, not markup. Without
                     // this, a title containing `&` — "Blood, Sweat & 3 Years",
@@ -144,15 +161,22 @@ impl SimpleComponent for NowPlaying {
                     } else {
                         &model.snap.title
                     },
+                    #[watch]
+                    set_tooltip_text: (!model.snap.title.is_empty())
+                        .then_some(model.snap.title.as_str()),
                 },
                 gtk::Label {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
+                    set_max_width_chars: 1,
                     add_css_class: "caption",
                     add_css_class: "dim-label",
                     set_use_markup: false,
                     #[watch]
                     set_label: &model.subtitle(),
+                    // The full text on hover, since the bar always truncates.
+                    #[watch]
+                    set_tooltip_text: Some(&model.subtitle()),
                     #[watch]
                     set_visible: model.snap.active,
                 },

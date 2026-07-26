@@ -271,6 +271,30 @@ The same distinction already existed one level down: a library *song*'s own id
 is not playable, and its `playParams.catalogId` is. That is why `Track` carries
 both.
 
+### Writing to the library — verified against Apple's docs, 2026-07-26
+
+All three exist, all take the **Music User Token** we already hold, and all
+answer **202 Accepted with an empty body** — "acceptable, may not have
+completed", so the UI must not treat 202 as "it is now in your library" and
+re-read rather than assume.
+
+| Want | Call |
+| --- | --- |
+| Add to library | `POST /v1/me/library?ids[songs]=…&ids[albums]=…` — several types in one request |
+| Favourite (the star) | `POST /v1/me/favorites?ids[<type>]=…` |
+| Love / dislike | `PUT /v1/me/ratings/{type}/{id}`, body `{"type":"rating","attributes":{"value": 1 \| -1}}` |
+
+**Favourites and ratings are different things.** `favorites` is the modern star;
+`ratings` is the older love/dislike pair, whose only legal values are `1` and
+`-1`, with *absent* meaning unrated — so removing a rating is `DELETE`, not a
+value of `0`. Ratings come in catalog and library flavours per type (`songs`,
+`albums`, `playlists`, `music-videos`, `stations`), which is the same
+two-id-spaces trap as everything else here.
+
+None of this is implemented yet. It is written down because rule 2 says not to
+trust training data on this API, and this was checked against
+`developer.apple.com`'s own JSON rather than remembered.
+
 ### Sidecar rules learned the hard way
 
 M1 took five rounds to get audio out, and every failure was silent. These are
