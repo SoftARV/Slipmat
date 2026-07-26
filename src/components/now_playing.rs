@@ -106,6 +106,9 @@ impl Repeat {
 pub struct NowPlaying {
     snap: Snapshot,
     artwork: Option<PathBuf>,
+    /// What the cover widget is actually displaying, so `post_view` can tell a
+    /// real change from the many redraws that are not one.
+    shown_artwork: std::cell::RefCell<Option<PathBuf>>,
     volume: f64,
     /// True from the first slider movement until the debounce commits. State
     /// updates must not yank the handle out from under the user — the single
@@ -239,10 +242,15 @@ impl SimpleComponent for NowPlaying {
                 set_spacing: 8,
                 set_hexpand: true,
 
+                // Fixed width. `numeric` gives tabular figures, but "0:59" and
+                // "1:00:00" are different lengths, and a label that resizes
+                // under the scale drags the scale with it.
                 #[name = "elapsed"]
                 gtk::Label {
                     add_css_class: "numeric",
                     add_css_class: "caption",
+                    set_width_chars: 5,
+                    set_xalign: 1.0,
                 },
 
                 #[name = "seek"]
@@ -272,6 +280,8 @@ impl SimpleComponent for NowPlaying {
                     add_css_class: "numeric",
                     add_css_class: "caption",
                     add_css_class: "dim-label",
+                    set_width_chars: 5,
+                    set_xalign: 0.0,
                 },
             },
 
@@ -397,6 +407,7 @@ impl SimpleComponent for NowPlaying {
         let model = NowPlaying {
             snap: Snapshot::default(),
             artwork: None,
+            shown_artwork: std::cell::RefCell::new(None),
             volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
@@ -485,6 +496,8 @@ impl SimpleComponent for NowPlaying {
             widgets.seek.set_value(self.progress());
         }
         widgets.seek.set_sensitive(self.snap.duration_ms > 0);
+        // `set_label` compares internally and no-ops when unchanged, so these
+        // are free on a tick that only moved the slider.
         widgets
             .elapsed
             .set_label(&format_duration(self.snap.position_ms));
@@ -492,11 +505,22 @@ impl SimpleComponent for NowPlaying {
             .total
             .set_label(&format_duration(self.snap.duration_ms));
 
-        match &self.artwork {
-            Some(path) => widgets.cover.set_from_file(Some(path)),
-            None => widgets
-                .cover
-                .set_icon_name(Some("audio-x-generic-symbolic")),
+        // `gtk_image_set_from_file` does **not** compare — it reloads and
+        // re-decodes every time it is called. This function runs on every
+        // snapshot, which is twice a second while playing plus every position
+        // event MusicKit sends, so the unconditional version was decoding the
+        // cover several times a second on the GTK main thread and making the
+        // seek bar stutter. The doc comment above always claimed it only
+        // swapped on change; now it does.
+        let mut shown = self.shown_artwork.borrow_mut();
+        if *shown != self.artwork {
+            match &self.artwork {
+                Some(path) => widgets.cover.set_from_file(Some(path)),
+                None => widgets
+                    .cover
+                    .set_icon_name(Some("audio-x-generic-symbolic")),
+            }
+            shown.clone_from(&self.artwork);
         }
     }
 }
@@ -590,6 +614,7 @@ mod tests {
         NowPlaying {
             snap,
             artwork: None,
+            shown_artwork: std::cell::RefCell::new(None),
             volume: 1.0,
             scrubbing: false,
             scrub_gen: 0,
