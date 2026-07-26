@@ -68,12 +68,33 @@ impl AppModel {
         );
     }
 
+    /// What the bar should be showing, which is not always what MusicKit says
+    /// is playing *right now*.
+    ///
+    /// Loading a new queue tears the old one down first, and for a beat
+    /// MusicKit reports no current item at all. Rendering that faithfully meant
+    /// the bar blanked to its empty state — skeleton, empty sleeve — and then
+    /// repopulated, every time you picked a track from a list. Skipping never
+    /// showed it, because that moves within a queue already loaded and never
+    /// passes through nothing.
+    ///
+    /// So: while a queue is loaded, keep showing the last track we knew about.
+    /// The bar only empties when there is genuinely nothing loaded, which is
+    /// also what makes a stopped player keep its last track on screen rather
+    /// than wiping itself.
+    fn showing(&self) -> Option<&crate::player::protocol::Item> {
+        self.player.now_playing.as_ref().or(self
+            .last_item
+            .as_ref()
+            .filter(|_| !self.player.queue.is_empty()))
+    }
+
     /// Flatten `PlayerState` into what the bar renders, and push it down.
     ///
     /// Called after every event that could change it *and* on each tick, since
     /// the interpolated position moves without any event arriving.
     pub(super) fn push_snapshot(&self) {
-        let item = self.player.now_playing.as_ref();
+        let item = self.showing();
         // Protocol type in, ours out — `components/` never sees `RepeatMode`
         // (rule 9). The mapping lives here because this is the boundary.
         let repeat = match self.player.repeat {
@@ -178,11 +199,9 @@ impl AppModel {
     /// Returns whether a fetch is now in flight, so the caller knows that
     /// `art_path` is stale until `CommandMsg::Artwork` arrives.
     pub(super) fn sync_artwork(&mut self, sender: &ComponentSender<Self>) -> bool {
-        let template = self
-            .player
-            .now_playing
-            .as_ref()
-            .and_then(|i| i.artwork_template.clone());
+        // The same resolved item the bar renders, so the cover does not blank
+        // on its own while a queue reloads — see `showing`.
+        let template = self.showing().and_then(|i| i.artwork_template.clone());
 
         if template == self.art_for {
             // Same cover as the last track — usually the next song on the same

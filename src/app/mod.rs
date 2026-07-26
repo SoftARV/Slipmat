@@ -134,6 +134,10 @@ pub enum Stage {
 pub struct AppModel {
     stage: Stage,
     player: PlayerState,
+    /// The last track MusicKit reported, kept so the bar can hold it through a
+    /// queue reload — see `push_snapshot::showing`.
+    last_item: Option<crate::player::protocol::Item>,
+
     /// Kept for the row context menu, whose GTK actions outlive the `update`
     /// call that built them.
     menu_sender: ComponentSender<AppModel>,
@@ -1196,6 +1200,7 @@ impl Component for AppModel {
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
+            last_item: None,
             menu_sender: sender.clone(),
             last_command: std::cell::RefCell::new(None),
             progress_mark: std::cell::Cell::new((0, 0)),
