@@ -33,6 +33,20 @@ pub enum Command {
     SetQueue {
         songs: Vec<String>,
         start_position: usize,
+        /// Whether to start playing once it is loaded.
+        ///
+        /// True for everything a person asked for. False exactly once, when
+        /// restoring the queue from the last session: an app that starts making
+        /// noise because it was launched is hostile, and the point of restoring
+        /// is to remove the work of finding your place, not to take the
+        /// decision away.
+        start_playing: bool,
+        /// Where in the starting track to begin, in milliseconds.
+        ///
+        /// Part of the queue descriptor rather than a seek afterwards, because
+        /// a seek needs a current item to seek *within* — and a queue loaded
+        /// with `start_playing: false` does not have one yet.
+        start_time_ms: u64,
     },
 
     #[serde(rename = "play")]
@@ -61,6 +75,10 @@ pub enum Command {
     PlayNext { songs: Vec<String> },
     #[serde(rename = "playLater")]
     PlayLater { songs: Vec<String> },
+
+    /// Empty the queue and stop.
+    #[serde(rename = "clearQueue")]
+    ClearQueue,
 
     /// Drop one item from the loaded queue, by **MusicKit's** index. Also not a
     /// `SetQueue`: rebuilding the queue to remove one track would restart
@@ -107,6 +125,7 @@ impl Command {
             Self::PlayNext { .. } => "playNext",
             Self::PlayLater { .. } => "playLater",
             Self::RemoveFromQueue { .. } => "removeFromQueue",
+            Self::ClearQueue => "clearQueue",
             Self::Seek { .. } => "seek",
             Self::SetVolume { .. } => "setVolume",
             Self::SetShuffle { .. } => "setShuffle",
@@ -358,12 +377,31 @@ mod tests {
         let json = serde_json::to_string(&Command::SetQueue {
             songs: vec!["1440857781".into(), "1440857782".into()],
             start_position: 1,
+            start_playing: true,
+            start_time_ms: 0,
         })
         .unwrap();
         assert_eq!(
             json,
-            r#"{"cmd":"setQueue","songs":["1440857781","1440857782"],"startPosition":1}"#
+            r#"{"cmd":"setQueue","songs":["1440857781","1440857782"],"startPosition":1,"startPlaying":true,"startTimeMs":0}"#
         );
+    }
+
+    #[test]
+    fn a_restored_queue_asks_not_to_play_and_carries_its_position() {
+        // The one case that sends false. If this key ever stops being sent,
+        // launching the app would start making noise on its own.
+        let json = serde_json::to_string(&Command::SetQueue {
+            songs: vec!["1".into()],
+            start_position: 0,
+            start_playing: false,
+            start_time_ms: 42_000,
+        })
+        .unwrap();
+        assert!(json.contains(r#""startPlaying":false"#), "{json}");
+        // The position rides in the descriptor. A seek afterwards cannot work:
+        // there is no current item to seek within until something plays.
+        assert!(json.contains(r#""startTimeMs":42000"#), "{json}");
     }
 
     #[test]

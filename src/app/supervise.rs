@@ -259,6 +259,14 @@ impl AppModel {
             self.load_library(sender);
         }
 
+        // Put back what was playing when the app last closed. Gated the same
+        // way the library load is — there is nothing to restore into without a
+        // session — and once per run, so a token refresh cannot restart it.
+        if matches!(self.stage, Stage::Ready) && !self.restored && self.tokens.is_some() {
+            self.restored = true;
+            self.restore_session();
+        }
+
         // The grids load on first visit rather than at startup — but if the app
         // opened straight into one of them, this *is* the first visit, and the
         // `SetView` that would normally trigger it never fires (the view was

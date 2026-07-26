@@ -112,6 +112,68 @@ pub(super) fn start_index(songs: &[String], start_id: Option<&String>) -> usize 
 }
 
 impl AppModel {
+    /// Remember the queue and where we are in it.
+    ///
+    /// Called on every track change *and* on shutdown, deliberately. Shutdown
+    /// is the only moment the position is accurate, but it is also the one that
+    /// might not run — a crash, a SIGKILL, a session ending badly. Saving on
+    /// each track change means the worst case is restoring the right track at
+    /// its start rather than restoring nothing at all.
+    pub(super) fn save_session(&self) {
+        let songs: Vec<String> = self
+            .player
+            .queue
+            .iter()
+            .filter_map(|item| item.catalog_id.clone().or_else(|| item.id.clone()))
+            .collect();
+
+        if songs.is_empty() {
+            crate::session::clear();
+            return;
+        }
+
+        crate::session::save(&crate::session::Session {
+            start: self
+                .player
+                .queue_position
+                .min(songs.len().saturating_sub(1)),
+            position_ms: self.player.position_ms,
+            songs,
+        });
+    }
+
+    /// Put back what was playing when the app last closed.
+    ///
+    /// Loaded **paused**, and the position is applied only once MusicKit
+    /// confirms it is holding the queue we asked for.
+    pub(super) fn restore_session(&mut self) {
+        let Some(session) = crate::session::load() else {
+            return;
+        };
+        let start = session.start.min(session.songs.len() - 1);
+        let wanted = session.songs.get(start).cloned();
+
+        tracing::info!(
+            tracks = session.songs.len(),
+            start,
+            position_ms = session.position_ms,
+            "restoring the last session"
+        );
+
+        self.pending_start = wanted.clone();
+        self.last_queue = Some((session.songs.clone(), wanted));
+        self.send(Command::SetQueue {
+            songs: session.songs,
+            start_position: start,
+            // Loaded, not started.
+            start_playing: false,
+            // Carried in the descriptor rather than seeked afterwards: a seek
+            // needs a current item to seek *within*, and a queue loaded without
+            // playing does not have one.
+            start_time_ms: session.position_ms,
+        });
+    }
+
     /// The catalog id of the track MusicKit is on, if any.
     pub(super) fn playing_catalog_id(&self) -> Option<String> {
         self.player
@@ -158,6 +220,8 @@ impl AppModel {
         self.send(Command::SetQueue {
             songs,
             start_position: start,
+            start_playing: true,
+            start_time_ms: 0,
         });
     }
 
@@ -227,6 +291,8 @@ impl AppModel {
         self.send(Command::SetQueue {
             songs: retry,
             start_position: start,
+            start_playing: true,
+            start_time_ms: 0,
         });
         true
     }

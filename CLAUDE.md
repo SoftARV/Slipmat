@@ -347,6 +347,50 @@ Library membership is the same shape of fact: a track that came from
 `/me/library/…` is in the library by definition, so `Track::in_library` is set
 by the client method that fetched it — never guessed from the id.
 
+### Restoring the last session
+
+Three files, three homes, and the distinction is not pedantry:
+
+| What | Where | Why |
+| --- | --- | --- |
+| Preferences | `~/.config/tonearm/settings.ini` | somebody chose them |
+| Unplayable ids | `~/.cache/tonearm/` | rederivable — Apple will tell us again |
+| The last queue | `$XDG_STATE_HOME/tonearm/session.json` | neither chosen nor rederivable |
+
+Two rules the restore follows:
+
+- **It never resumes playing.** `Command::SetQueue` carries `start_playing`, and
+  this is the only place that sends `false`. An app that starts making noise
+  because it was launched is hostile; the point is to remove the work of finding
+  your place, not to take the decision away.
+- **It saves on every track change as well as on shutdown.** Shutdown is the
+  only moment the position is accurate, and also the one that might not run —
+  a crash, a `SIGKILL`, a session ending badly. Saving per track means the worst
+  case is restoring the right track at its start rather than restoring nothing.
+
+**The position rides in the queue descriptor, not a seek afterwards.**
+`setQueue` accepts `startTime`, and it has to be used: a seek needs a *current
+item* to seek within, and a queue loaded with `startPlaying: false` does not
+have one yet. The first attempt sent a seek once the queue arrived and it did
+nothing at all.
+
+**A loaded-but-never-started queue has no now-playing item either**, for the
+same reason. Rendering that faithfully left the Now Playing bar empty beside a
+full queue, so `showing()` falls back to the queue's own current entry — which
+is the honest answer to "what is this player on".
+
+**Clearing the queue is not one documented call.** `clearQueue`,
+`queue.splice` and `setQueue({songs: []})` are all plausible depending on the
+MusicKit build, so the sidecar tries them in that order and throws if items
+remain — and stops playback first, because an empty queue with a track still
+playing is a state nothing else expects. Clearing also drops the saved session:
+there is nothing to come back to.
+
+**And `changeToMediaAtIndex` only moves the cursor.** On a queue that is loaded
+but idle it moves silently, so clicking a track in the queue looked like nothing
+happened. Clicking a track is a request to *play* it, so a jump now starts
+playback if it is not already running.
+
 ### Sidecar rules learned the hard way
 
 M1 took five rounds to get audio out, and every failure was silent. These are
@@ -407,6 +451,7 @@ src/
     status.rs        # what the pane shows when it is not showing music
     chrome.rs        # the menu, its accelerators, and the three dialogs
   settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
+  session.rs         # what was playing, → $XDG_STATE_HOME/tonearm/session.json
   style.rs           # accent colour + the Now Playing tint. The only CSS.
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)

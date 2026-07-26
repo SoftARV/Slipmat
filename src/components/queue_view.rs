@@ -229,6 +229,8 @@ pub enum QueueViewOutput {
     /// live queue.
     Jump(String),
     Remove(String),
+    /// Empty the queue and stop.
+    Clear,
 }
 
 #[relm4::component(pub)]
@@ -255,6 +257,19 @@ impl Component for QueueView {
                         0 => String::new(),
                         1 => "1 track".to_owned(),
                         n => format!("{n} tracks"),
+                    },
+                },
+
+                // Only when there is something to clear. A destructive action
+                // that does nothing is worse than no button.
+                pack_start = &gtk::Button {
+                    set_icon_name: "user-trash-symbolic",
+                    set_tooltip_text: Some("Clear the queue"),
+                    add_css_class: "flat",
+                    #[watch]
+                    set_visible: model.count > 0,
+                    connect_clicked[sender] => move |_| {
+                        let _ = sender.output(QueueViewOutput::Clear);
                     },
                 },
             },
