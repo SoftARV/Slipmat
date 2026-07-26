@@ -319,6 +319,9 @@ impl LibraryAction {
 #[derive(Debug)]
 pub enum AppMsg {
     SignIn,
+    /// Asks first — see `confirm_sign_out`.
+    SignOut,
+    SignOutConfirmed,
     PlayPause,
     /// Explicit, not a toggle. MPRIS sends `Play`, `Pause` and `PlayPause` as
     /// three distinct calls, and collapsing the first two into the toggle makes
@@ -887,14 +890,41 @@ impl Component for AppModel {
                                             set_description: Some(&model.detail()),
 
                                             #[wrap(Some)]
-                                            set_child = &gtk::Button {
-                                                set_label: "Sign in to Apple Music",
+                                            set_child = &gtk::Box {
+                                                set_orientation: gtk::Orientation::Vertical,
                                                 set_halign: gtk::Align::Center,
-                                                add_css_class: "suggested-action",
-                                                add_css_class: "pill",
+                                                set_spacing: 18,
                                                 #[watch]
                                                 set_visible: matches!(model.stage, Stage::SignedOut),
-                                                connect_clicked => AppMsg::SignIn,
+
+                                                gtk::Button {
+                                                    set_label: "Sign In to Apple Music",
+                                                    set_halign: gtk::Align::Center,
+                                                    add_css_class: "suggested-action",
+                                                    add_css_class: "pill",
+                                                    connect_clicked => AppMsg::SignIn,
+                                                },
+
+                                                // Said before the window
+                                                // appears, not after. A
+                                                // browser window opening out
+                                                // of a native app is alarming
+                                                // if it is a surprise, and
+                                                // this is the one moment
+                                                // Tonearm cannot hide the web
+                                                // engine — so it explains it
+                                                // instead.
+                                                gtk::Label {
+                                                    set_label: "Apple's own sign-in page opens in a \
+                                                                separate window, including two-factor \
+                                                                if your account uses it. It closes for \
+                                                                good once you're in.",
+                                                    set_justify: gtk::Justification::Center,
+                                                    set_wrap: true,
+                                                    set_max_width_chars: 46,
+                                                    add_css_class: "caption",
+                                                    add_css_class: "dim-label",
+                                                },
                                             },
                                         },
 
@@ -1225,6 +1255,12 @@ impl Component for AppModel {
             section.append(Some("_Keyboard Shortcuts"), Some("win.shortcuts"));
             section.append(Some("_About Tonearm"), Some("win.about"));
             primary_menu.append_section(None, &section);
+
+            // Its own section: signing out is an account action, not app
+            // furniture, and it should not sit next to About.
+            let account = gtk::gio::Menu::new();
+            account.append(Some("_Sign Out"), Some("win.sign-out"));
+            primary_menu.append_section(None, &account);
         }
 
         let toaster = &model.toaster;
@@ -1384,6 +1420,21 @@ impl Component for AppModel {
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match msg {
             AppMsg::SignIn => self.send(Command::ShowLogin),
+            AppMsg::SignOut => {
+                // The menu item is always there; asking to sign out when you
+                // already are should do nothing rather than prompt.
+                if matches!(self.stage, Stage::Ready) {
+                    self.confirm_sign_out(&sender, root);
+                }
+            }
+            AppMsg::SignOutConfirmed => {
+                tracing::info!("signing out");
+                // Tell MusicKit first: it drops Apple's session, and the
+                // sidecar's `authorizationStatusDidChange` will confirm it
+                // rather than us assuming.
+                self.send(Command::Unauthorize);
+                self.forget_session();
+            }
             AppMsg::PlayPause => self.send(Command::PlayPause),
             AppMsg::Play => self.send(Command::Play),
             AppMsg::Pause => self.send(Command::Pause),
@@ -2158,6 +2209,41 @@ impl AppModel {
                 self.load_playlists(sender);
             }
         }
+    }
+
+    /// Drop everything that belonged to the signed-in user.
+    ///
+    /// Not just the tokens: the library, the grids, the catalog results and the
+    /// pushed pages all came from that account, and leaving them on screen
+    /// after a sign-out would show one person's music to whoever signs in
+    /// next. The unplayable-id cache stays — it is about Apple's catalog, not
+    /// about the user.
+    fn forget_session(&mut self) {
+        self.stage = Stage::SignedOut;
+        self.tokens = None;
+
+        self.all_tracks.clear();
+        self.albums.clear();
+        self.artists.clear();
+        self.playlists.clear();
+        self.catalog.clear();
+        self.catalog_songs = 0;
+        self.library_query.clear();
+        self.catalog_query.clear();
+
+        self.rebuild_rows();
+        self.rebuild_albums();
+        self.rebuild_artists();
+        self.rebuild_playlists();
+
+        // Pages and the queue belonged to that session too.
+        self.pop_to_results();
+        self.show_queue = false;
+        self.last_item = None;
+        self.last_queue = None;
+        self.pending_start = None;
+        crate::style::set_bar_tint(None);
+        self.push_snapshot();
     }
 
     fn toast(&self, text: &str) {

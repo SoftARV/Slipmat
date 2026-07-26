@@ -27,6 +27,7 @@ relm4::new_stateless_action!(NextAction, AppMenuActionGroup, "next");
 relm4::new_stateless_action!(PreviousAction, AppMenuActionGroup, "previous");
 relm4::new_stateless_action!(ToggleQueueAction, AppMenuActionGroup, "toggle-queue");
 relm4::new_stateless_action!(ToggleSidebarAction, AppMenuActionGroup, "toggle-sidebar");
+relm4::new_stateless_action!(SignOutAction, AppMenuActionGroup, "sign-out");
 
 /// Wire the primary menu's actions to messages, with their accelerators.
 pub(super) fn register_actions(
@@ -44,6 +45,10 @@ pub(super) fn register_actions(
     let s = sender.clone();
     group.add_action(RelmAction::<ShortcutsAction>::new_stateless(move |_| {
         s.input(AppMsg::ShowShortcuts)
+    }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<SignOutAction>::new_stateless(move |_| {
+        s.input(AppMsg::SignOut)
     }));
     let s = sender.clone();
     group.add_action(RelmAction::<AboutAction>::new_stateless(move |_| {
@@ -159,6 +164,38 @@ pub(super) fn show_shortcuts(parent: &adw::ApplicationWindow) {
 }
 
 impl AppModel {
+    /// Ask before signing out.
+    ///
+    /// Destructive and not obviously reversible from the user's side: it drops
+    /// Apple's session, so getting back in means the login window again, with
+    /// whatever two-factor prompt that involves. Worth a question.
+    pub(super) fn confirm_sign_out(
+        &self,
+        sender: &ComponentSender<Self>,
+        parent: &adw::ApplicationWindow,
+    ) {
+        let dialog = adw::AlertDialog::new(
+            Some("Sign out of Apple Music?"),
+            Some(
+                "Tonearm will forget this session. Signing back in opens Apple's \
+                 login window again.",
+            ),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("sign-out", "Sign Out");
+        dialog.set_response_appearance("sign-out", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let sender = sender.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "sign-out" {
+                sender.input(AppMsg::SignOutConfirmed);
+            }
+        });
+        dialog.present(Some(parent));
+    }
+
     /// Preferences: theme and the track-change notification.
     ///
     /// Built imperatively rather than in `view!` because it is presented on

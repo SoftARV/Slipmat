@@ -106,7 +106,9 @@ impl AppModel {
     pub(super) fn icon(&self) -> &'static str {
         match self.stage {
             Stage::Ready => "audio-x-generic-symbolic",
-            Stage::SignedOut => "avatar-default-symbolic",
+            // The app's own icon, not a generic avatar: this is the first
+            // thing anyone sees, and it should say which program is asking.
+            Stage::SignedOut => crate::APP_ID,
             Stage::Broken(_) => "dialog-warning-symbolic",
             _ => "content-loading-symbolic",
         }
@@ -117,7 +119,7 @@ impl AppModel {
             Stage::Starting => "Starting the playback engine".into(),
             Stage::InstallingWidevine => "Preparing playback".into(),
             Stage::Connecting => "Connecting to Apple Music".into(),
-            Stage::SignedOut => "Sign in to Apple Music".into(),
+            Stage::SignedOut => "Welcome to Tonearm".into(),
             Stage::Restarting(n) => format!("Reconnecting (attempt {n})"),
             Stage::Broken(_) => "Playback unavailable".into(),
             Stage::Ready => self
@@ -136,11 +138,13 @@ impl AppModel {
                  This only happens once."
                     .into()
             }
-            Stage::SignedOut => {
-                "Apple's sign-in window opens once. After that Tonearm runs entirely \
-                 in this window."
-                    .into()
-            }
+            // The onboarding proper. Two things a first-time reader needs and
+            // cannot find out by clicking: that a subscription is required —
+            // Tonearm is a front-end, not a source — and that everything after
+            // sign-in happens here rather than in a browser.
+            Stage::SignedOut => "Tonearm plays your Apple Music library natively on GNOME. \
+                 It needs an active Apple Music subscription."
+                .into(),
             Stage::Broken(why) => why.clone(),
             Stage::Ready => self
                 .player

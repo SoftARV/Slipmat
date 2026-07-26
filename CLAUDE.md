@@ -521,9 +521,20 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   `adw::PreferencesGroup`, `adw::AboutDialog`, `adw::StatusPage`,
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS
   unless there is no libadwaita widget for the job — say why before adding any.
-- **First run**: an `adw::StatusPage` explaining that Apple's sign-in window will
-  open once. It is the genuine Apple login (with 2FA); after it succeeds the
-  sidecar hides forever. Never re-show it except on explicit Sign Out → Sign In.
+- **First run**: an `adw::StatusPage` wearing the app's own icon, saying what
+  Tonearm is, that it needs an active subscription, and — before the button, not
+  after — that Apple's own sign-in page opens in a separate window. A browser
+  window appearing out of a native app is alarming when it is a surprise, and
+  this is the one moment the web engine cannot be hidden, so it is explained
+  instead. After it succeeds the sidecar hides forever. Never re-show it except
+  on explicit Sign Out → Sign In.
+- **Sign Out** lives in the primary menu, in its own section — an account action
+  is not app furniture and should not sit beside About. It asks first, because
+  it drops Apple's session and getting back in means the login window and
+  whatever two-factor prompt that involves. It then forgets *everything* that
+  belonged to that account: library, grids, catalog results, pushed pages,
+  queue, the bar. The unplayable-id cache stays, because that is a fact about
+  Apple's catalog rather than about the user.
 - Sidecar restarting, no subscription, offline, no results: distinct
   `adw::StatusPage`s. Errors: `adw::Toast`.
 
