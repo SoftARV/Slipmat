@@ -18,6 +18,12 @@ impl std::fmt::Display for TrackId {
 
 #[derive(Debug, Clone)]
 pub struct Track {
+    /// When this was added to the library, ISO 8601, or empty. Sorts
+    /// lexicographically, which for ISO 8601 is also chronologically — the one
+    /// good reason to keep a date as a string.
+    pub date_added: String,
+    /// Release year, or empty when Apple did not say.
+    pub year: String,
     /// The resource id. For library items this is a library id (`i.AbCd123`),
     /// which is **not** playable.
     pub id: TrackId,
@@ -264,6 +270,13 @@ pub(crate) struct ArtistRelationships {
 pub(crate) struct SongAttributes {
     #[serde(default)]
     pub name: String,
+    /// When the user saved it. ISO 8601, and **library-only** — a catalog song
+    /// has never been added to anything, so it is absent there.
+    #[serde(default)]
+    pub date_added: String,
+    /// `"2016-05-27"` or `"2016"`; we only ever want the year.
+    #[serde(default)]
+    pub release_date: String,
     #[serde(default)]
     pub artist_name: String,
     #[serde(default)]
@@ -415,6 +428,8 @@ impl From<Resource<SongAttributes>> for Track {
     fn from(res: Resource<SongAttributes>) -> Self {
         let attrs = res.attributes.unwrap_or(SongAttributes {
             name: String::new(),
+            date_added: String::new(),
+            release_date: String::new(),
             artist_name: String::new(),
             album_name: String::new(),
             duration_in_millis: 0,
@@ -432,6 +447,8 @@ impl From<Resource<SongAttributes>> for Track {
         Track {
             catalog_id,
             id: TrackId(res.id),
+            date_added: attrs.date_added,
+            year: attrs.release_date.chars().take(4).collect(),
             title: attrs.name,
             artist: attrs.artist_name,
             album: attrs.album_name,

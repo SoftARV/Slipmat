@@ -292,6 +292,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            date_added: String::new(),
+            year: String::new(),
             artist: "Aitana".into(),
             album: "Superestrella".into(),
             duration_ms: 200_000,

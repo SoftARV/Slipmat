@@ -79,7 +79,7 @@ mod view;
 use chrome::{icon, register_actions, show_about, show_shortcuts};
 use supervise::{respawn_sidecar, start_sidecar};
 
-pub use view::{SearchScope, View};
+pub use view::{SearchScope, SortBy, View};
 
 const TICK_MS: u32 = 500;
 
@@ -189,6 +189,8 @@ pub struct AppModel {
     /// Which sidebar section is showing. `scope()` derives the search scope
     /// from it; never store both.
     view: View,
+    /// How the Songs list is ordered. Applied in `visible_entries`.
+    sort: SortBy,
     /// The user's library albums and artists, loaded on first visit rather than
     /// at startup — launching should not wait on three collections.
     albums: Vec<Album>,
@@ -295,6 +297,7 @@ pub enum AppMsg {
     SetVolume(f64),
     SetShuffle(bool),
     SetRepeat(Repeat),
+    SetSort(SortBy),
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
     /// Grow the queue MusicKit already holds, without rebuilding it.
@@ -679,6 +682,18 @@ impl Component for AppModel {
                                             connect_clicked => AppMsg::ToggleQueue,
                                         },
 
+                                        // Only in Songs: the grids have their
+                                        // own natural order and sorting them
+                                        // is a different question.
+                                        #[name = "sort_button"]
+                                        pack_end = &gtk::MenuButton {
+                                            set_icon_name: "view-sort-descending-symbolic",
+                                            set_tooltip_text: Some("Sort"),
+                                            add_css_class: "flat",
+                                            #[watch]
+                                            set_visible: model.view == View::Songs,
+                                        },
+
                                         pack_end = &gtk::Button {
                                             set_icon_name: "view-refresh-symbolic",
                                             set_tooltip_text: Some("Reload library"),
@@ -964,6 +979,7 @@ impl Component for AppModel {
             library_query: String::new(),
             catalog_query: String::new(),
             view: View::from(settings.section),
+            sort: SortBy::parse(&settings.sort),
             albums: Vec::new(),
             artists: Vec::new(),
             playlists: Vec::new(),
@@ -1049,6 +1065,39 @@ impl Component for AppModel {
             label.add_css_class("dim-label");
             row.set_header(Some(&label));
         });
+
+        // The sort menu, built imperatively so the radio state can be bound to
+        // a stateful action rather than hand-managed across five items.
+        {
+            let menu = gtk::gio::Menu::new();
+            for option in SortBy::ALL {
+                let item = gtk::gio::MenuItem::new(Some(option.label()), None);
+                item.set_action_and_target_value(Some("sort.by"), Some(&option.id().to_variant()));
+                menu.append_item(&item);
+            }
+            widgets.sort_button.set_menu_model(Some(&menu));
+
+            // A stateful action gives the popover its radio dots for free, and
+            // keeps the checked item honest when the setting is restored.
+            let action = gtk::gio::SimpleAction::new_stateful(
+                "by",
+                Some(&String::static_variant_type()),
+                &model.sort.id().to_variant(),
+            );
+            let sort_sender = sender.clone();
+            action.connect_activate(move |action, target| {
+                let Some(id) = target.and_then(|t| t.str().map(str::to_owned)) else {
+                    return;
+                };
+                action.set_state(&id.to_variant());
+                sort_sender.input(AppMsg::SetSort(SortBy::parse(&id)));
+            });
+            let group = gtk::gio::SimpleActionGroup::new();
+            group.add_action(&action);
+            widgets
+                .sort_button
+                .insert_action_group("sort", Some(&group));
+        }
 
         // Open on the section we were last in. Selecting fires `row-selected`,
         // which posts SetView — harmless, since the model is already on that
@@ -1365,6 +1414,18 @@ impl Component for AppModel {
                 Some(index) => self.send(Command::RemoveFromQueue { index }),
                 None => self.toast("That track is no longer in the queue"),
             },
+            AppMsg::SetSort(sort) => {
+                if sort == self.sort {
+                    return;
+                }
+                self.sort = sort;
+                self.settings.sort = sort.id().into();
+                self.settings.save();
+                tracing::info!(sort = sort.id(), "library sort");
+                // A rebuild resets the scroll, which is right here: the list
+                // the user was looking at no longer exists in that order.
+                self.rebuild_rows();
+            }
             AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
             AppMsg::Enqueue { catalog_id, next } => {
                 if self.player.queue.is_empty() {
@@ -1726,6 +1787,8 @@ mod tests {
             id: TrackId(format!("i.{title}")),
             catalog_id: catalog.map(str::to_owned),
             title: title.into(),
+            date_added: String::new(),
+            year: String::new(),
             artist: "Aitana".into(),
             album: "Superestrella".into(),
             duration_ms: 200_000,

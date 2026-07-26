@@ -360,6 +360,8 @@ mod tests {
         Entry::Song(Track {
             id: TrackId("i.test".into()),
             catalog_id: Some("1".into()),
+            date_added: String::new(),
+            year: String::new(),
             title: "Title".into(),
             artist: artist.into(),
             album: album.into(),

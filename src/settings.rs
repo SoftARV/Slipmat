@@ -93,9 +93,13 @@ impl Section {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub theme: Theme,
+    /// How the Songs list is ordered. Stored as the id string, so an unknown
+    /// value from a hand-edited or future ini falls back rather than breaking
+    /// startup.
+    pub sort: String,
     pub section: Section,
     pub show_sidebar: bool,
     /// Notify when the track changes. Off by default (`bool`'s default): a
@@ -108,6 +112,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: Theme::default(),
+            // Apple's own order.
+            sort: "title".into(),
             section: Section::default(),
             // Visible on a first run: a sidebar nobody has hidden yet should
             // be there to be found.
@@ -149,6 +155,9 @@ impl Settings {
         if let Ok(show) = file.boolean(GROUP, "show-sidebar") {
             settings.show_sidebar = show;
         }
+        if let Ok(sort) = file.string(GROUP, "sort") {
+            settings.sort = sort.into();
+        }
         tracing::debug!(?settings, "loaded settings");
         settings
     }
@@ -168,6 +177,7 @@ impl Settings {
         file.set_boolean(GROUP, "notify-track-change", self.notify_track_change);
         file.set_string(GROUP, "section", self.section.as_str());
         file.set_boolean(GROUP, "show-sidebar", self.show_sidebar);
+        file.set_string(GROUP, "sort", &self.sort);
 
         if let Err(err) = std::fs::create_dir_all(dir) {
             tracing::warn!(?err, "could not create config directory");
