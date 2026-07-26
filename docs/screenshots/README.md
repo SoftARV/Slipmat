@@ -20,10 +20,10 @@ rsvg-convert -w 128 -h 128 \
 
 | File | Shows |
 | --- | --- |
-| `library.webp` | Songs — the playing track marked, bar active |
-| `albums.webp` | The Albums grid |
+| `library.webp` | Songs — playing track marked, row menus, sidebar reload |
 | `search.webp` | A catalogue search: artists and albums above songs |
-| `queue.webp` | Playlists, with the queue sidebar open |
+| `albums.webp` | The Albums grid with the queue sidebar open |
+| `playlist.webp` | A playlist page: cover, Play and Shuffle, tracks |
 
 ## Taking them
 
@@ -36,6 +36,9 @@ rsvg-convert -w 128 -h 128 \
   bar reading "Nothing playing" undersells every screenshot it appears in, and a
   different track in each one reads as four unrelated apps.
 - Avoid a half-loaded state: no spinners, no placeholder covers.
+- Show what is *new*. The accent colour, the tinted Now Playing bar and the row
+  menus are the things a returning reader will notice; a shot that could have
+  been taken three versions ago is a wasted one.
 
 ## Processing
 
