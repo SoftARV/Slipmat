@@ -477,6 +477,11 @@ Playback engine first. One vertical slice, one PR each.
   sidebar, paginated as you scroll. Results mix artists and albums above the
   songs; either pushes a detail page (`adw::NavigationView`) you can play from
   and drill through — artist → album → track.
+- ✅ **M9 — Playlists.** Your library's playlists as a fourth sidebar section,
+  opening onto the same detail page. Their tracks come from the relationship
+  endpoint through the ordinary paginator rather than `include=tracks`, which
+  caps at 100 — playlists routinely run longer, and silently showing the first
+  100 of 400 is the kind of wrong answer that looks right.
 - ✅ **M8 — Library browsing.** Albums and Artists as `gtk::GridView` tiles in
   the sidebar, alongside Songs. Covers are fetched lazily as tiles bind and
   cached to disk; clicking one pushes the same detail page the catalog uses,
@@ -504,6 +509,7 @@ There are now three kinds of list, and they share their state deliberately:
 | Album / artist page | the page's own | `TypedListView`, **not** virtualised |
 | Albums grid | `AppModel::album_art_widgets` | `TypedGridView`, virtualised |
 | Artists grid | `AppModel::artist_art_widgets` | `TypedGridView`, virtualised |
+| Playlists grid | `AppModel::playlist_art_widgets` | `TypedGridView`, virtualised |
 
 `CurrentTrack` and `DeadTracks` are shared by all of them; the widget registry
 is **per list**. It is keyed by catalog id, so one shared registry would have

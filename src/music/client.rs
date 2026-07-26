@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use super::types::{
     Album, AlbumAttributes, AlbumResource, Artist, ArtistAttributes, ArtistResource,
-    LibraryArtistResource, Resource, Response, SongAttributes, Track,
+    LibraryArtistResource, Playlist, PlaylistAttributes, Resource, Response, SongAttributes, Track,
 };
 
 /// What a catalog search turned up. Apple returns each kind in its own array;
@@ -34,6 +34,10 @@ const API_BASE: &str = "https://api.music.apple.com/v1";
 /// The origin the harvested developer token is minted for — see `get()`.
 const WEB_ORIGIN: &str = "https://music.apple.com";
 const WEB_REFERER: &str = "https://music.apple.com/";
+/// A playlist long enough to hit this is a playlist nobody scrolls. Bounded so
+/// one enormous one cannot spin through fifty requests.
+const PLAYLIST_MAX: usize = 1_000;
+
 /// Apple's hard cap for a library page. Asking for more is silently clamped.
 const LIBRARY_PAGE: usize = 100;
 /// How many library pages to fetch at once. The pages are independent, so
@@ -196,15 +200,76 @@ impl Client {
             .await
     }
 
+    /// Every playlist in the user's library.
+    pub async fn all_library_playlists(&self, max: usize) -> Result<Vec<Playlist>> {
+        let mut playlists = self
+            .all_library::<Resource<PlaylistAttributes>, Playlist>("playlists", "", max)
+            .await?;
+        for playlist in &mut playlists {
+            playlist.library = true;
+        }
+        Ok(playlists)
+    }
+
+    /// One library playlist, with its tracks.
+    ///
+    /// Two requests, unlike [`Client::library_album`]: `include=tracks` caps at
+    /// 100 and playlists routinely run longer, so the tracks come from the
+    /// relationship endpoint through the ordinary paginator. Silently showing
+    /// the first 100 of a 400-track playlist is the kind of wrong answer that
+    /// looks right.
+    pub async fn library_playlist(&self, id: &str) -> Result<(Playlist, Vec<Track>)> {
+        // Sequential rather than joined: the details request is one small
+        // response, and the track walk below is already six pages at a time.
+        // Overlapping them would save a round trip and cost a tokio feature.
+        let playlist = self.library_playlist_details(id).await?;
+        let tracks = self
+            .all_library::<Resource<SongAttributes>, Track>(
+                &format!("playlists/{id}/tracks"),
+                "",
+                PLAYLIST_MAX,
+            )
+            .await?;
+        Ok((playlist, tracks))
+    }
+
+    async fn library_playlist_details(&self, id: &str) -> Result<Playlist> {
+        let res = self
+            .get(&format!("/me/library/playlists/{id}"))
+            .send()
+            .await
+            .map_err(Self::transport_error)
+            .context("requesting playlist")?;
+
+        if !res.status().is_success() {
+            return Err(self.explain(res).await);
+        }
+
+        let parsed: Response<Resource<PlaylistAttributes>> =
+            res.json().await.context("decoding playlist")?;
+        let mut playlist: Playlist = parsed
+            .data
+            .into_iter()
+            .next()
+            .context("playlist not found")?
+            .into();
+        playlist.library = true;
+        Ok(playlist)
+    }
+
     /// Walk a `/me/library/{kind}` collection to its end, or to `max`.
     ///
     /// Generic over Apple's wire shape `A` and our type `T` because songs,
     /// albums and artists paginate identically — three copies of this loop
     /// would drift, and the concurrency and short-page logic below is the
     /// fiddly part worth having once.
+    /// `kind` is interpolated straight into `/me/library/{kind}`, so it can be
+    /// a collection (`songs`) or a relationship (`playlists/p.123/tracks`).
+    /// That is what gives playlist tracks real pagination rather than the 100
+    /// that `include=tracks` caps out at.
     async fn all_library<R, T>(
         &self,
-        kind: &'static str,
+        kind: &str,
         extra_query: &'static str,
         max: usize,
     ) -> Result<Vec<T>>
@@ -223,10 +288,13 @@ impl Client {
             let mut tasks = tokio::task::JoinSet::new();
             for (slot, at) in offsets.iter().copied().enumerate() {
                 let client = self.clone();
+                // Cloned per task: `kind` may be a borrowed path built from an
+                // id, and the tasks outlive this loop iteration.
+                let kind = kind.to_owned();
                 tasks.spawn(async move {
                     (
                         slot,
-                        client.library_page::<R, T>(kind, extra_query, at).await,
+                        client.library_page::<R, T>(&kind, extra_query, at).await,
                     )
                 });
             }

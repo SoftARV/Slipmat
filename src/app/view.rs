@@ -24,6 +24,7 @@ pub enum View {
     Songs,
     Albums,
     Artists,
+    Playlists,
 }
 
 impl View {
@@ -34,6 +35,7 @@ impl View {
             0 => Self::Search,
             2 => Self::Albums,
             3 => Self::Artists,
+            4 => Self::Playlists,
             _ => Self::Songs,
         }
     }
@@ -44,6 +46,7 @@ impl View {
             Self::Songs => 1,
             Self::Albums => 2,
             Self::Artists => 3,
+            Self::Playlists => 4,
         }
     }
 
@@ -61,6 +64,7 @@ impl From<Section> for View {
             Section::Library => Self::Songs,
             Section::Albums => Self::Albums,
             Section::Artists => Self::Artists,
+            Section::Playlists => Self::Playlists,
             Section::Catalog => Self::Search,
         }
     }
@@ -72,6 +76,7 @@ impl From<View> for Section {
             View::Songs => Self::Library,
             View::Albums => Self::Albums,
             View::Artists => Self::Artists,
+            View::Playlists => Self::Playlists,
             View::Search => Self::Catalog,
         }
     }
@@ -97,7 +102,13 @@ mod tests {
         // when restoring the last section. If those two ever disagree the app
         // opens with one section selected and another one showing — which is
         // exactly the bug this pins down.
-        for view in [View::Search, View::Songs, View::Albums, View::Artists] {
+        for view in [
+            View::Search,
+            View::Songs,
+            View::Albums,
+            View::Artists,
+            View::Playlists,
+        ] {
             assert_eq!(View::from_row(view.row()), view);
         }
     }
@@ -110,7 +121,13 @@ mod tests {
 
     #[test]
     fn the_view_round_trips_through_the_persisted_section() {
-        for view in [View::Search, View::Songs, View::Albums, View::Artists] {
+        for view in [
+            View::Search,
+            View::Songs,
+            View::Albums,
+            View::Artists,
+            View::Playlists,
+        ] {
             assert_eq!(View::from(Section::from(view)), view);
         }
     }
@@ -118,7 +135,7 @@ mod tests {
     #[test]
     fn only_search_looks_at_the_catalog() {
         assert_eq!(View::Search.scope(), SearchScope::Catalog);
-        for view in [View::Songs, View::Albums, View::Artists] {
+        for view in [View::Songs, View::Albums, View::Artists, View::Playlists] {
             assert_eq!(view.scope(), SearchScope::Library);
         }
     }

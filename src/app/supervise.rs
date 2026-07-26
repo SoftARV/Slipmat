@@ -190,6 +190,7 @@ impl AppModel {
         match self.view {
             View::Albums => self.load_albums(sender),
             View::Artists => self.load_artists(sender),
+            View::Playlists => self.load_playlists(sender),
             _ => {}
         }
     }

@@ -118,6 +118,21 @@ pub struct Album {
     pub library: bool,
 }
 
+/// A playlist, as a grid tile or a page header.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Playlist {
+    pub id: String,
+    pub name: String,
+    /// Who made it — Apple's editors for a catalog playlist, empty for one of
+    /// your own, which is the common case in a library.
+    pub curator: String,
+    /// Apple's blurb, plain text. Empty far more often than not.
+    pub description: String,
+    pub artwork: Option<Artwork>,
+    /// As [`Album::library`].
+    pub library: bool,
+}
+
 /// An artist, as a search result or a page header.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Artist {
@@ -347,6 +362,50 @@ impl From<Resource<ArtistAttributes>> for Artist {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlaylistAttributes {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub curator_name: String,
+    pub artwork: Option<ArtworkAttributes>,
+    pub description: Option<DescriptionAttribute>,
+}
+
+/// Apple wraps a playlist's blurb in an object with `standard` and sometimes
+/// `short`. Both are absent on a playlist you made yourself.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct DescriptionAttribute {
+    #[serde(default)]
+    pub standard: String,
+}
+
+impl From<Resource<PlaylistAttributes>> for Playlist {
+    fn from(res: Resource<PlaylistAttributes>) -> Self {
+        let a = res.attributes;
+        Playlist {
+            id: res.id,
+            name: a.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+            curator: a
+                .as_ref()
+                .map(|a| a.curator_name.clone())
+                .unwrap_or_default(),
+            description: a
+                .as_ref()
+                .and_then(|a| a.description.as_ref())
+                .map(|d| d.standard.clone())
+                .unwrap_or_default(),
+            artwork: a
+                .and_then(|a| a.artwork)
+                .filter(|art| !art.url.is_empty())
+                .map(|art| Artwork::new(art.url)),
+            // Set by whichever client method fetched it, as for Album/Artist.
+            library: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ArtworkAttributes {
     #[serde(default)]
     pub url: String,
@@ -514,57 +573,99 @@ mod tests {
             "no attributes at all must be survivable"
         );
     }
-}
 
-#[test]
-fn a_library_artist_keeps_its_own_id_and_takes_the_catalog_portrait() {
-    // The library id is what opens the library artist page; the catalog
-    // twin's id would 404 there. Only the things the library does not
-    // carry — artwork, genres — come across.
-    let resource = LibraryArtistResource {
-        id: "r.abc".into(),
-        attributes: Some(ArtistAttributes {
-            name: "Aitana".into(),
-            artwork: None,
-            genre_names: Vec::new(),
-        }),
-        relationships: Some(LibraryArtistRelationships {
-            catalog: Some(Response {
-                data: vec![Resource {
-                    id: "1234".into(),
-                    attributes: Some(ArtistAttributes {
-                        name: "Aitana".into(),
-                        artwork: Some(ArtworkAttributes {
-                            url: "https://example.test/{w}x{h}bb.jpg".into(),
-                        }),
-                        genre_names: vec!["Pop".into(), "Latin".into()],
-                    }),
-                }],
+    #[test]
+    fn a_library_artist_keeps_its_own_id_and_takes_the_catalog_portrait() {
+        // The library id is what opens the library artist page; the catalog
+        // twin's id would 404 there. Only the things the library does not
+        // carry — artwork, genres — come across.
+        let resource = LibraryArtistResource {
+            id: "r.abc".into(),
+            attributes: Some(ArtistAttributes {
+                name: "Aitana".into(),
+                artwork: None,
+                genre_names: Vec::new(),
             }),
-        }),
-    };
+            relationships: Some(LibraryArtistRelationships {
+                catalog: Some(Response {
+                    data: vec![Resource {
+                        id: "1234".into(),
+                        attributes: Some(ArtistAttributes {
+                            name: "Aitana".into(),
+                            artwork: Some(ArtworkAttributes {
+                                url: "https://example.test/{w}x{h}bb.jpg".into(),
+                            }),
+                            genre_names: vec!["Pop".into(), "Latin".into()],
+                        }),
+                    }],
+                }),
+            }),
+        };
 
-    let artist = Artist::from(resource);
-    assert_eq!(artist.id, "r.abc", "the library id opens the library page");
-    assert!(artist.library);
-    assert!(artist.artwork.is_some(), "portrait comes from the catalog");
-    assert_eq!(artist.genres, "Pop, Latin");
-}
+        let artist = Artist::from(resource);
+        assert_eq!(artist.id, "r.abc", "the library id opens the library page");
+        assert!(artist.library);
+        assert!(artist.artwork.is_some(), "portrait comes from the catalog");
+        assert_eq!(artist.genres, "Pop, Latin");
+    }
 
-#[test]
-fn a_library_artist_without_a_catalog_twin_still_parses() {
-    // `include=catalog` is honoured today and might not be tomorrow. No
-    // portrait is a placeholder, not a failure.
-    let artist = Artist::from(LibraryArtistResource {
-        id: "r.abc".into(),
-        attributes: Some(ArtistAttributes {
-            name: "Aitana".into(),
-            artwork: None,
-            genre_names: Vec::new(),
-        }),
-        relationships: None,
-    });
-    assert_eq!(artist.name, "Aitana");
-    assert!(artist.artwork.is_none());
-    assert!(artist.library);
+    #[test]
+    fn a_library_artist_without_a_catalog_twin_still_parses() {
+        // `include=catalog` is honoured today and might not be tomorrow. No
+        // portrait is a placeholder, not a failure.
+        let artist = Artist::from(LibraryArtistResource {
+            id: "r.abc".into(),
+            attributes: Some(ArtistAttributes {
+                name: "Aitana".into(),
+                artwork: None,
+                genre_names: Vec::new(),
+            }),
+            relationships: None,
+        });
+        assert_eq!(artist.name, "Aitana");
+        assert!(artist.artwork.is_none());
+        assert!(artist.library);
+    }
+
+    #[test]
+    fn a_playlist_you_made_yourself_has_no_curator_or_blurb() {
+        // The common case in a library: Apple returns a name and nothing else.
+        // Both come back empty rather than absent, so the tile and the page
+        // header can just ask whether they are empty.
+        let playlist = Playlist::from(Resource {
+            id: "p.abc".into(),
+            attributes: Some(PlaylistAttributes {
+                name: "Late night".into(),
+                curator_name: String::new(),
+                artwork: None,
+                description: None,
+            }),
+        });
+        assert_eq!(playlist.name, "Late night");
+        assert!(playlist.curator.is_empty());
+        assert!(playlist.description.is_empty());
+        assert!(playlist.artwork.is_none());
+        // Set by the client method that fetched it, never here.
+        assert!(!playlist.library);
+    }
+
+    #[test]
+    fn an_editorial_playlist_keeps_its_curator_and_blurb() {
+        let playlist = Playlist::from(Resource {
+            id: "pl.123".into(),
+            attributes: Some(PlaylistAttributes {
+                name: "Today's Hits".into(),
+                curator_name: "Apple Music".into(),
+                artwork: Some(ArtworkAttributes {
+                    url: "https://example.test/{w}x{h}bb.jpg".into(),
+                }),
+                description: Some(DescriptionAttribute {
+                    standard: "The songs everyone is playing.".into(),
+                }),
+            }),
+        });
+        assert_eq!(playlist.curator, "Apple Music");
+        assert_eq!(playlist.description, "The songs everyone is playing.");
+        assert!(playlist.artwork.is_some());
+    }
 }

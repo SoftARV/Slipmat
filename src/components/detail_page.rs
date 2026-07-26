@@ -25,7 +25,7 @@ use relm4::{adw, gtk};
 
 use crate::components::track_row::{Entry, LibraryItem, LibraryRowWidgets};
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
-use crate::music::types::{Album, Artist, Artwork};
+use crate::music::types::{Album, Artist, Artwork, Playlist};
 
 /// Header artwork, in logical pixels. The widget is pinned to exactly this so
 /// the `card` background cannot outgrow the picture inside it.
@@ -44,6 +44,7 @@ pub enum PageKind {
     Artist(String),
     LibraryAlbum(String),
     LibraryArtist(String),
+    LibraryPlaylist(String),
 }
 
 impl PageKind {
@@ -52,7 +53,8 @@ impl PageKind {
             Self::Album(id)
             | Self::Artist(id)
             | Self::LibraryAlbum(id)
-            | Self::LibraryArtist(id) => id,
+            | Self::LibraryArtist(id)
+            | Self::LibraryPlaylist(id) => id,
         }
     }
 
@@ -63,6 +65,12 @@ impl PageKind {
         } else {
             Self::Album(album.id.clone())
         }
+    }
+
+    /// Playlists are library-only for now — catalog playlist search is not
+    /// wired up, so there is nothing to disambiguate yet.
+    pub fn playlist(playlist: &Playlist) -> Self {
+        Self::LibraryPlaylist(playlist.id.clone())
     }
 
     pub fn artist(artist: &Artist) -> Self {
@@ -78,6 +86,7 @@ impl PageKind {
         match self {
             Self::Album(_) | Self::LibraryAlbum(_) => "Album",
             Self::Artist(_) | Self::LibraryArtist(_) => "Artist",
+            Self::LibraryPlaylist(_) => "Playlist",
         }
     }
 }
@@ -290,6 +299,26 @@ impl DetailPage {
         }
         self.meta.set_label(&meta);
         self.meta.set_visible(!meta.is_empty());
+
+        self.fill(tracks);
+    }
+
+    /// Fill a playlist page: cover, curator or blurb, and its tracks.
+    pub fn show_playlist(&mut self, playlist: &Playlist, tracks: Vec<Entry>) {
+        self.art.add_css_class("card");
+        let subtitle = if playlist.curator.is_empty() {
+            &playlist.description
+        } else {
+            &playlist.curator
+        };
+        self.head(&playlist.name, subtitle, playlist.artwork.as_ref());
+
+        let songs = tracks.len();
+        self.meta.set_label(&format!(
+            "{songs} {}",
+            if songs == 1 { "song" } else { "songs" }
+        ));
+        self.meta.set_visible(songs > 0);
 
         self.fill(tracks);
     }

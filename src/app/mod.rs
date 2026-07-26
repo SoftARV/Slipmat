@@ -55,7 +55,7 @@ use crate::components::{
     CurrentTrack, DeadTracks, RowRegistry, current_track, dead_tracks, row_registry,
 };
 use crate::mpris::Mpris;
-use crate::music::types::{Album, Artist, Artwork, Track};
+use crate::music::types::{Album, Artist, Artwork, Playlist, Track};
 use crate::notify;
 use crate::player::protocol::{Command, Tokens};
 use crate::player::{Incoming, PlayerState, sidecar};
@@ -174,10 +174,13 @@ pub struct AppModel {
     /// at startup — launching should not wait on three collections.
     albums: Vec<Album>,
     artists: Vec<Artist>,
+    playlists: Vec<Playlist>,
     album_grid: TypedGridView<GridItem, gtk::NoSelection>,
     artist_grid: TypedGridView<GridItem, gtk::NoSelection>,
+    playlist_grid: TypedGridView<GridItem, gtk::NoSelection>,
     loading_albums: bool,
     loading_artists: bool,
+    loading_playlists: bool,
     /// Tile artwork already on disk. Shared between the grids on purpose: it
     /// is keyed by the artwork itself, so a cover fetched for one is a cover
     /// the other gets for free.
@@ -188,6 +191,7 @@ pub struct AppModel {
     /// rebuild of one would silently unregister the other's tiles.
     album_art_widgets: ArtRegistry,
     artist_art_widgets: ArtRegistry,
+    playlist_art_widgets: ArtRegistry,
     /// Fetches already in flight, so a tile rebinding twice while scrolling
     /// does not queue the same download again.
     tile_art_pending: std::collections::HashSet<String>,
@@ -282,6 +286,7 @@ pub enum AppMsg {
     /// immediately, never stored.
     AlbumActivated(u32),
     ArtistActivated(u32),
+    PlaylistActivated(u32),
     /// A tile is on screen and its cover is not on disk yet.
     NeedTileArt(String, Artwork),
     ToggleSidebar,
@@ -347,6 +352,11 @@ pub enum CommandMsg {
         page: u64,
         result: Result<(Artist, Vec<Album>), String>,
     },
+    /// A playlist page's contents.
+    PlaylistPage {
+        page: u64,
+        result: Result<(Playlist, Vec<Track>), String>,
+    },
     /// A page's header art is on disk, or could not be fetched.
     PageArtwork {
         page: u64,
@@ -355,6 +365,7 @@ pub enum CommandMsg {
     /// The user's library albums / artists.
     LibraryAlbums(Result<Vec<Album>, String>),
     LibraryArtists(Result<Vec<Artist>, String>),
+    LibraryPlaylists(Result<Vec<Playlist>, String>),
     /// A grid tile's cover is on disk, or could not be fetched.
     TileArt {
         key: String,
@@ -548,6 +559,29 @@ impl Component for AppModel {
                                                         },
                                                     },
                                                 },
+
+                                                // Index 4 — Playlists.
+                                                gtk::ListBoxRow {
+                                                    #[wrap(Some)]
+                                                    set_child = &gtk::Box {
+                                                        set_spacing: 12,
+                                                        set_margin_all: 8,
+
+                                                        gtk::Image {
+                                                            set_icon_name: Some(icon("view-list-symbolic")),
+                                                        },
+                                                        gtk::Label {
+                                                            set_label: "Playlists",
+                                                            set_hexpand: true,
+                                                            set_xalign: 0.0,
+                                                        },
+                                                        adw::Spinner {
+                                                            set_size_request: (16, 16),
+                                                            #[watch]
+                                                            set_visible: model.loading_playlists,
+                                                        },
+                                                    },
+                                                },
                                             },
                                     },
                                 },
@@ -598,6 +632,7 @@ impl Component for AppModel {
                                                 View::Songs => "Search your library",
                                                 View::Albums => "Search albums",
                                                 View::Artists => "Search artists",
+                                                View::Playlists => "Search playlists",
                                                 View::Search => "Search Apple Music",
                                             }),
                                             connect_search_changed[sender] => move |entry| {
@@ -667,6 +702,7 @@ impl Component for AppModel {
                                                     View::Search => "Searching Apple Music",
                                                     View::Albums => "Loading your albums",
                                                     View::Artists => "Loading your artists",
+                                                    View::Playlists => "Loading your playlists",
                                                     View::Songs => "Loading your library",
                                                 },
                                             },
@@ -721,6 +757,18 @@ impl Component for AppModel {
                                             },
                                         },
 
+                                        add_named[Some("playlists")] = &gtk::ScrolledWindow {
+                                            set_vexpand: true,
+                                            set_hscrollbar_policy: gtk::PolicyType::Never,
+
+                                            #[local_ref]
+                                            playlist_grid -> gtk::GridView {
+                                                set_single_click_activate: true,
+                                                set_max_columns: 12,
+                                                set_margin_all: 12,
+                                            },
+                                        },
+
                                         // An empty search box is not a failed
                                         // search. Telling someone that Apple
                                         // Music has nothing matching "" is
@@ -751,6 +799,10 @@ impl Component for AppModel {
                                                 ),
                                                 View::Artists => format!(
                                                     "No artist in your library matches “{}”.",
+                                                    model.query()
+                                                ),
+                                                View::Playlists => format!(
+                                                    "No playlist in your library matches “{}”.",
                                                     model.query()
                                                 ),
                                                 View::Search => format!(
@@ -842,6 +894,12 @@ impl Component for AppModel {
             .view
             .connect_activate(move |_, position| activate.input(AppMsg::ArtistActivated(position)));
 
+        let playlist_grid: TypedGridView<GridItem, gtk::NoSelection> = TypedGridView::new();
+        let activate = sender.clone();
+        playlist_grid.view.connect_activate(move |_, position| {
+            activate.input(AppMsg::PlaylistActivated(position))
+        });
+
         // Tiles call this from `bind`, deep inside GTK's factory, where there
         // is no component to reach. It turns "I need this cover" into an
         // ordinary message, so the fetch itself still happens as a Command off
@@ -868,13 +926,17 @@ impl Component for AppModel {
             view: View::from(settings.section),
             albums: Vec::new(),
             artists: Vec::new(),
+            playlists: Vec::new(),
             album_grid,
             artist_grid,
+            playlist_grid,
             loading_albums: false,
             loading_artists: false,
+            loading_playlists: false,
             tile_art: art_cache(),
             album_art_widgets: art_registry(),
             artist_art_widgets: art_registry(),
+            playlist_art_widgets: art_registry(),
             tile_art_pending: std::collections::HashSet::new(),
             tile_art_request,
             catalog: Vec::new(),
@@ -921,6 +983,7 @@ impl Component for AppModel {
         let nav_view = &model.nav;
         let album_grid = &model.album_grid.view;
         let artist_grid = &model.artist_grid.view;
+        let playlist_grid = &model.playlist_grid.view;
         let queue_sidebar = model.queue_view.widget();
         let widgets = view_output!();
 
@@ -1046,6 +1109,7 @@ impl Component for AppModel {
                     View::Songs => self.rebuild_rows(),
                     View::Albums => self.rebuild_albums(),
                     View::Artists => self.rebuild_artists(),
+                    View::Playlists => self.rebuild_playlists(),
                     View::Search => {
                         self.search_gen = self.search_gen.wrapping_add(1);
                         let generation = self.search_gen;
@@ -1100,6 +1164,10 @@ impl Component for AppModel {
                         self.rebuild_artists();
                         self.load_artists(&sender);
                     }
+                    View::Playlists => {
+                        self.rebuild_playlists();
+                        self.load_playlists(&sender);
+                    }
                     View::Search => {
                         self.search_gen = self.search_gen.wrapping_add(1);
                         let generation = self.search_gen;
@@ -1124,6 +1192,13 @@ impl Component for AppModel {
                     && let Tile::Artist(artist) = &item.borrow().tile
                 {
                     sender.input(AppMsg::OpenPage(PageKind::artist(artist)));
+                }
+            }
+            AppMsg::PlaylistActivated(position) => {
+                if let Some(item) = self.playlist_grid.get(position)
+                    && let Tile::Playlist(playlist) = &item.borrow().tile
+                {
+                    sender.input(AppMsg::OpenPage(PageKind::playlist(playlist)));
                 }
             }
             AppMsg::NeedTileArt(key, art) => {
@@ -1319,6 +1394,40 @@ impl Component for AppModel {
                     }
                 }
             }
+            CommandMsg::LibraryPlaylists(result) => {
+                self.loading_playlists = false;
+                match result {
+                    Ok(playlists) => {
+                        tracing::info!(playlists = playlists.len(), "library playlists loaded");
+                        self.playlists = playlists;
+                        self.rebuild_playlists();
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "library playlists failed");
+                        self.toast(&err);
+                    }
+                }
+            }
+            CommandMsg::PlaylistPage { page, result } => {
+                let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
+                    return;
+                };
+                match result {
+                    Ok((playlist, tracks)) => {
+                        tracing::info!(page, tracks = tracks.len(), playlist = %playlist.name, "playlist loaded");
+                        let art = playlist.artwork.clone();
+                        target.show_playlist(
+                            &playlist,
+                            tracks.into_iter().map(Entry::Song).collect(),
+                        );
+                        self.fetch_page_art(page, art, &sender);
+                    }
+                    Err(err) => {
+                        tracing::warn!(page, %err, "playlist page failed");
+                        target.fail(&err);
+                    }
+                }
+            }
             CommandMsg::TileArt { key, path } => {
                 self.tile_art_pending.remove(&key);
                 let Some(path) = path else {
@@ -1331,7 +1440,11 @@ impl Component for AppModel {
                 // ...then paint whichever tile is showing this artwork *now*.
                 // Recycling means it may not be the one that asked, and may be
                 // none at all if it scrolled away — both are correct.
-                for registry in [&self.album_art_widgets, &self.artist_art_widgets] {
+                for registry in [
+                    &self.album_art_widgets,
+                    &self.artist_art_widgets,
+                    &self.playlist_art_widgets,
+                ] {
                     if let Some(image) = registry.borrow().get(&key) {
                         image.set_from_file(Some(&path));
                     }

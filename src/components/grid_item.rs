@@ -32,7 +32,7 @@ use relm4::gtk::prelude::*;
 use relm4::typed_view::grid::RelmGridItem;
 use relm4::{gtk, view};
 
-use crate::music::types::{Album, Artist, Artwork};
+use crate::music::types::{Album, Artist, Artwork, Playlist};
 
 /// Tile artwork, in logical pixels. Big enough to read, small enough that a
 /// library of a few hundred albums is a few hundred small JPEGs.
@@ -64,6 +64,7 @@ pub fn art_registry() -> ArtRegistry {
 pub enum Tile {
     Album(Album),
     Artist(Artist),
+    Playlist(Playlist),
 }
 
 impl Tile {
@@ -71,6 +72,7 @@ impl Tile {
         match self {
             Self::Album(a) => &a.name,
             Self::Artist(a) => &a.name,
+            Self::Playlist(p) => &p.name,
         }
     }
 
@@ -82,6 +84,15 @@ impl Tile {
             // asks for inline. Empty when Apple had none — an empty line beats
             // a fabricated one.
             Self::Artist(a) => a.genres.clone(),
+            // Your own playlists have no curator and no blurb, which is most of
+            // a library. Whichever exists, or nothing.
+            Self::Playlist(p) => {
+                if p.curator.is_empty() {
+                    p.description.clone()
+                } else {
+                    p.curator.clone()
+                }
+            }
         }
     }
 
@@ -89,6 +100,7 @@ impl Tile {
         match self {
             Self::Album(a) => a.artwork.as_ref(),
             Self::Artist(a) => a.artwork.as_ref(),
+            Self::Playlist(p) => p.artwork.as_ref(),
         }
     }
 
@@ -98,6 +110,7 @@ impl Tile {
         match self {
             Self::Album(_) => "media-optical-symbolic",
             Self::Artist(_) => "avatar-default-symbolic",
+            Self::Playlist(_) => "view-list-symbolic",
         }
     }
 
