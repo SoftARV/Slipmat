@@ -281,8 +281,15 @@ re-read rather than assume.
 | Want | Call |
 | --- | --- |
 | Add to library | `POST /v1/me/library?ids[songs]=…&ids[albums]=…` — several types in one request |
-| Favourite (the star) | `POST /v1/me/favorites?ids[<type>]=…` |
+| Favourite (the star) | `POST /v1/me/favorites?ids[<type>]=…` — **add only**, see below |
 | Love / dislike | `PUT /v1/me/ratings/{type}/{id}`, body `{"type":"rating","attributes":{"value": 1 \| -1}}` |
+
+**Un-favouriting is not possible with this token.** Apple documents no
+counterpart to the add, and `DELETE /v1/me/favorites?ids[songs]=…` — the obvious
+inverse — answers `400 Insufficient Permissions`:
+`'Favorites:DELETE:IdsQuery' entities require permissions that are not in the
+request`. The harvested web-player token does not carry it and there is no way
+to ask for it from here, so the row menu offers no removal.
 
 **Favourites and ratings are different things.** `favorites` is the modern star;
 `ratings` is the older love/dislike pair, whose only legal values are `1` and

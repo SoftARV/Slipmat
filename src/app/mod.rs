@@ -294,7 +294,6 @@ pub struct AppModel {
 pub enum LibraryAction {
     AddToLibrary,
     Favorite,
-    Unfavorite,
 }
 
 impl LibraryAction {
@@ -302,7 +301,6 @@ impl LibraryAction {
         match self {
             Self::AddToLibrary => "Adding to your library…",
             Self::Favorite => "Favouriting…",
-            Self::Unfavorite => "Removing favourite…",
         }
     }
 
@@ -310,7 +308,6 @@ impl LibraryAction {
         match self {
             Self::AddToLibrary => "Sent to your library",
             Self::Favorite => "Favourited",
-            Self::Unfavorite => "Favourite removed",
         }
     }
 }
@@ -1522,9 +1519,6 @@ impl Component for AppModel {
                         LibraryAction::Favorite => {
                             client.add_to_favorites("songs", &catalog_id).await
                         }
-                        LibraryAction::Unfavorite => {
-                            client.remove_from_favorites("songs", &catalog_id).await
-                        }
                     };
                     CommandMsg::LibraryWritten {
                         catalog_id,
@@ -1705,7 +1699,6 @@ impl Component for AppModel {
                     // repaint just that row.
                     match action {
                         LibraryAction::Favorite => self.set_favorite(&catalog_id, true),
-                        LibraryAction::Unfavorite => self.set_favorite(&catalog_id, false),
                         LibraryAction::AddToLibrary => {}
                     }
                 }
@@ -1900,9 +1893,9 @@ impl AppModel {
         if !req.in_library {
             account.append(Some("Add to _Library"), Some("row.add-to-library"));
         }
-        if req.favorite {
-            account.append(Some("Remove _Favourite"), Some("row.unfavorite"));
-        } else {
+        // No "remove" counterpart: Apple rejects the DELETE for this token with
+        // "Insufficient Permissions". See `Client` — favouriting is add-only.
+        if !req.favorite {
             account.append(Some("_Favourite"), Some("row.favorite"));
         }
         if account.n_items() > 0 {
@@ -1934,7 +1927,6 @@ impl AppModel {
         for (name, what) in [
             ("add-to-library", LibraryAction::AddToLibrary),
             ("favorite", LibraryAction::Favorite),
-            ("unfavorite", LibraryAction::Unfavorite),
         ] {
             let action = gtk::gio::SimpleAction::new(name, None);
             let id = req.catalog_id.clone();

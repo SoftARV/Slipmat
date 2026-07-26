@@ -275,20 +275,19 @@ impl Client {
         .await
     }
 
-    /// Remove a favourite.
-    ///
-    /// **Undocumented.** Apple publishes "Add resource to favorites" and no
-    /// counterpart, so this is the obvious REST inverse and nothing more. It
-    /// fails loudly if Apple disagrees rather than reporting a success that did
-    /// not happen — `inFavorites` comes back on the next library load and would
-    /// contradict us.
-    pub async fn remove_from_favorites(&self, kind: &str, id: &str) -> Result<()> {
-        self.accepted(
-            self.delete(&format!("/me/favorites?ids[{kind}]={id}")),
-            "removing a favourite",
-        )
-        .await
-    }
+    // There is deliberately no `remove_from_favorites`.
+    //
+    // Apple documents "Add resource to favorites" and publishes no counterpart.
+    // `DELETE /v1/me/favorites?ids[songs]=…` — the obvious REST inverse — was
+    // tried against a real account and answered:
+    //
+    //   400 Insufficient Permissions
+    //   'Favorites:DELETE:IdsQuery' entities require permissions that are not
+    //   in the request
+    //
+    // The harvested web-player token does not carry that permission, and there
+    // is no way to ask for it from here. So favouriting is **add-only** in
+    // Tonearm, and the menu does not offer a removal it cannot perform.
 
     /// The shared POST-and-check for both. Neither returns a body worth
     /// parsing; what matters is that Apple accepted it.

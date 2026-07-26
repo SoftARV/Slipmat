@@ -457,13 +457,25 @@ impl SimpleComponent for NowPlaying {
                 // sidecar. The position is ours to defend while the user is
                 // driving it — see `settle_position`.
                 let settled = self.settle_position(held, incoming);
+
                 // Restart the extrapolation only on a genuinely new reading.
                 // MusicKit reports roughly once a second while the app pushes a
-                // snapshot twice a second, so resetting on every snapshot would
+                // snapshot twice a second, so rebasing on every snapshot would
                 // rebase half of them onto an unchanged value and the slider
                 // would stall, then leap.
-                if settled != self.snap.position_ms || self.synced_at.is_none() {
+                //
+                // Compared against `held` — the value from *before* `self.snap`
+                // was replaced. Comparing against `self.snap.position_ms` here
+                // compares the incoming reading with itself, is therefore never
+                // true, and leaves `synced_at` pinned to the first sync of the
+                // session: the offset then grows without bound and the slider
+                // reads minutes into a track that just started.
+                if settled != held || self.synced_at.is_none() {
                     self.synced_at = Some(std::time::Instant::now());
+                    // The sidecar is authoritative, so a new reading resets the
+                    // monotonic floor. Otherwise a stale one survives a track
+                    // change and holds the slider mid-song.
+                    self.shown_ms.set(settled);
                 }
                 self.snap.position_ms = settled;
                 self.retime(&sender);
@@ -567,6 +579,35 @@ impl SimpleComponent for NowPlaying {
             }
             shown.clone_from(&self.artwork);
         }
+    }
+}
+
+/// Where the slider should sit, given the last real reading and how long ago it
+/// arrived.
+///
+/// A free function so the arithmetic can be tested without a clock. Three
+/// separate attempts at this shipped broken; the tests below are the reason a
+/// fourth one will not.
+fn advance(base_ms: u64, ahead_ms: u64, duration_ms: u64, last_shown_ms: u64) -> u64 {
+    // Only clamp against a duration we actually have. It is 0 until the first
+    // metadata arrives, and clamping to that pins the position at the base —
+    // the slider hides itself while duration is unknown, but the elapsed label
+    // does not, and a frozen clock is a bug you can read.
+    let raw = base_ms + ahead_ms;
+    let candidate = if duration_ms > 0 {
+        raw.min(duration_ms)
+    } else {
+        raw
+    };
+
+    // A clock only runs forwards. MusicKit's reports are not perfectly even,
+    // and a small backward correction is far more noticeable than being a few
+    // tens of milliseconds optimistic — but a *large* jump is a seek or a new
+    // track, and must be obeyed.
+    if candidate < last_shown_ms && last_shown_ms - candidate < BACKSTEP_TOLERANCE_MS {
+        last_shown_ms
+    } else {
+        candidate
     }
 }
 
@@ -675,19 +716,12 @@ impl NowPlaying {
             self.shown_ms.set(base);
             return base;
         };
-        let ahead = at.elapsed().as_millis() as u64;
-        let candidate = (base + ahead).min(self.snap.duration_ms.max(base));
-
-        // A clock only runs forwards. MusicKit's reports are not perfectly
-        // even, and a small backward correction is far more noticeable than
-        // being a few tens of milliseconds optimistic — but a *large* jump is a
-        // seek or a new track, and must be obeyed.
-        let last = self.shown_ms.get();
-        let shown = if candidate < last && last - candidate < BACKSTEP_TOLERANCE_MS {
-            last
-        } else {
-            candidate
-        };
+        let shown = advance(
+            base,
+            at.elapsed().as_millis() as u64,
+            self.snap.duration_ms,
+            self.shown_ms.get(),
+        );
         self.shown_ms.set(shown);
         shown
     }
@@ -911,5 +945,41 @@ mod tests {
         assert_eq!(album_only.subtitle(), "Fragile");
 
         assert_eq!(model(Snapshot::default()).subtitle(), "");
+    }
+
+    #[test]
+    fn the_slider_advances_by_real_time_and_no_more() {
+        // 20s in, reported 300ms ago, on a 3 minute track.
+        assert_eq!(advance(20_000, 300, 180_000, 20_000), 20_300);
+        // The offset is time since the *reading*, not since the app started.
+        // Getting that wrong made a track that just began read minutes in.
+        assert_eq!(advance(0, 250, 180_000, 0), 250);
+    }
+
+    #[test]
+    fn the_slider_never_runs_past_the_end() {
+        assert_eq!(advance(179_900, 5_000, 180_000, 179_900), 180_000);
+    }
+
+    #[test]
+    fn a_small_backward_correction_is_absorbed() {
+        // MusicKit reports unevenly; a 200ms step back is far more noticeable
+        // than being 200ms optimistic, so the slider holds instead.
+        assert_eq!(advance(19_800, 0, 180_000, 20_000), 20_000);
+    }
+
+    #[test]
+    fn a_large_jump_backwards_is_obeyed() {
+        // A seek, or a new track. Holding here would strand the slider
+        // mid-song for the whole of the next one.
+        assert_eq!(advance(0, 0, 180_000, 90_000), 0);
+        assert_eq!(advance(5_000, 0, 180_000, 120_000), 5_000);
+    }
+
+    #[test]
+    fn a_zero_length_track_does_not_clamp_the_position_away() {
+        // Duration can be 0 before the first metadata arrives; the position
+        // must survive that rather than being clamped to nothing.
+        assert_eq!(advance(4_000, 100, 0, 4_000), 4_100);
     }
 }
