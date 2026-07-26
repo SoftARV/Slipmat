@@ -599,6 +599,9 @@ Playback engine first. One vertical slice, one PR each.
   sidebar, paginated as you scroll. Results mix artists and albums above the
   songs; either pushes a detail page (`adw::NavigationView`) you can play from
   and drill through — artist → album → track.
+**v0.1.0 released 2026-07-26.** M1–M9, gapless verified. What follows is
+0.2.0 work.
+
 - ✅ **M9 — Playlists.** Your library's playlists as a fourth sidebar section,
   opening onto the same detail page. Their tracks come from the relationship
   endpoint through the ordinary paginator rather than `include=tracks`, which

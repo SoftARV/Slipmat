@@ -1,6 +1,6 @@
 [package]
 name = "tonearm"
-version = "0.1.0"
+version = "0.2.0-dev"
 edition = "2024"
 description = "A native GNOME client for Apple Music"
 license = "GPL-3.0-or-later"
