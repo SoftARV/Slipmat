@@ -53,6 +53,69 @@ struct Slots {
     transport_compact: gtk::Box,
 }
 
+/// How much of the window the open drawer claims.
+const WINDOW_FRACTION: f64 = 0.8;
+
+/// The shortest the drawer may ever be, in logical pixels. A floor low enough
+/// that it is never what stops the window from shrinking.
+const SHEET_MIN_H: i32 = 260;
+
+/// Tie the drawer's height to the window's, at [`WINDOW_FRACTION`].
+///
+/// `AdwBottomSheet` sizes the sheet to its child's **natural height** and
+/// offers no maximum, minimum or fraction of its own, so a drawer that should
+/// fill most of the window has to be told how tall that is. There is nothing
+/// to bind to; the number has to be computed and pushed down.
+///
+/// The basis is the toplevel `GdkSurface`'s height, which is the one size that
+/// notifies on *every* resize — including tiling and maximising, which
+/// `GtkWindow:default-height` deliberately does not track (it stores the size
+/// to restore *to*, so it holds still exactly when the window is snapped).
+///
+/// Reading the surface rather than the sheet's own allocation also keeps this
+/// acyclic: our request changes how tall the sheet is, and how tall the sheet
+/// is never changes the surface. Measuring the sheet would be a loop.
+///
+/// The request is dropped entirely while the drawer is closed. A height
+/// request is a *minimum*, and a minimum that tracks the current height would
+/// fight the user as they drag the window shorter — so the app only carries it
+/// when the drawer is actually open and asking to be tall.
+///
+/// `Rc` rather than `Arc` because every one of these callbacks is a GTK signal
+/// handler: they all run on the main thread, and none of them crosses one.
+pub fn fill_window(
+    window: &adw::ApplicationWindow,
+    sheet: &adw::BottomSheet,
+    content: &gtk::Widget,
+) {
+    let apply: std::rc::Rc<dyn Fn()> = {
+        let (window, sheet, content) = (window.clone(), sheet.clone(), content.clone());
+        std::rc::Rc::new(move || {
+            let height = window.surface().map_or(0, |surface| surface.height());
+            let target = (f64::from(height) * WINDOW_FRACTION) as i32;
+            content.set_height_request(if sheet.is_open() && height > 0 {
+                target.max(SHEET_MIN_H)
+            } else {
+                -1
+            });
+        })
+    };
+
+    window.connect_realize({
+        let apply = apply.clone();
+        move |window| {
+            let Some(surface) = window.surface() else {
+                return;
+            };
+            apply();
+            let apply = apply.clone();
+            surface.connect_height_notify(move |_| apply());
+        }
+    });
+
+    sheet.connect_open_notify(move |_| apply());
+}
+
 /// Build the scrubber and the transport row into `into`.
 ///
 /// By hand rather than in `view!` because this block **moves** between two
@@ -223,7 +286,11 @@ impl SimpleComponent for PlayerView {
             // Low enough that the drawer never becomes the window's floor.
             // The whole point of the compact layout is that the app can be
             // tiled to half a screen, and a minimum here would undo that.
-            set_size_request: (300, 260),
+            //
+            // How tall it actually opens is [`fill_window`]'s business, not
+            // this number's: this is the floor it may never go under, that is
+            // the share of the window it asks for.
+            set_size_request: (300, SHEET_MIN_H),
 
             #[wrap(Some)]
             set_child = &gtk::Box {

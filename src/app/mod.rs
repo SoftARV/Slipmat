@@ -1631,6 +1631,14 @@ impl Component for AppModel {
             tracing::warn!("unparsable window breakpoint; the sidebar will not collapse");
         }
 
+        // The drawer opens to most of the window, rather than to whatever
+        // height its contents happen to add up to. See `fill_window`.
+        crate::components::player_view::fill_window(
+            &root,
+            &widgets.player_sheet,
+            model.player_view.widget().upcast_ref(),
+        );
+
         register_actions(&root, &sender);
 
         // Rows read playability from here, so seed it before any are built.

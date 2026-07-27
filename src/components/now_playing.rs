@@ -267,8 +267,14 @@ impl SimpleComponent for NowPlaying {
             // "Castlevania Sound Team — Akumajo Dracula Judgment Original
             // Soundtrack" was claiming the space and squeezing the seek scale
             // down to its 220px minimum. Capping `max_width_chars` caps the
-            // natural width; the fixed request keeps the bar from reflowing
-            // every time the track changes.
+            // natural width.
+            //
+            // The two numbers do different jobs, which is the thing to hold on
+            // to: `max_width_chars` is the *natural* width — what the box asks
+            // for — and `width_chars` would be the *minimum*. Leaving the
+            // minimum unset is what lets the bar shrink far enough for the
+            // window to be tiled; setting the natural width is what stops it
+            // collapsing to "…" when it does not have to.
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 set_valign: gtk::Align::Center,
@@ -308,7 +314,9 @@ impl SimpleComponent for NowPlaying {
                 gtk::Label {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
-                    set_max_width_chars: 1,
+                    // Natural width, not minimum: about the width the fixed
+                    // 240px request used to buy, but able to give it back.
+                    set_max_width_chars: 22,
                     add_css_class: "heading",
                     #[watch]
                     set_visible: model.snap.active,
@@ -326,7 +334,7 @@ impl SimpleComponent for NowPlaying {
                 gtk::Label {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
-                    set_max_width_chars: 1,
+                    set_max_width_chars: 26,
                     add_css_class: "caption",
                     add_css_class: "dim-label",
                     set_use_markup: false,
