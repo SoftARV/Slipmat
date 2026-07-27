@@ -21,7 +21,6 @@ relm4::new_action_group!(AppMenuActionGroup, "win");
 relm4::new_stateless_action!(PreferencesAction, AppMenuActionGroup, "preferences");
 relm4::new_stateless_action!(ShortcutsAction, AppMenuActionGroup, "shortcuts");
 relm4::new_stateless_action!(AboutAction, AppMenuActionGroup, "about");
-relm4::new_stateless_action!(QuitAction, AppMenuActionGroup, "quit");
 relm4::new_stateless_action!(PlayPauseAction, AppMenuActionGroup, "play-pause");
 relm4::new_stateless_action!(NextAction, AppMenuActionGroup, "next");
 relm4::new_stateless_action!(PreviousAction, AppMenuActionGroup, "previous");
@@ -56,9 +55,21 @@ pub(super) fn register_actions(
     group.add_action(RelmAction::<AboutAction>::new_stateless(move |_| {
         s.input(AppMsg::ShowAbout)
     }));
-    group.add_action(RelmAction::<QuitAction>::new_stateless(move |_| {
-        relm4::main_application().quit()
-    }));
+    // **Application-scoped, not window-scoped.** A `win.` action resolves
+    // through whatever currently holds focus, and the first-run gate is an
+    // `adw::Dialog` presented into the window's own dialog host — so the one
+    // moment a user most needs a way out is the moment that scope is least
+    // certain. `app.quit` is reachable from any focus scope, and is the GNOME
+    // convention besides.
+    //
+    // It matters more than it looks: an `adw::Dialog` with `can_close(false)`
+    // also blocks the window's close request, so while the gate is up the title
+    // bar button does nothing either. Between that and Quit missing from the
+    // primary menu, a signed-out app had no visible way to exit at all.
+    let app = relm4::main_application();
+    let quit = gtk::gio::SimpleAction::new("quit", None);
+    quit.connect_activate(|_, _| relm4::main_application().quit());
+    app.add_action(&quit);
 
     // Transport, so the app answers the keyboard even when the bar does not
     // have focus. Media keys already arrive over MPRIS; these are the
@@ -92,10 +103,9 @@ pub(super) fn register_actions(
         move |_| s.input(AppMsg::ToggleSidebar),
     ));
 
-    let app = relm4::main_application();
     app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
     app.set_accelerators_for_action::<ShortcutsAction>(&["<Control>question"]);
-    app.set_accelerators_for_action::<QuitAction>(&["<Control>q"]);
+    app.set_accels_for_action("app.quit", &["<Control>q"]);
     app.set_accelerators_for_action::<PlayPauseAction>(&["<Control>k"]);
     app.set_accelerators_for_action::<NextAction>(&["<Control>Right"]);
     app.set_accelerators_for_action::<PreviousAction>(&["<Control>Left"]);
@@ -236,14 +246,82 @@ impl AppModel {
         column.append(&note);
         page.set_child(Some(&column));
 
+        // A way out of the app, on the one screen that otherwise has none:
+        // `can_close(false)` stops the window's own close button too, so
+        // without this the gate is a dead end for anyone who does not want to
+        // sign in right now.
+        //
+        // In the corner rather than under the call to action. Below Sign In it
+        // sat in the reading order as if it were the second step, and it is not
+        // a step at all — it is the way out. Flat, and not destructive:
+        // quitting is ordinary, and red would imply it discards something.
+        let quit = gtk::Button::builder()
+            .label("Quit")
+            .css_classes(["flat"])
+            .build();
+        quit.connect_clicked(|_| relm4::main_application().quit());
+
+        // The bar exists only to hold that button — the dialog cannot be
+        // closed, so there are no window controls to show and no title to
+        // repeat above the status page's own.
+        let header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .css_classes(["flat"])
+            .build();
+        header.set_title_widget(Some(&gtk::Label::new(None)));
+        header.pack_end(&quit);
+
+        let view = adw::ToolbarView::builder().content(&page).build();
+        view.add_top_bar(&header);
+
+        // **Width only.** A fixed `content_height` was what made this scroll:
+        // `adw::StatusPage` puts its content in a scrolled window, so any
+        // height smaller than the natural one produces a scrollbar — and 420
+        // was smaller, on a dialog with a heading, two short paragraphs and a
+        // button. Left unset, the dialog takes the height its content asks for
+        // and there is nothing to scroll.
         let dialog = adw::Dialog::builder()
-            .child(&page)
+            .child(&view)
             .content_width(480)
-            .content_height(420)
             // No escape, no click-outside: there is nothing behind this worth
             // reaching until there is a session.
             .can_close(false)
             .build();
+
+        // Ctrl+Q, again, because the gate swallows the application one.
+        //
+        // Moving the action from `win.quit` to `app.quit` was not enough:
+        // tested by hand with the gate up, the Quit button works — so
+        // `main_application().quit()` is fine — while the accelerator never
+        // arrives. A modal `adw::Dialog` holds the focus, and the application
+        // shortcut does not survive that, whatever the scope of the action
+        // behind it.
+        //
+        // So the dialog carries its own, local to it and its children, which is
+        // exactly where the key is going. A `CallbackAction` rather than a
+        // `NamedAction`: nothing to resolve by name, so there is no second
+        // lookup that can fail the same quiet way the first one did.
+        // **Capture, not bubble.** A bubbling controller runs on the way back
+        // up, which is after anything nearer the focus has had its chance to
+        // stop the event — and something is stopping it, or the application
+        // accelerator would have worked. Capture runs on the way *down* from
+        // the dialog, before its own children see the key, so nothing gets to
+        // swallow it first. Safe here only because the gate holds no text
+        // input: on a dialog with an entry, capturing Ctrl+Q would take it away
+        // from the entry, which is why this is not the default anywhere else.
+        let shortcuts = gtk::ShortcutController::new();
+        shortcuts.set_scope(gtk::ShortcutScope::Local);
+        shortcuts.set_propagation_phase(gtk::PropagationPhase::Capture);
+        shortcuts.add_shortcut(gtk::Shortcut::new(
+            gtk::ShortcutTrigger::parse_string("<Control>q"),
+            Some(gtk::CallbackAction::new(|_, _| {
+                relm4::main_application().quit();
+                gtk::glib::Propagation::Stop
+            })),
+        ));
+        dialog.add_controller(shortcuts);
+
         dialog.present(Some(parent));
         dialog
     }

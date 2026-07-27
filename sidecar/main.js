@@ -19,17 +19,35 @@
 // *** NOTHING may write to stdout except send(). A stray console.log corrupts
 // *** the channel and the Rust side will drop the connection. Use log().
 
-const { app, components, BrowserWindow, powerSaveBlocker, shell } = require('electron')
+const {
+  app,
+  components,
+  BrowserWindow,
+  powerSaveBlocker,
+  session,
+  shell,
+} = require('electron')
 const path = require('node:path')
 const readline = require('node:readline')
 
-// `--debug`, or TONEARM_SHOW_SIDECAR=1 from the Rust side. Both keep the
-// window on screen. This is the fastest way to tell a frozen renderer from a
-// broken command: if playback works with the window visible and not without,
-// the problem is Chromium freezing a page it thinks nobody is looking at.
+// TONEARM_SHOW_SIDECAR=1 keeps the window on screen. This is the fastest way
+// to tell a frozen renderer from a broken command: if playback works with the
+// window visible and not without, the problem is Chromium freezing a page it
+// thinks nobody is looking at.
+//
+// **The env var, not a flag.** `npm run debug` used to pass `--debug`, which
+// never reached here: Electron reads it as Node's long-deprecated `--debug`
+// and exits before the app starts ("`node --debug` ... are invalid", make
+// Error 9). So the one documented tool for isolating an Apple or DRM problem
+// from a Rust one did not run at all. The argv check is kept because it costs
+// nothing and still works if the flag is passed somewhere Electron ignores it.
 const DEBUG =
   process.argv.includes('--debug') || process.env.TONEARM_SHOW_SIDECAR === '1'
 const APPLE_MUSIC = 'https://music.apple.com/'
+/// Where the login lives. Named once because sign-out has to clear the very
+/// partition the window was created with — two spellings of this string is a
+/// sign-out that silently forgets nothing.
+const PARTITION = 'persist:tonearm'
 /// How the window stays out of the way. Set TONEARM_SIDECAR_WINDOW to override:
 ///
 ///   hidden     (default) never mapped. Completely invisible — nothing in the
@@ -142,7 +160,7 @@ async function createWindow() {
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      partition: 'persist:tonearm',
+      partition: PARTITION,
 
       // The hook must touch the page's own `MusicKit` global, which means the
       // preload has to share the page's world. This is the same trade every
@@ -309,6 +327,18 @@ function probeForMusicKit() {
       })
     }
 
+    // Electron defers executeJavaScript until the page stops loading, and it
+    // implements that by attaching a `did-stop-loading` listener per call. So
+    // probing a still-loading document queues one listener per tick and trips
+    // "MaxListenersExceededWarning: 11 did-stop-loading listeners added".
+    //
+    // Skipping the tick is the fix rather than raising maxListeners: there is
+    // nothing to find on a document that has not finished loading, so those
+    // calls were never going to answer anything. Deliberately checked *after*
+    // the deadline above, so a page that never finishes still times out and
+    // reports `hook-failed` instead of probing silently forever.
+    if (win.webContents.isLoadingMainFrame()) return
+
     let ready = false
     try {
       ready = await win.webContents.executeJavaScript(
@@ -341,6 +371,70 @@ function probeForMusicKit() {
 // Commands from Rust
 // ---------------------------------------------------------------------------
 
+/// Actually sign out: drop Apple's session, not just MusicKit's token.
+///
+/// `music.unauthorize()` was the whole of sign-out, and it is a MusicKit call —
+/// it clears the Music User Token and nothing else. The login itself is an
+/// ordinary browser session in the `persist:tonearm` partition, so it survived,
+/// and signing back in silently reused it. Measured after a sign-out and a
+/// sign-in: a `.idmsa.apple.com` cookie two days older than the others was
+/// still there, i.e. the same Apple identity was being re-presented. A user who
+/// signs out to recover a broken session could not.
+///
+/// Best-effort and unordered on purpose. `unauthorize` is a courtesy to
+/// MusicKit — clearing the storage underneath it is what actually ends the
+/// session, so nothing here waits on the renderer, which may be mid-navigation
+/// or gone.
+async function signOut() {
+  if (win && !win.isDestroyed()) {
+    try {
+      win.webContents.send('tonearm:command', { cmd: 'unauthorize' })
+    } catch (err) {
+      log('unauthorize could not be delivered:', err && err.message)
+    }
+  }
+
+  try {
+    // Cookies and every web storage that can hold an identity. The HTTP cache
+    // is deliberately *not* cleared: it holds Apple's static assets rather than
+    // credentials, and dropping it would cost a slow re-fetch for no privacy
+    // gain. The Widevine CDM is outside the partition entirely, so it is
+    // untouched and does not re-download.
+    await session.fromPartition(PARTITION).clearStorageData({
+      storages: [
+        'cookies',
+        'localstorage',
+        'sessionstorage',
+        'indexdb',
+        'websql',
+        'serviceworkers',
+        'cachestorage',
+      ],
+    })
+    log('session cleared')
+  } catch (err) {
+    // Say so rather than reporting a sign-out that did not happen — this is the
+    // failure the whole function exists to stop being silent.
+    log('clearing the session FAILED:', err && err.message)
+    send({ event: 'error', code: 'sign-out-failed', detail: String(err) })
+    return
+  }
+
+  // Reload so the next sign-in starts from a document that never saw the old
+  // account. Without this the page keeps running with its in-memory MusicKit
+  // instance and looks signed in until something forces a navigation.
+  if (win && !win.isDestroyed()) {
+    hookReady = false
+    try {
+      await win.loadURL(APPLE_MUSIC)
+      probeForMusicKit()
+    } catch (err) {
+      log('reload after sign-out failed:', err && err.message)
+    }
+  }
+  send({ event: 'signed-out' })
+}
+
 function dispatch(msg) {
   // Handled here, not in the page.
   switch (msg.cmd) {
@@ -354,6 +448,12 @@ function dispatch(msg) {
       return
     case 'quit':
       app.exit(0)
+      return
+    case 'signOut':
+      // Main process, not the page: `session.clearStorageData` is a
+      // main-process API, and the page cannot delete the cookies that keep it
+      // logged in. That is precisely why sign-out used to leave them behind.
+      signOut()
       return
   }
 
