@@ -341,6 +341,7 @@ mod tests {
             album: album.into(),
             favorite: false,
             in_library: false,
+            library_id: None,
             date_added: added.into(),
             year: year.into(),
             duration_ms: 0,

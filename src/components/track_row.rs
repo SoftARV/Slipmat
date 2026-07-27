@@ -397,9 +397,11 @@ impl RelmListItem for LibraryItem {
             Entry::Song(track) if self.playable() => {
                 track.catalog_id.clone().map(|catalog_id| RowFacts {
                     catalog_id,
-                    // A library track's own id is the `i.…` one; a catalog
-                    // track's is not a library id at all, so it is not offered.
-                    library_id: track.in_library.then(|| track.id.0.clone()),
+                    // Never inferred from `id`: a catalog row can be in the
+                    // library too, and there `id` is the catalog id — handing
+                    // that to the removal endpoint is a well-formed request
+                    // that deletes nothing.
+                    library_id: track.library_id.clone(),
                     in_library: track.in_library,
                     favorite: track.favorite,
                 })
@@ -479,6 +481,7 @@ mod tests {
             catalog_id: Some("1".into()),
             favorite: false,
             in_library: false,
+            library_id: None,
             date_added: String::new(),
             year: String::new(),
             title: "Title".into(),

@@ -30,6 +30,14 @@ pub struct Track {
     /// Already saved to the library, so "Add to Library" is not offered for it.
     /// Set by the client method that fetched it, never guessed.
     pub in_library: bool,
+    /// The `i.…` id this track has **inside the library**, when it has one.
+    ///
+    /// Separate from `id` because a catalog row can be in the library too, and
+    /// there `id` is the catalog id — handing that to the removal endpoint
+    /// would be a well-formed request that deletes nothing. Populated from the
+    /// `library` relationship when a request asked for it, or from the
+    /// resource's own id when it was read out of `/me/library`.
+    pub library_id: Option<String>,
     /// The resource id. For library items this is a library id (`i.AbCd123`),
     /// which is **not** playable.
     pub id: TrackId,
@@ -172,6 +180,46 @@ pub(crate) struct Response<T> {
 pub(crate) struct Resource<A> {
     pub id: String,
     pub attributes: Option<A>,
+    /// Only populated when the request asked for `include=library`, and only
+    /// on endpoints that honour it — catalog search does **not**, though album
+    /// and playlist track relationships do.
+    #[serde(default)]
+    pub relationships: Option<ResourceRelationships>,
+}
+
+/// The one relationship we read off a catalog resource: whether it is in the
+/// user's library. A non-empty `data` means yes.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ResourceRelationships {
+    pub library: Option<RelationshipData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct RelationshipData {
+    #[serde(default)]
+    pub data: Vec<RelationshipRef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct RelationshipRef {
+    pub id: String,
+}
+
+impl<A> Resource<A> {
+    /// Whether Apple said this is in the library.
+    ///
+    /// `None` when the question was not asked — which is different from "no",
+    /// and is why this is an `Option` rather than a bool defaulting to false.
+    pub fn library_membership(&self) -> Option<bool> {
+        let library = self.relationships.as_ref()?.library.as_ref()?;
+        Some(!library.data.is_empty())
+    }
+
+    /// The library id this catalog resource maps to, if it is in the library.
+    pub fn library_id(&self) -> Option<String> {
+        let library = self.relationships.as_ref()?.library.as_ref()?;
+        library.data.first().map(|r| r.id.clone())
+    }
 }
 
 /// An album with its `include=tracks` relationship attached.
@@ -187,6 +235,7 @@ impl AlbumResource {
         Resource {
             id: self.id,
             attributes: self.attributes,
+            relationships: None,
         }
     }
 }
@@ -209,6 +258,7 @@ impl ArtistResource {
         Resource {
             id: self.id,
             attributes: self.attributes,
+            relationships: None,
         }
     }
 }
@@ -245,6 +295,7 @@ impl From<LibraryArtistResource> for Artist {
             // with. The catalog twin's id would 404 there.
             id: res.id,
             attributes: res.attributes,
+            relationships: None,
         });
         artist.library = true;
 
@@ -441,6 +492,12 @@ pub(crate) struct ArtworkAttributes {
 
 impl From<Resource<SongAttributes>> for Track {
     fn from(res: Resource<SongAttributes>) -> Self {
+        // Read before `attributes` is moved out below. When the request asked
+        // for `include=library`, Apple answers it here — so a catalog row can
+        // know it is already saved without a second call. `None` means the
+        // question was not asked, which is not the same as "no".
+        let membership = res.library_membership();
+        let library_id = res.library_id();
         let attrs = res.attributes.unwrap_or(SongAttributes {
             name: String::new(),
             date_added: String::new(),
@@ -465,8 +522,8 @@ impl From<Resource<SongAttributes>> for Track {
             id: TrackId(res.id),
             date_added: attrs.date_added,
             favorite: attrs.in_favorites,
-            // Catalog unless a library method says otherwise, as for Album.
-            in_library: false,
+            in_library: membership.unwrap_or(false),
+            library_id,
             year: attrs.release_date.chars().take(4).collect(),
             title: attrs.name,
             artist: attrs.artist_name,
@@ -626,6 +683,7 @@ mod tests {
                 catalog: Some(Response {
                     data: vec![Resource {
                         id: "1234".into(),
+                        relationships: None,
                         attributes: Some(ArtistAttributes {
                             name: "Aitana".into(),
                             artwork: Some(ArtworkAttributes {
@@ -670,6 +728,7 @@ mod tests {
         // header can just ask whether they are empty.
         let playlist = Playlist::from(Resource {
             id: "p.abc".into(),
+            relationships: None,
             attributes: Some(PlaylistAttributes {
                 name: "Late night".into(),
                 curator_name: String::new(),
@@ -686,9 +745,50 @@ mod tests {
     }
 
     #[test]
+    fn membership_is_read_from_the_relationship_not_guessed() {
+        // `include=library` on a catalog song is how a search result learns it
+        // is already saved. The library id must come from the relationship,
+        // never from the resource's own id — that one is a catalog id, and the
+        // removal endpoint would accept it and delete nothing.
+        let json = r#"{
+            "id": "282559791",
+            "attributes": {"name": "Avril 14th", "artistName": "Aphex Twin"},
+            "relationships": {"library": {"data": [{"id": "i.RBrxxaLS1BA3Jv5"}]}}
+        }"#;
+        let track = Track::from(serde_json::from_str::<Resource<SongAttributes>>(json).unwrap());
+        assert!(track.in_library);
+        assert_eq!(track.library_id.as_deref(), Some("i.RBrxxaLS1BA3Jv5"));
+        assert_eq!(track.id.0, "282559791", "the catalog id stays the id");
+    }
+
+    #[test]
+    fn an_empty_relationship_means_not_in_the_library() {
+        let json = r#"{"id": "1", "attributes": {"name": "x"},
+                       "relationships": {"library": {"data": []}}}"#;
+        let track = Track::from(serde_json::from_str::<Resource<SongAttributes>>(json).unwrap());
+        assert!(!track.in_library);
+        assert_eq!(track.library_id, None);
+    }
+
+    #[test]
+    fn no_relationship_at_all_is_not_a_no() {
+        // Catalog search omits it entirely — measured — so its absence must
+        // read as "not asked", not as a positive "no".
+        let track = Track::from(
+            serde_json::from_str::<Resource<SongAttributes>>(
+                r#"{"id": "1", "attributes": {"name": "x"}}"#,
+            )
+            .unwrap(),
+        );
+        assert!(!track.in_library);
+        assert_eq!(track.library_id, None);
+    }
+
+    #[test]
     fn an_editorial_playlist_keeps_its_curator_and_blurb() {
         let playlist = Playlist::from(Resource {
             id: "pl.123".into(),
+            relationships: None,
             attributes: Some(PlaylistAttributes {
                 name: "Today's Hits".into(),
                 curator_name: "Apple Music".into(),

@@ -13,6 +13,8 @@
 
 use anyhow::{Context, Result};
 use reqwest::{Client as HttpClient, StatusCode};
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 use super::types::{
@@ -215,6 +217,9 @@ impl Client {
             .await?;
         for song in &mut songs {
             song.in_library = true;
+            // Its own id is the library id, so removal has what it needs
+            // without a second request.
+            song.library_id = Some(song.id.0.clone());
         }
 
         // Kept: this is how the `dateAdded` question got settled, and it is
@@ -556,12 +561,35 @@ impl Client {
         // results -> songs -> data, and `songs` is absent (not empty) when
         // nothing matched.
         let parsed: SearchResponse = res.json().await.context("decoding search results")?;
+        let mut songs: Vec<Track> = parsed
+            .results
+            .songs
+            .map(|s| s.data.into_iter().map(Track::from).collect())
+            .unwrap_or_default();
+
+        // Ask, in one extra request, which of these are already saved — so the
+        // row menu can offer "Remove from Library" instead of an "Add" that
+        // would do nothing.
+        let ids: Vec<String> = songs.iter().filter_map(|t| t.catalog_id.clone()).collect();
+        let members = self.library_membership(&ids).await;
+        if !members.is_empty() {
+            for song in &mut songs {
+                if let Some(catalog_id) = song.catalog_id.as_deref()
+                    && let Some(library_id) = members.get(catalog_id)
+                {
+                    song.in_library = true;
+                    song.library_id = Some(library_id.clone());
+                }
+            }
+        }
+        tracing::debug!(
+            songs = songs.len(),
+            in_library = members.len(),
+            "search membership"
+        );
+
         Ok(SearchResults {
-            songs: parsed
-                .results
-                .songs
-                .map(|s| s.data.into_iter().map(Track::from).collect())
-                .unwrap_or_default(),
+            songs,
             albums: parsed
                 .results
                 .albums
@@ -583,6 +611,50 @@ impl Client {
         })
     }
 
+    /// Which of these catalog songs are already in the library, and under what
+    /// library id.
+    ///
+    /// A second request, because **catalog search does not honour
+    /// `include=library`** — measured: the relationship comes back absent on
+    /// every result, while the same include on album and playlist track
+    /// relationships works. So those get membership free and search pays for it.
+    ///
+    /// Best-effort by design. This decides whether a menu item is offered, and
+    /// a search that failed because the *decoration* failed would be a bad
+    /// trade — so every error yields an empty map and the rows simply behave as
+    /// they did before.
+    async fn library_membership(&self, ids: &[String]) -> HashMap<String, String> {
+        let mut found = HashMap::new();
+        if ids.is_empty() {
+            return found;
+        }
+        // Well under the limit Apple accepts, and a search page is 25 anyway.
+        for chunk in ids.chunks(100) {
+            let joined = chunk.join(",");
+            let res = self
+                .get(&format!(
+                    "/catalog/{}/songs?ids={joined}&include=library",
+                    self.storefront
+                ))
+                .send()
+                .await;
+            let Ok(res) = res else { continue };
+            if !res.status().is_success() {
+                tracing::debug!(status = %res.status(), "library membership lookup failed");
+                continue;
+            }
+            let Ok(parsed) = res.json::<Response<Resource<SongAttributes>>>().await else {
+                continue;
+            };
+            for resource in parsed.data {
+                if let Some(library_id) = resource.library_id() {
+                    found.insert(resource.id, library_id);
+                }
+            }
+        }
+        found
+    }
+
     /// A catalog playlist and its tracks.
     ///
     /// The tracks come from the relationship endpoint rather than
@@ -597,7 +669,9 @@ impl Client {
             .all_pages::<Resource<SongAttributes>, Track>(
                 &format!("/catalog/{}", self.storefront),
                 &format!("playlists/{id}/tracks"),
-                "",
+                // Free membership: the tracks relationship honours it, so every
+                // row knows whether it is already saved without a second call.
+                "&include=library",
                 PLAYLIST_MAX,
             )
             .await?;
@@ -611,7 +685,7 @@ impl Client {
     pub async fn album(&self, id: &str) -> Result<(Album, Vec<Track>)> {
         let resource = self
             .album_resource(&format!(
-                "/catalog/{}/albums/{id}?include=tracks",
+                "/catalog/{}/albums/{id}?include=tracks,library",
                 self.storefront
             ))
             .await?;
@@ -648,6 +722,7 @@ impl Client {
         let mut tracks = album_tracks(&resource);
         for track in &mut tracks {
             track.in_library = true;
+            track.library_id = Some(track.id.0.clone());
         }
         let mut album = Album::from(resource.into_album());
         album.library = true;
