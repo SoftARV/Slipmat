@@ -99,6 +99,13 @@ impl Cover {
         stack.add_named(&image, Some("image"));
         stack.add_named(&avatar, Some("avatar"));
         stack.add_named(&sleeve, Some("sleeve"));
+        // Said out loud rather than left to add-order. A `GtkStack` shows
+        // whichever child went in first, and relying on that is how the bar
+        // launched with a hole where its sleeve should be — the first page
+        // there was an image with no file and no icon, which draws nothing.
+        // Every caller sets a face before this is seen, so "image" only has to
+        // be a sane default; it must not be an accidental one.
+        stack.set_visible_child_name("image");
 
         Self {
             stack,

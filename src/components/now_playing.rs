@@ -265,6 +265,18 @@ impl SimpleComponent for NowPlaying {
                     add_css_class: "np-cover",
                     add_css_class: "np-cover-empty",
                 },
+
+                // **After the children**, or naming one before it is added
+                // warns and does nothing.
+                //
+                // A `GtkStack` shows whichever child was added first, and that
+                // is the cover — an image with no file and no icon, which
+                // draws nothing at all. So the bar launched with a hole where
+                // the sleeve goes, and `post_view` could not correct it: it
+                // only switches pages when the artwork *changes*, and at
+                // startup there is nothing to change from. The empty state is
+                // the state the app opens in, so it is the one to open on.
+                set_visible_child_name: "sleeve",
             },
 
             // Deliberately **not** hexpand, and width-limited.
