@@ -107,6 +107,12 @@ impl Accent {
 thread_local! {
     static BASE: gtk::CssProvider = gtk::CssProvider::new();
     static TINT: gtk::CssProvider = gtk::CssProvider::new();
+    /// The drawer's backdrop. A third provider rather than a second rule in
+    /// `TINT`, for the reason the other two are separate: `TINT` is rewritten
+    /// on every frame of the cross-fade, and re-declaring a `url()` twenty
+    /// times a track is asking GTK to reconsider an image that has not
+    /// changed. This one is replaced once, when the cover does.
+    static BACKDROP: gtk::CssProvider = gtk::CssProvider::new();
 }
 
 /// Install the providers. Called once, before the window is shown.
@@ -125,6 +131,13 @@ pub fn init(accent: Accent) {
     TINT.with(|p| {
         // Above the base: the bar's tint must win over the accent rules, and
         // it is the more specific of the two.
+        gtk::style_context_add_provider_for_display(
+            &display,
+            p,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+        )
+    });
+    BACKDROP.with(|p| {
         gtk::style_context_add_provider_for_display(
             &display,
             p,
@@ -194,6 +207,22 @@ pub fn set_accent(accent: Accent) {
              );
              box-shadow: inset 0 0 0 1px alpha(currentColor, 0.12);
              color: alpha(currentColor, 0.45);
+         }}
+
+         /* The drawer's backdrop drifts, slowly enough that you never catch
+            it moving — you only notice that it is not a still image. Kept
+            here, in the provider parsed once, rather than beside the `url()`
+            that changes per track: a restarted animation on every track
+            change would be a jump, which is the opposite of the point.
+
+            Only the second layer moves. The first is the scrim, and a scrim
+            that slid would stop being one. */
+         @keyframes np-drift {{
+             from {{ background-position: center, 34% 38%; }}
+             to   {{ background-position: center, 66% 62%; }}
+         }}
+         .np-sheet {{
+             animation: np-drift 54s ease-in-out infinite alternate;
          }}
 
          /* Two grey bars where the title and artist go. Static, not pulsing:
@@ -280,6 +309,38 @@ pub fn set_bar_tint(rgb: Option<(u8, u8, u8)>) {
         }
     });
     FADE.with(|f| *f.borrow_mut() = Some(id));
+}
+
+/// Put a cover behind the expanded player, or take it away.
+///
+/// Two layers, and the order matters: the artwork underneath, a scrim of the
+/// window's own background over it. The scrim is why this is legible — every
+/// label and icon in the drawer has a colour chosen for contrast against the
+/// theme, exactly as in the bar, and a photograph behind them would be
+/// guessing. Taking the scrim from `@window_bg_color` rather than from black
+/// is what makes it work in the light theme too.
+///
+/// The image is sized past `cover` on purpose. `artwork::backdrop` hands over
+/// forty-eight pixels, so it is being stretched either way; the extra gives
+/// the drift somewhere to go without ever exposing an edge.
+pub fn set_sheet_backdrop(path: Option<&std::path::Path>) {
+    let css = match path {
+        Some(path) => format!(
+            ".np-sheet {{
+                 background-image:
+                     linear-gradient(
+                         alpha(@window_bg_color, 0.86),
+                         alpha(@window_bg_color, 0.78)
+                     ),
+                     url(\"file://{}\");
+                 background-size: cover, 150%;
+                 background-repeat: no-repeat, no-repeat;
+             }}",
+            path.display()
+        ),
+        None => ".np-sheet { background-image: none; }".into(),
+    };
+    BACKDROP.with(|p| p.load_from_string(&css));
 }
 
 /// Ease in and out, so the fade does not start and stop abruptly.

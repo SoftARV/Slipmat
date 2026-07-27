@@ -551,6 +551,9 @@ pub enum CommandMsg {
         /// here rather than in its own message because the two are read from
         /// one decode and must be applied together.
         tint: Option<(u8, u8, u8)>,
+        /// A tiny copy of the same cover, for the drawer's backdrop. Same
+        /// reason as `tint`: one decode, applied together or not at all.
+        backdrop: Option<PathBuf>,
     },
     /// An album page's contents. Tagged with the page id: by the time this
     /// lands the user may have gone back, and filling a page that is no longer
@@ -2034,6 +2037,8 @@ impl AppModel {
                 self.last_item = None;
                 crate::session::clear();
                 crate::style::set_bar_tint(None);
+                crate::style::set_sheet_backdrop(None);
+                crate::style::set_sheet_backdrop(None);
             }
             AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
                 Some(index) => {
@@ -2477,7 +2482,11 @@ impl AppModel {
                 tracing::warn!(%err, "library load failed");
                 self.toast(&format!("Couldn't load your library: {err}"));
             }
-            CommandMsg::Artwork { path, tint } => {
+            CommandMsg::Artwork {
+                path,
+                tint,
+                backdrop,
+            } => {
                 if path.is_none() {
                     // Cosmetic. The bar falls back to a generic icon.
                     tracing::debug!("artwork unavailable");
@@ -2487,6 +2496,7 @@ impl AppModel {
                 // the GTK thread alongside the fetch, so this is only the CSS
                 // swap.
                 crate::style::set_bar_tint(tint);
+                crate::style::set_sheet_backdrop(backdrop.as_deref());
                 self.now_playing
                     .emit(NowPlayingInput::ArtworkReady(path.clone()));
                 self.player_view.emit(PlayerViewInput::Artwork(path));
@@ -2607,6 +2617,7 @@ impl AppModel {
         self.pending_start = None;
         crate::session::clear();
         crate::style::set_bar_tint(None);
+        crate::style::set_sheet_backdrop(None);
         self.push_snapshot();
     }
 

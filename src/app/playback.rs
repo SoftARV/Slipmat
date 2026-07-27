@@ -281,7 +281,12 @@ impl AppModel {
                     // the same message: the cover and the colour taken from it
                     // must never be applied a frame apart.
                     let tint = path.as_deref().and_then(artwork::tint);
-                    CommandMsg::Artwork { path, tint }
+                    let backdrop = path.as_deref().and_then(artwork::backdrop);
+                    CommandMsg::Artwork {
+                        path,
+                        tint,
+                        backdrop,
+                    }
                 });
                 true
             }

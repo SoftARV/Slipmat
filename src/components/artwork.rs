@@ -75,6 +75,34 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// How wide the drawer's backdrop image is, in pixels. Deliberately tiny.
+const BACKDROP_PX: i32 = 48;
+
+/// Write a deliberately tiny copy of a cover beside it, and say where.
+///
+/// This is the drawer's backdrop, and it is blown up to fill the whole sheet.
+/// **That upscale is the blur.** GTK interpolates when it scales a texture, so
+/// forty-eight pixels stretched across nine hundred arrives soft on its own —
+/// there is no blur pass to write, no shader, and nothing per-frame to pay for.
+/// A real Gaussian would mean a CPU convolution on every track change for a
+/// result nobody could tell apart once it is behind a scrim.
+///
+/// Cached like everything else here: the file is written once per cover and
+/// found on disk from then on, including across restarts.
+///
+/// Off the GTK thread (rule 8), on the same trip as [`tint`] — the cover, its
+/// colour and its backdrop must never be applied a frame apart.
+pub fn backdrop(path: &Path) -> Option<PathBuf> {
+    let out = path.with_extension("backdrop.png");
+    if out.exists() {
+        return Some(out);
+    }
+    let pixbuf =
+        gdk_pixbuf::Pixbuf::from_file_at_scale(path, BACKDROP_PX, BACKDROP_PX, false).ok()?;
+    pixbuf.savev(&out, "png", &[]).ok()?;
+    Some(out)
+}
+
 /// A colour to tint the Now Playing bar with, taken from a cover.
 ///
 /// Runs off the GTK thread (rule 8): decoding even a small JPEG is
