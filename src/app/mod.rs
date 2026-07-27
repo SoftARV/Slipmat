@@ -2229,7 +2229,17 @@ impl AppModel {
             // playback, so it is logged rather than toasted.
             CommandMsg::BackgroundPortal(result) => match result {
                 Ok(()) => tracing::info!("background portal: listed"),
-                Err(err) => tracing::warn!(%err, "background portal refused"),
+                // Almost always "no AppId detected": the portal identifies a
+                // non-sandboxed app from its systemd scope, which only exists
+                // when it was launched from its .desktop entry. A binary run
+                // straight from a terminal cannot be listed, and that is a
+                // property of the session rather than a fault here — playback
+                // is unaffected either way.
+                Err(err) => tracing::warn!(
+                    %err,
+                    "background portal refused; Quick Settings will not list Tonearm \
+                     (expected when not launched from its .desktop entry)"
+                ),
             },
             CommandMsg::LibraryWritten {
                 catalog_id,

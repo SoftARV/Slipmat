@@ -66,12 +66,17 @@ impl AppModel {
     /// function.
     fn request_background(&self, sender: &ComponentSender<Self>) {
         sender.oneshot_command(async {
+            // `auto_start` is deliberately **not set**, rather than set to
+            // false. Sending the option at all makes the portal attempt
+            // `EnableAutostart`, which fails outright for an app it cannot
+            // identify — measured: "EnableAutostart call failed: Autostart not
+            // supported (no AppId detected)", and that failure sank the whole
+            // request. Omitted, the portal defaults to no autostart, which is
+            // what we wanted: Tonearm needs a network and a live session, and
+            // an app that launches itself to play nothing is the kind of
+            // background process people resent.
             let result = ashpd::desktop::background::Background::request()
                 .reason("Tonearm keeps playing while its window is closed")
-                // Never start on login. Tonearm needs a network and a live
-                // session, and an app that launches itself to play nothing is
-                // exactly the kind of background process people resent.
-                .auto_start(false)
                 .send()
                 .await;
             CommandMsg::BackgroundPortal(match result {
