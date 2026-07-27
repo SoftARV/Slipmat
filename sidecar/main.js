@@ -43,6 +43,21 @@ const readline = require('node:readline')
 // nothing and still works if the flag is passed somewhere Electron ignores it.
 const DEBUG =
   process.argv.includes('--debug') || process.env.TONEARM_SHOW_SIDECAR === '1'
+
+/// Per-command logging. **Off by default, and that is a safety property rather
+/// than tidiness.**
+///
+/// `log()` writes to stderr, which under a .desktop launch is journald, which
+/// writes to disk synchronously. One line per command is fine at the handful
+/// per minute a person generates — and is the single biggest amplifier when
+/// something loops. A two-way binding on the volume button once emitted 5,721
+/// commands and the machine had to be power-cycled; those disk writes are a
+/// large part of why an app bug became a system one (#37).
+///
+/// `TONEARM_SIDECAR_TRACE=1` brings it back for the evening you need it. The
+/// protocol events it duplicates — `cmd-recv`, `cmd-done`, `cmd-queued` — are
+/// unaffected, and are what CLAUDE.md's "diagnose by layer" actually reads.
+const TRACE = process.env.TONEARM_SIDECAR_TRACE === '1'
 const APPLE_MUSIC = 'https://music.apple.com/'
 /// Where the login lives. Named once because sign-out has to clear the very
 /// partition the window was created with — two spellings of this string is a
@@ -469,7 +484,9 @@ function dispatch(msg) {
   // `visible` is the diagnostic that matters when a command produces no
   // sound and no error: a window Chromium considers hidden has a frozen
   // renderer that will never run the handler.
-  log('dispatch', msg.cmd, 'visible=', win.isVisible(), 'crashed=', win.webContents.isCrashed())
+  if (TRACE) {
+    log('dispatch', msg.cmd, 'visible=', win.isVisible(), 'crashed=', win.webContents.isCrashed())
+  }
   win.webContents.send('tonearm:command', msg)
 }
 
