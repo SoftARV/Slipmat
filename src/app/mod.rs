@@ -2197,21 +2197,29 @@ impl AppModel {
                             self.catalog_paged + paged
                         };
 
-                        if first_page {
-                            self.catalog = rows;
-                        } else {
-                            self.catalog.extend(rows);
-                        }
-
                         tracing::info!(
-                            rows = self.catalog.len(),
+                            rows = self.catalog.len() + rows.len(),
                             paged = self.catalog_paged,
                             filter = ?self.catalog_filter,
                             exhausted = self.catalog_exhausted,
                             "catalog results"
                         );
-                        self.built_rows = None;
-                        self.rebuild_rows();
+
+                        if first_page {
+                            // New answer: the rows on screen are for a
+                            // different question, so they all go.
+                            self.catalog = rows;
+                            self.built_rows = None;
+                            self.rebuild_rows();
+                        } else {
+                            // A later page only ever *adds*. Rebuilding would
+                            // discard every widget and with them the scroll
+                            // position — putting the reader back at the top of
+                            // the list they had just scrolled to the bottom of
+                            // in order to ask for this page.
+                            self.append_rows(&rows);
+                            self.catalog.extend(rows);
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(%err, "catalog search failed");

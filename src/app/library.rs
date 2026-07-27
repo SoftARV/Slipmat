@@ -171,11 +171,48 @@ impl AppModel {
         });
     }
 
+    /// Add rows to the end, leaving the ones already there alone.
+    ///
+    /// Paging in more catalog results is the one change to this list that is
+    /// purely additive: every existing row still stands and still means the
+    /// same thing. `rebuild_rows` would clear the view and build it again,
+    /// which discards the scroll position — so scrolling to the bottom to
+    /// fetch more put the reader straight back at the top of a list they had
+    /// just worked their way down. The rebuild is right when the *contents*
+    /// change; it is wrong when they only grow.
+    ///
+    /// `built_rows` is deliberately left alone. It describes the query the
+    /// widgets were built for, and appending does not change that — clearing
+    /// it here would make the next section switch rebuild for no reason, at
+    /// the ~2.5ms-per-cover cost that fingerprint exists to avoid.
+    pub(super) fn append_rows(&mut self, new: &[Entry]) {
+        if new.is_empty() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("rows-append", started);
+        tracing::debug!(added = new.len(), "library: appending rows");
+
+        let registry = self.library_icons.clone();
+        // Already current — the new rows read the marker at bind time, exactly
+        // as the ones above them did.
+        let current = self.current_track.clone();
+        let dead = self.dead_rows.clone();
+        self.library.extend_from_iter(
+            new.iter().cloned().map(|entry| {
+                LibraryItem::new(entry, registry.clone(), current.clone(), dead.clone())
+            }),
+        );
+    }
+
     /// Rebuild the visible rows from `all_tracks` + query.
     ///
     /// A full rebuild is honest here, unlike Pitwall's in-place reconcile: the
     /// filter can change membership arbitrarily on every keystroke, and these
     /// rows hold no state worth preserving (no popovers, no expanders).
+    ///
+    /// It does **reset the scroll**, though, so it is the wrong tool for a
+    /// change that only adds — see [`Self::append_rows`].
     pub(super) fn rebuild_rows(&mut self) {
         // Sort and direction as well as the query: all three change the order,
         // and the widgets already on screen may satisfy the new request.
