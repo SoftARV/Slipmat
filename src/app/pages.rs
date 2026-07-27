@@ -92,6 +92,15 @@ impl AppModel {
                         .map_err(|err| format!("{err:#}")),
                 }
             }),
+            PageKind::Playlist(_) => sender.oneshot_command(async move {
+                CommandMsg::PlaylistPage {
+                    page: id,
+                    result: client
+                        .playlist(&catalog_id)
+                        .await
+                        .map_err(|err| format!("{err:#}")),
+                }
+            }),
             PageKind::LibraryPlaylist(_) => sender.oneshot_command(async move {
                 CommandMsg::PlaylistPage {
                     page: id,

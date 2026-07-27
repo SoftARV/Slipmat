@@ -28,6 +28,7 @@ pub struct SearchResults {
     pub songs: Vec<Track>,
     pub albums: Vec<Album>,
     pub artists: Vec<Artist>,
+    pub playlists: Vec<Playlist>,
 }
 
 const API_BASE: &str = "https://api.music.apple.com/v1";
@@ -338,8 +339,18 @@ impl Client {
     }
 
     async fn library_playlist_details(&self, id: &str) -> Result<Playlist> {
+        let mut playlist = self
+            .playlist_details(&format!("/me/library/playlists/{id}"))
+            .await?;
+        playlist.library = true;
+        Ok(playlist)
+    }
+
+    /// One playlist resource, from either id space — the caller supplies the
+    /// path and owns the `library` flag, which is the rule everywhere else too.
+    async fn playlist_details(&self, path: &str) -> Result<Playlist> {
         let res = self
-            .get(&format!("/me/library/playlists/{id}"))
+            .get(path)
             .send()
             .await
             .map_err(Self::transport_error)
@@ -363,16 +374,37 @@ impl Client {
 
     /// Walk a `/me/library/{kind}` collection to its end, or to `max`.
     ///
-    /// Generic over Apple's wire shape `A` and our type `T` because songs,
-    /// albums and artists paginate identically — three copies of this loop
-    /// would drift, and the concurrency and short-page logic below is the
-    /// fiddly part worth having once.
-    /// `kind` is interpolated straight into `/me/library/{kind}`, so it can be
-    /// a collection (`songs`) or a relationship (`playlists/p.123/tracks`).
-    /// That is what gives playlist tracks real pagination rather than the 100
-    /// that `include=tracks` caps out at.
+    /// `kind` is interpolated straight into the path, so it can be a collection
+    /// (`songs`) or a relationship (`playlists/p.123/tracks`). That is what
+    /// gives playlist tracks real pagination rather than the 100 that
+    /// `include=tracks` caps out at.
     async fn all_library<R, T>(
         &self,
+        kind: &str,
+        extra_query: &'static str,
+        max: usize,
+    ) -> Result<Vec<T>>
+    where
+        R: serde::de::DeserializeOwned + Send + 'static,
+        T: From<R> + Send + 'static,
+    {
+        self.all_pages("/me/library", kind, extra_query, max).await
+    }
+
+    /// The paginator, over any collection that takes `limit` and `offset`.
+    ///
+    /// Generic over Apple's wire shape `R` and our type `T` because songs,
+    /// albums, artists and playlists paginate identically — four copies of this
+    /// loop would drift, and the concurrency and short-page logic below is the
+    /// fiddly part worth having once.
+    ///
+    /// `base` is the endpoint root: `/me/library` or `/catalog/{storefront}`.
+    /// It is a parameter rather than a constant because those are the two id
+    /// spaces (see CLAUDE.md) and a path from one 404s against the other — so
+    /// the caller, which knows which kind of id it holds, picks.
+    async fn all_pages<R, T>(
+        &self,
+        base: &str,
         kind: &str,
         extra_query: &'static str,
         max: usize,
@@ -395,10 +427,11 @@ impl Client {
                 // Cloned per task: `kind` may be a borrowed path built from an
                 // id, and the tasks outlive this loop iteration.
                 let kind = kind.to_owned();
+                let base = base.to_owned();
                 tasks.spawn(async move {
                     (
                         slot,
-                        client.library_page::<R, T>(&kind, extra_query, at).await,
+                        client.page::<R, T>(&base, &kind, extra_query, at).await,
                     )
                 });
             }
@@ -432,8 +465,9 @@ impl Client {
         Ok(all)
     }
 
-    async fn library_page<R, T>(
+    async fn page<R, T>(
         &self,
+        base: &str,
         kind: &str,
         extra_query: &str,
         offset: usize,
@@ -444,12 +478,12 @@ impl Client {
     {
         let res = self
             .get(&format!(
-                "/me/library/{kind}?limit={LIBRARY_PAGE}&offset={offset}{extra_query}"
+                "{base}/{kind}?limit={LIBRARY_PAGE}&offset={offset}{extra_query}"
             ))
             .send()
             .await
             .map_err(Self::transport_error)
-            .with_context(|| format!("requesting library {kind}"))?;
+            .with_context(|| format!("requesting {kind}"))?;
 
         // A **relationship** past its end 404s with "No related resources"
         // rather than returning an empty page, unlike a collection, which
@@ -474,7 +508,7 @@ impl Client {
         let parsed: Response<R> = res
             .json()
             .await
-            .with_context(|| format!("decoding library {kind}"))?;
+            .with_context(|| format!("decoding {kind}"))?;
         Ok(parsed.data.into_iter().map(T::from).collect())
     }
 
@@ -483,11 +517,24 @@ impl Client {
     /// token actually works before any playback is involved.
     /// `offset` walks further into the results. Apple caps `limit` at 25 per
     /// request for search, so anything past the first 25 needs paging.
-    pub async fn search(&self, term: &str, limit: u32, offset: usize) -> Result<SearchResults> {
+    ///
+    /// `types` is a comma-separated list of kinds — see `CatalogFilter::types`.
+    /// It is not merely a filter: **`offset` walks one cursor shared by every
+    /// kind named**, so paging is only coherent when a single kind is asked
+    /// for. A key is omitted entirely from the response when its kind matched
+    /// nothing, so the caller cannot tell "no results" from "not requested"
+    /// without knowing what it asked for.
+    pub async fn search(
+        &self,
+        term: &str,
+        types: &str,
+        limit: u32,
+        offset: usize,
+    ) -> Result<SearchResults> {
         let query = urlencode(term);
         let res = self
             .get(&format!(
-                "/catalog/{}/search?types=songs,albums,artists&limit={limit}&offset={offset}&term={query}",
+                "/catalog/{}/search?types={types}&limit={limit}&offset={offset}&term={query}",
                 self.storefront
             ))
             .send()
@@ -525,7 +572,36 @@ impl Client {
                 .artists
                 .map(|a| a.data.into_iter().map(Artist::from).collect())
                 .unwrap_or_default(),
+            // `library` stays false, which is what the parse site owes every
+            // Album/Artist/Playlist: these came from `/catalog`, so a
+            // `/me/library` id would 404 against them.
+            playlists: parsed
+                .results
+                .playlists
+                .map(|p| p.data.into_iter().map(Playlist::from).collect())
+                .unwrap_or_default(),
         })
+    }
+
+    /// A catalog playlist and its tracks.
+    ///
+    /// The tracks come from the relationship endpoint rather than
+    /// `include=tracks`, for the same reason library playlists do: `include`
+    /// caps at 100, and Apple's editorial playlists routinely run longer.
+    /// Showing the first 100 of 400 is a wrong answer that looks right.
+    pub async fn playlist(&self, id: &str) -> Result<(Playlist, Vec<Track>)> {
+        let playlist = self
+            .playlist_details(&format!("/catalog/{}/playlists/{id}", self.storefront))
+            .await?;
+        let tracks = self
+            .all_pages::<Resource<SongAttributes>, Track>(
+                &format!("/catalog/{}", self.storefront),
+                &format!("playlists/{id}/tracks"),
+                "",
+                PLAYLIST_MAX,
+            )
+            .await?;
+        Ok((playlist, tracks))
     }
 
     /// An album and its tracks, in one request.
@@ -691,6 +767,7 @@ struct SearchWire {
     songs: Option<Response<Resource<SongAttributes>>>,
     albums: Option<Response<Resource<AlbumAttributes>>>,
     artists: Option<Response<Resource<ArtistAttributes>>>,
+    playlists: Option<Response<Resource<PlaylistAttributes>>>,
 }
 
 /// Percent-encode a search term. The full `url` crate is a lot of dependency

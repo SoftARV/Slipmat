@@ -15,11 +15,81 @@
 
 use relm4::ComponentSender;
 
-use super::{AppModel, CATALOG_LIMIT, CommandMsg, LIBRARY_MAX, SearchScope, Tile};
+use super::{
+    AppModel, CATALOG_BROWSE_ROWS, CATALOG_LIMIT, CatalogFilter, CommandMsg, LIBRARY_MAX,
+    SearchScope, Tile,
+};
 use crate::components::grid_item::{ArtRegistry, GridItem};
 use crate::components::track_row::{Entry, LibraryItem, apply_row_state};
-use crate::music::client::Client;
+use crate::music::client::{Client, SearchResults};
 use crate::music::types::Track;
+
+/// Fold one page of catalog results into rows, and report how many of the
+/// **paging kind** came back.
+///
+/// That second number is the whole reason this is a function rather than a
+/// match at the call site. Apple advances one `offset` across every type named
+/// in `types=`, so exactly one kind can drive pagination — and which one
+/// depends on the filter. Counting the wrong list makes the next page start in
+/// the wrong place, silently.
+///
+/// Unfiltered, artists and albums are trimmed hard and put on top: they are the
+/// way into browsing, and burying them under 25 songs makes them invisible. The
+/// point is a door, not an exhaustive list — which is exactly what the filter
+/// is for when you want the list.
+pub(super) fn catalog_rows(
+    filter: CatalogFilter,
+    found: SearchResults,
+    first_page: bool,
+) -> (Vec<Entry>, usize) {
+    let SearchResults {
+        songs,
+        albums,
+        artists,
+        playlists,
+    } = found;
+
+    // Taken before anything is consumed below.
+    let (n_songs, n_albums, n_artists, n_playlists) =
+        (songs.len(), albums.len(), artists.len(), playlists.len());
+
+    match filter {
+        CatalogFilter::All if first_page => {
+            let rows = artists
+                .into_iter()
+                .take(CATALOG_BROWSE_ROWS)
+                .map(Entry::Artist)
+                .chain(
+                    playlists
+                        .into_iter()
+                        .take(CATALOG_BROWSE_ROWS)
+                        .map(Entry::Playlist),
+                )
+                .chain(
+                    albums
+                        .into_iter()
+                        .take(CATALOG_BROWSE_ROWS)
+                        .map(Entry::Album),
+                )
+                .chain(songs.into_iter().map(Entry::Song))
+                .collect();
+            (rows, n_songs)
+        }
+        // Later pages append songs only. Paging returns the browse kinds again,
+        // and adding them would duplicate rows already on screen.
+        CatalogFilter::All => (songs.into_iter().map(Entry::Song).collect(), n_songs),
+
+        // Filtered: one kind, so every row counts towards the next offset and
+        // "more" is finally a coherent request.
+        CatalogFilter::Songs => (songs.into_iter().map(Entry::Song).collect(), n_songs),
+        CatalogFilter::Albums => (albums.into_iter().map(Entry::Album).collect(), n_albums),
+        CatalogFilter::Artists => (artists.into_iter().map(Entry::Artist).collect(), n_artists),
+        CatalogFilter::Playlists => (
+            playlists.into_iter().map(Entry::Playlist).collect(),
+            n_playlists,
+        ),
+    }
+}
 
 /// Case-insensitive substring match across the fields a person would search by.
 ///
@@ -87,17 +157,52 @@ impl AppModel {
             return;
         }
         self.searching_catalog = true;
-        tracing::debug!(%term, "searching the catalog");
+        let types = self.catalog_filter.types();
+        tracing::debug!(%term, types, "searching the catalog");
         sender.oneshot_command(async move {
             CommandMsg::Catalog {
                 generation,
                 offset,
                 result: client
-                    .search(&term, CATALOG_LIMIT, offset)
+                    .search(&term, types, CATALOG_LIMIT, offset)
                     .await
                     .map_err(|err| format!("{err:#}")),
             }
         });
+    }
+
+    /// Add rows to the end, leaving the ones already there alone.
+    ///
+    /// Paging in more catalog results is the one change to this list that is
+    /// purely additive: every existing row still stands and still means the
+    /// same thing. `rebuild_rows` would clear the view and build it again,
+    /// which discards the scroll position — so scrolling to the bottom to
+    /// fetch more put the reader straight back at the top of a list they had
+    /// just worked their way down. The rebuild is right when the *contents*
+    /// change; it is wrong when they only grow.
+    ///
+    /// `built_rows` is deliberately left alone. It describes the query the
+    /// widgets were built for, and appending does not change that — clearing
+    /// it here would make the next section switch rebuild for no reason, at
+    /// the ~2.5ms-per-cover cost that fingerprint exists to avoid.
+    pub(super) fn append_rows(&mut self, new: &[Entry]) {
+        if new.is_empty() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        let _timed = crate::app::Timed("rows-append", started);
+        tracing::debug!(added = new.len(), "library: appending rows");
+
+        let registry = self.library_icons.clone();
+        // Already current — the new rows read the marker at bind time, exactly
+        // as the ones above them did.
+        let current = self.current_track.clone();
+        let dead = self.dead_rows.clone();
+        self.library.extend_from_iter(
+            new.iter().cloned().map(|entry| {
+                LibraryItem::new(entry, registry.clone(), current.clone(), dead.clone())
+            }),
+        );
     }
 
     /// Rebuild the visible rows from `all_tracks` + query.
@@ -105,6 +210,9 @@ impl AppModel {
     /// A full rebuild is honest here, unlike Pitwall's in-place reconcile: the
     /// filter can change membership arbitrarily on every keystroke, and these
     /// rows hold no state worth preserving (no popovers, no expanders).
+    ///
+    /// It does **reset the scroll**, though, so it is the wrong tool for a
+    /// change that only adds — see [`Self::append_rows`].
     pub(super) fn rebuild_rows(&mut self) {
         // Sort and direction as well as the query: all three change the order,
         // and the widgets already on screen may satisfy the new request.
@@ -441,6 +549,118 @@ mod tests {
             track_number: 1,
             artwork: None,
         }
+    }
+
+    /// A page of results with a distinct count per kind, so a test that reads
+    /// the wrong one fails loudly rather than coincidentally passing.
+    fn page(songs: usize, albums: usize, artists: usize, playlists: usize) -> SearchResults {
+        use crate::music::types::{Album, Artist, Playlist};
+        SearchResults {
+            songs: (0..songs)
+                .map(|i| track(&format!("s{i}"), Some("1")))
+                .collect(),
+            albums: (0..albums)
+                .map(|i| Album {
+                    id: format!("al{i}"),
+                    name: format!("al{i}"),
+                    artist: String::new(),
+                    artwork: None,
+                    year: String::new(),
+                    library: false,
+                    track_count: 1,
+                })
+                .collect(),
+            artists: (0..artists)
+                .map(|i| Artist {
+                    id: format!("ar{i}"),
+                    name: format!("ar{i}"),
+                    artwork: None,
+                    genres: String::new(),
+                    library: false,
+                })
+                .collect(),
+            playlists: (0..playlists)
+                .map(|i| Playlist {
+                    id: format!("pl{i}"),
+                    name: format!("pl{i}"),
+                    curator: String::new(),
+                    description: String::new(),
+                    artwork: None,
+                    library: false,
+                })
+                .collect(),
+        }
+    }
+
+    fn kinds(rows: &[Entry]) -> Vec<&'static str> {
+        rows.iter()
+            .map(|e| match e {
+                Entry::Song(_) => "song",
+                Entry::Album(_) => "album",
+                Entry::Artist(_) => "artist",
+                Entry::Playlist(_) => "playlist",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unfiltered_results_lead_with_trimmed_browse_rows() {
+        // Artists, playlists and albums are doors: a few of each on top, then
+        // the songs. Trimmed, or 25 songs bury them.
+        let (rows, paged) = catalog_rows(CatalogFilter::All, page(5, 9, 9, 9), true);
+        let k = kinds(&rows);
+        assert_eq!(
+            k.iter().filter(|k| **k == "artist").count(),
+            CATALOG_BROWSE_ROWS
+        );
+        assert_eq!(
+            k.iter().filter(|k| **k == "album").count(),
+            CATALOG_BROWSE_ROWS
+        );
+        assert_eq!(
+            k.iter().filter(|k| **k == "playlist").count(),
+            CATALOG_BROWSE_ROWS
+        );
+        assert_eq!(k.iter().filter(|k| **k == "song").count(), 5);
+        // Songs last, browse rows first — never interleaved.
+        assert_eq!(k[k.len() - 5..], ["song"; 5]);
+        // Songs are what pages when nothing is filtered.
+        assert_eq!(paged, 5);
+    }
+
+    #[test]
+    fn later_pages_carry_songs_only() {
+        // Apple returns the browse kinds again on every page. Appending them
+        // would duplicate rows already on screen.
+        let (rows, paged) = catalog_rows(CatalogFilter::All, page(25, 9, 9, 9), false);
+        assert_eq!(kinds(&rows), ["song"; 25]);
+        assert_eq!(paged, 25);
+    }
+
+    #[test]
+    fn a_filtered_page_counts_its_own_kind_not_songs() {
+        // The bug this function exists to prevent: paging by `songs.len()`
+        // while showing albums walks the offset with the wrong number, so the
+        // next page starts in the wrong place. Every count here is distinct.
+        for (filter, kind, expected) in [
+            (CatalogFilter::Songs, "song", 5),
+            (CatalogFilter::Albums, "album", 6),
+            (CatalogFilter::Artists, "artist", 7),
+            (CatalogFilter::Playlists, "playlist", 8),
+        ] {
+            let (rows, paged) = catalog_rows(filter, page(5, 6, 7, 8), true);
+            assert_eq!(kinds(&rows), vec![kind; expected], "{filter:?} rows");
+            assert_eq!(paged, expected, "{filter:?} offset");
+        }
+    }
+
+    #[test]
+    fn a_filtered_page_never_trims() {
+        // The trim exists so browse rows do not bury the songs. Asking *for*
+        // albums and getting three of them would be absurd.
+        let (rows, paged) = catalog_rows(CatalogFilter::Albums, page(0, 25, 0, 0), true);
+        assert_eq!(rows.len(), 25);
+        assert_eq!(paged, 25);
     }
 
     #[test]

@@ -18,14 +18,15 @@ use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
-use crate::music::types::{Album, Artist, Track, format_duration};
+use crate::music::types::{Album, Artist, Playlist, Track, format_duration};
 
-/// What a row stands for. Songs play; albums and artists open a page.
+/// What a row stands for. Songs play; everything else opens a page.
 #[derive(Debug, Clone)]
 pub enum Entry {
     Song(Track),
     Album(Album),
     Artist(Artist),
+    Playlist(Playlist),
 }
 
 impl Entry {
@@ -42,6 +43,7 @@ impl Entry {
             Entry::Song(t) => &t.title,
             Entry::Album(a) => &a.name,
             Entry::Artist(a) => &a.name,
+            Entry::Playlist(p) => &p.name,
         }
     }
 
@@ -62,6 +64,10 @@ impl Entry {
                 (true, true) => String::new(),
             },
             Entry::Artist(a) => a.genres.clone(),
+            // The curator is the useful line — Apple's editors made most of
+            // what a catalogue search returns. The blurb is prose and belongs
+            // on the page, not in a row.
+            Entry::Playlist(p) => p.curator.clone(),
         }
     }
 
@@ -70,6 +76,7 @@ impl Entry {
             Entry::Song(_) => "audio-x-generic-symbolic",
             Entry::Album(_) => "media-optical-symbolic",
             Entry::Artist(_) => "avatar-default-symbolic",
+            Entry::Playlist(_) => "view-list-symbolic",
         }
     }
 
