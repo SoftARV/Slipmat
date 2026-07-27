@@ -187,8 +187,19 @@ impl Cover {
     /// of decodes in the frame that fills it (#27).
     pub fn set_decoded(&self, cover: crate::components::artwork::Decoded) {
         self.empty.set(false);
-        self.image.set_paintable(Some(&cover.into_texture()));
-        self.stack.set_visible_child_name("image");
+        let texture = cover.into_texture();
+        // **Shape first, same as `set_file`.** A round cover is an `AdwAvatar`,
+        // not an image with a radius — see this module's header for why. Going
+        // straight to the image page put every artist who *has* a portrait in a
+        // square, while the ones without kept their circle, which is a strange
+        // enough result to look like two different bugs.
+        if self.round.get() {
+            self.avatar.set_custom_image(Some(&texture));
+            self.stack.set_visible_child_name("avatar");
+        } else {
+            self.image.set_paintable(Some(&texture));
+            self.stack.set_visible_child_name("image");
+        }
     }
 
     /// Show a picture that is now on disk.
