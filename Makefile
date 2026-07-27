@@ -17,7 +17,7 @@ SIDECAR  = $(DATADIR)/tonearm/sidecar
 
 ICON_SIZES = 16 32 48 64 128 256 512
 
-.PHONY: all build run test check sidecar sidecar-run gapless install install-sidecar \
+.PHONY: all build run test check sizes sidecar sidecar-run gapless install install-sidecar \
         dev-install uninstall clean
 
 all: build
@@ -32,10 +32,15 @@ test:
 	cargo test
 
 # The bar from CLAUDE.md. --all-targets so tests are linted too.
-check:
+check: sizes
 	cargo fmt --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test
+
+# A size budget, enforced as a ratchet. First, because it is instant and the
+# thing it catches is drift you would otherwise only notice months later.
+sizes:
+	@./scripts/check-sizes.sh
 
 # Fetch castLabs Electron. Two steps, both required: `npm install` brings down
 # the ~14 MB wrapper, and install.js fetches the ~200 MB Chromium itself.
