@@ -322,24 +322,46 @@ fn image_of(path: &std::path::Path) -> String {
     format!("url(\"file://{}\")", path.display())
 }
 
-/// Write the backdrop rule. A CSS *image* in, CSS out — so the caller can hand
-/// over one cover or a cross-fade of two and this does not care which.
-fn paint_backdrop(image: Option<String>) {
-    let css = match image {
-        Some(image) => format!(
-            ".np-sheet {{
-                 background-image:
-                     linear-gradient(
-                         alpha(@window_bg_color, 0.86),
-                         alpha(@window_bg_color, 0.78)
-                     ),
-                     {image};
-                 background-size: cover, 150%;
-                 background-repeat: no-repeat, no-repeat;
-             }}"
-        ),
-        None => ".np-sheet { background-image: none; }".into(),
+/// The backdrop rule. A CSS *image* in, CSS out — so the caller can hand over
+/// one cover or a cross-fade of two and this does not care which.
+///
+/// Both surfaces, in one rule each, because the two scrims are **not** the
+/// same number. The drawer is a large surface with big type on it and can take
+/// a heavy veil; the bar is a thin strip whose type is small, and at the
+/// drawer's weight the cover behind it was invisible — a flat grey, which is
+/// exactly what the tonal scrim it replaced would never have been. The bar's
+/// veil is set to leave about as much of the record showing as that wash did.
+///
+/// Pure, and separate from the provider it is loaded into, so a test can read
+/// what this actually emits. The first attempt at this feature changed the
+/// doc comment and the base rules and left the selector here saying `.np-sheet`
+/// alone — a mistake nothing could catch, because the CSS was valid and the
+/// drawer went on working.
+fn backdrop_css(image: Option<&str>) -> String {
+    let Some(image) = image else {
+        return ".np-bar, .np-sheet { background-image: none; }".into();
     };
+    let layers = |top: f32, bottom: f32| {
+        format!(
+            "background-image:
+                 linear-gradient(
+                     alpha(@window_bg_color, {top}),
+                     alpha(@window_bg_color, {bottom})
+                 ),
+                 {image};
+             background-repeat: no-repeat, no-repeat;"
+        )
+    };
+    format!(
+        ".np-bar {{ {} }}
+         .np-sheet {{ {} }}",
+        layers(0.78, 0.72),
+        layers(0.86, 0.78)
+    )
+}
+
+fn paint_backdrop(image: Option<String>) {
+    let css = backdrop_css(image.as_deref());
     BACKDROP.with(|p| p.load_from_string(&css));
 }
 
@@ -361,6 +383,36 @@ mod tests {
         // cross-fade percentage outside the two covers it is between.
         assert_eq!(ease(-0.5), 0.0);
         assert_eq!(ease(2.0), 1.0);
+    }
+
+    #[test]
+    fn both_surfaces_get_the_cover() {
+        let css = backdrop_css(Some("url(\"file:///tmp/x.png\")"));
+        assert!(css.contains(".np-bar"), "the bar was left out: {css}");
+        assert!(css.contains(".np-sheet"), "the drawer was left out: {css}");
+        assert_eq!(
+            css.matches("url(\"file:///tmp/x.png\")").count(),
+            2,
+            "each surface needs its own copy of the image"
+        );
+        // Clearing has to reach both too, or a stopped player keeps the last
+        // cover on whichever one was forgotten.
+        let cleared = backdrop_css(None);
+        assert!(cleared.contains(".np-bar") && cleared.contains(".np-sheet"));
+    }
+
+    #[test]
+    fn the_bar_shows_more_of_the_record_than_the_drawer() {
+        // Small type on a thin strip is the harder read, but a veil heavy
+        // enough for the drawer left the bar a flat grey — which is the bug
+        // this pair of numbers exists to prevent regressing.
+        let css = backdrop_css(Some("url(\"a\")"));
+        let bar = &css[css.find(".np-bar").unwrap()..css.find(".np-sheet").unwrap()];
+        assert!(bar.contains("0.78"), "bar scrim changed: {bar}");
+        assert!(
+            !bar.contains("0.86"),
+            "bar is using the drawer's veil: {bar}"
+        );
     }
 
     #[test]
