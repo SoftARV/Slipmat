@@ -2537,6 +2537,18 @@ impl AppModel {
         }
 
         if let Some(index) = row {
+            // Take focus out of the row before destroying it.
+            //
+            // This is issue #6's lead, and this list reproduces it: the removal
+            // is invoked from a popover parented to the row itself, so focus is
+            // inside the widget about to go. GTK moves focus on destruction and
+            // scrolls to wherever it lands — which, with nothing better, is the
+            // top. Restoring the adjustment afterwards was tried twice and
+            // clamped both times (#6), so this attacks the cause rather than
+            // the symptom.
+            if self.library.view.focus_child().is_some() {
+                self.library.view.set_focus_child(None::<&gtk::Widget>);
+            }
             self.library.remove(index as u32);
             // The widgets it owned are gone with it.
             self.library_icons.borrow_mut().remove(catalog_id);
