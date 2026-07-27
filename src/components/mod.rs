@@ -72,7 +72,16 @@ pub fn restore_scroll_after_edit(
         if adj.value() > 1.0 || was_at > adj.upper() - adj.page_size() {
             return;
         }
-        view.scroll_to(item, relm4::gtk::ListScrollFlags::NONE, None);
+        // **Deferred out of the signal handler.** Calling `scroll_to` from
+        // inside `value-changed` runs it in the middle of GTK's own adjustment
+        // update: the viewport moves but no re-layout is scheduled, so the list
+        // renders a single row and only fills in when something else — a hover,
+        // a resize — forces it. Landing the call on an idle instead lets GTK
+        // finish, then scroll properly.
+        let view = view.clone();
+        relm4::gtk::glib::idle_add_local_once(move || {
+            view.scroll_to(item, relm4::gtk::ListScrollFlags::NONE, None);
+        });
     });
     *handler.borrow_mut() = Some(id);
 
