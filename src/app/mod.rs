@@ -676,7 +676,7 @@ impl Component for AppModel {
 
                         #[wrap(Some)]
                         #[local_ref]
-                        set_sheet = player_sheet_content -> gtk::Box {},
+                        set_sheet = player_sheet_content -> adw::BreakpointBin {},
 
                         // Navigation on the left, and an OverlaySplitView
                         // rather than a NavigationSplitView because it can be
@@ -685,6 +685,7 @@ impl Component for AppModel {
                         // widget is for. The queue on the right is the same
                         // shape for the same reason.
                         #[wrap(Some)]
+                        #[name = "nav_split"]
                         set_content = &adw::OverlaySplitView {
                             set_min_sidebar_width: 200.0,
                             set_max_sidebar_width: 260.0,
@@ -1034,7 +1035,14 @@ impl Component for AppModel {
                                         #[wrap(Some)]
                                         #[name = "search_entry"]
                                         set_title_widget = &gtk::SearchEntry {
-                                            set_width_request: 320,
+                                            // No fixed width. 320px here was a
+                                            // floor under the whole window: a
+                                            // header widget cannot be allowed a
+                                            // minimum the window has to honour,
+                                            // or the app cannot be tiled to
+                                            // half a screen.
+                                            set_hexpand: true,
+                                            set_max_width_chars: 30,
                                             // Typing here before the tokens
                                             // arrive queries a catalog that
                                             // cannot answer.
@@ -1606,6 +1614,21 @@ impl Component for AppModel {
                         sender.input(AppMsg::LoadMoreCatalog);
                     }
                 });
+        }
+
+        // **The window has to be able to get narrow.** Without this the
+        // navigation sidebar holds 200px open at all times and the app cannot
+        // be tiled to half a screen — which is how it is actually used.
+        //
+        // `AdwOverlaySplitView` already knows how to be a summonable overlay
+        // rather than a fixed pane; it just has to be told when. This is the
+        // standard adaptive pattern and the app simply never had one.
+        if let Ok(condition) = adw::BreakpointCondition::parse("max-width: 700px") {
+            let breakpoint = adw::Breakpoint::new(condition);
+            breakpoint.add_setter(&widgets.nav_split, "collapsed", Some(&true.to_value()));
+            root.add_breakpoint(breakpoint);
+        } else {
+            tracing::warn!("unparsable window breakpoint; the sidebar will not collapse");
         }
 
         register_actions(&root, &sender);

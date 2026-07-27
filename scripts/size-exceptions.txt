@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      2650  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      2680  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole. Split once at 3085 and grew back;
                                           # ~200 lines of `init` wiring and session helpers could
@@ -18,6 +18,9 @@ src/app/mod.rs                      2650  # the model, the messages, `view!` and
                                           # 2580 -> 2650 for #18: the bottom sheet replacing the
                                           # queue sidebar in `view!`. The expanded player itself is
                                           # a component in `components/player_view.rs`.
+                                          # 2650 -> 2680: the window breakpoint that lets the
+                                          # navigation sidebar collapse, without which the app
+                                          # cannot be tiled to half a screen.
 src/components/now_playing.rs       1220  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
@@ -30,3 +33,9 @@ src/app/library.rs                   700  # four collections and the catalog sea
 src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
+src/components/player_view.rs        640  # the expanded player: one `view!` plus a transport built
+                                          # by hand because it *moves* between two layouts, and the
+                                          # refresh that `#[watch]` cannot do for widgets outside
+                                          # the macro's tree. Splitting the transport out would put
+                                          # its construction and its refresh in different files,
+                                          # which is the pair most likely to drift.

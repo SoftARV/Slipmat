@@ -17,17 +17,6 @@ use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
 
 use crate::music::types::format_duration;
 
-/// How long the slider must sit still before the seek is actually sent.
-///
-/// Dragging emits `change-value` continuously; seeking a DRM HLS stream on
-/// every one of those would force a re-buffer per pixel. Waiting for a short
-/// pause turns a drag into a single seek while still feeling immediate,
-/// because the elapsed label moves with the handle straight away.
-/// How much of the bar the track title and artist may claim, in logical pixels.
-/// Fixed rather than proportional so the seek scale does not jump about as
-/// tracks with different name lengths come and go.
-const METADATA_WIDTH: i32 = 240;
-
 /// How often the slider redraws itself between snapshots.
 ///
 /// The app pushes a snapshot twice a second, which moved the slider in visible
@@ -45,6 +34,12 @@ const BACKSTEP_TOLERANCE_MS: u64 = 1_500;
 /// 48px; this is what leaves a margin inside it.
 const EMPTY_COVER_PX: i32 = 22;
 
+/// How long the slider must sit still before the seek is actually sent.
+///
+/// Dragging emits `change-value` continuously; seeking a DRM HLS stream on
+/// every one of those would force a re-buffer per pixel. Waiting for a short
+/// pause turns a drag into a single seek while still feeling immediate,
+/// because the elapsed label moves with the handle straight away.
 const SCRUB_COMMIT_MS: u64 = 250;
 
 /// How close the sidecar's reported position must get to a seek target before
@@ -278,7 +273,11 @@ impl SimpleComponent for NowPlaying {
                 set_orientation: gtk::Orientation::Vertical,
                 set_valign: gtk::Align::Center,
                 set_hexpand: false,
-                set_width_request: METADATA_WIDTH,
+                // No minimum width. This carried a 240px floor, and a floor in
+                // the bar is a floor under the whole window — the app could not
+                // be tiled to half a screen. The labels ellipsize instead,
+                // which is what they were already set up to do.
+                set_width_request: -1,
                 set_spacing: 2,
 
                 // Two grey bars where the title and artist go.
@@ -362,7 +361,8 @@ impl SimpleComponent for NowPlaying {
                 #[name = "seek"]
                 gtk::Scale {
                     set_hexpand: true,
-                    set_width_request: 220,
+                    // Same reason: no floor. The scale is happy to be short.
+                    set_width_request: -1,
                     set_draw_value: false,
                     set_range: (0.0, 1.0),
                     set_increments: (0.01, 0.1),

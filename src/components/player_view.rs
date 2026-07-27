@@ -31,12 +31,166 @@ pub struct PlayerView {
     scrubbing: bool,
     /// Bumped per drag movement; only the newest commit is honoured.
     scrub_gen: u64,
+    /// Enough width to put the artwork beside the controls rather than above.
+    wide: bool,
+    /// Whether the queue is showing inside the drawer.
+    queue_shown: bool,
+    /// The transport, built once and moved between two slots.
+    transport: gtk::Box,
+    /// The hand-built transport's refreshable pieces. See [`Bits`].
+    bits: Option<Bits>,
+    /// The containers `relayout` moves things between. Only available once the
+    /// widgets exist, which is after `view_output!`.
+    slots: Option<Slots>,
 }
+
+/// The four places something can live, plus the queue itself.
+struct Slots {
+    queue: adw::ToolbarView,
+    queue_wide: gtk::Box,
+    queue_compact: gtk::Box,
+    transport_wide: gtk::Box,
+    transport_compact: gtk::Box,
+}
+
+/// Build the scrubber and the transport row into `into`.
+///
+/// By hand rather than in `view!` because this block **moves** between two
+/// containers depending on the layout, and the macro's tree is fixed. Building
+/// it once and reparenting is what keeps one set of buttons driving one player
+/// — the alternative is two transports that have to be kept in step.
+///
+/// The labels and the scale are handed back through `Bits` so `update` can
+/// refresh them; `#[watch]` cannot reach a widget the macro does not own.
+fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bits {
+    let elapsed = gtk::Label::builder()
+        .css_classes(["numeric", "caption"])
+        .build();
+    let remaining = gtk::Label::builder()
+        .css_classes(["numeric", "caption"])
+        .build();
+    let scale = gtk::Scale::builder()
+        .hexpand(true)
+        .draw_value(false)
+        .build();
+    {
+        let sender = sender.clone();
+        scale.connect_change_value(move |_, _, v| {
+            sender.input(PlayerViewInput::Scrub(v));
+            gtk::glib::Propagation::Proceed
+        });
+    }
+
+    let scrubber_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    scrubber_row.append(&elapsed);
+    scrubber_row.append(&scale);
+    scrubber_row.append(&remaining);
+    into.append(&scrubber_row);
+
+    let buttons = gtk::Box::builder()
+        .spacing(10)
+        .halign(gtk::Align::Center)
+        .build();
+
+    let button = |icon: &str, classes: &[&str]| {
+        gtk::Button::builder()
+            .icon_name(icon)
+            .css_classes(classes.iter().map(|c| c.to_string()).collect::<Vec<_>>())
+            .build()
+    };
+
+    let shuffle = gtk::ToggleButton::builder()
+        .icon_name("media-playlist-shuffle-symbolic")
+        .tooltip_text("Shuffle")
+        .css_classes(["flat", "circular"])
+        .build();
+    {
+        let sender = sender.clone();
+        shuffle.connect_toggled(move |b| sender.input(PlayerViewInput::Shuffle(b.is_active())));
+    }
+    let previous = button("media-skip-backward-symbolic", &["flat", "circular"]);
+    let play = button(
+        "media-playback-start-symbolic",
+        &["suggested-action", "circular"],
+    );
+    play.set_width_request(56);
+    play.set_height_request(56);
+    let next = button("media-skip-forward-symbolic", &["flat", "circular"]);
+    let repeat = button("media-playlist-repeat-symbolic", &["flat", "circular"]);
+    repeat.set_tooltip_text(Some("Repeat"));
+
+    for (widget, msg) in [
+        (&previous, PlayerViewInput::Previous),
+        (&play, PlayerViewInput::PlayPause),
+        (&next, PlayerViewInput::Next),
+        (&repeat, PlayerViewInput::RepeatCycle),
+    ] {
+        let sender = sender.clone();
+        widget.connect_clicked(move |_| sender.input(msg.clone()));
+    }
+
+    for w in [
+        shuffle.upcast_ref::<gtk::Widget>(),
+        previous.upcast_ref(),
+        play.upcast_ref(),
+        next.upcast_ref(),
+        repeat.upcast_ref(),
+    ] {
+        buttons.append(w);
+    }
+    into.append(&buttons);
+
+    Bits {
+        elapsed,
+        remaining,
+        scale,
+        shuffle,
+        play,
+        previous,
+        next,
+        repeat,
+    }
+}
+
+/// The pieces of the hand-built transport that `update` has to refresh.
+struct Bits {
+    elapsed: gtk::Label,
+    remaining: gtk::Label,
+    scale: gtk::Scale,
+    shuffle: gtk::ToggleButton,
+    play: gtk::Button,
+    previous: gtk::Button,
+    next: gtk::Button,
+    repeat: gtk::Button,
+}
+
+/// Move a widget to a new parent, if it is not already there.
+fn reparent(child: &impl IsA<gtk::Widget>, new_parent: &gtk::Box) {
+    let child = child.as_ref();
+    if child.parent().as_ref() == Some(new_parent.upcast_ref::<gtk::Widget>()) {
+        return;
+    }
+    if let Some(old) = child.parent() {
+        if let Some(old) = old.downcast_ref::<gtk::Box>() {
+            old.remove(child);
+        } else {
+            child.unparent();
+        }
+    }
+    new_parent.append(child);
+}
+
+/// Below this the artwork goes above the controls instead of beside them.
+const WIDE_PX: i32 = 860;
+/// Artwork sizes: generous when it is the subject, a thumbnail when the queue
+/// has taken the space and it is only there to say which record this is.
+const ART_LARGE: i32 = 260;
+const ART_THUMB: i32 = 72;
 
 /// How long the scrubber waits after the last movement before seeking.
 const SCRUB_COMMIT_MS: u64 = 250;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PlayerViewInput {
     Sync(Box<Snapshot>),
     Artwork(Option<std::path::PathBuf>),
@@ -49,6 +203,9 @@ pub enum PlayerViewInput {
     Next,
     Previous,
     Shuffle(bool),
+    /// The width breakpoint crossed.
+    Wide(bool),
+    SetQueueShown(bool),
     /// Cycle to the next repeat mode. No payload: the mirror says what is
     /// current, and this view must not have an opinion of its own (rule 3).
     RepeatCycle,
@@ -62,163 +219,149 @@ impl SimpleComponent for PlayerView {
 
     view! {
         #[name = "root"]
-        gtk::Box {
-            set_orientation: gtk::Orientation::Horizontal,
-            add_css_class: "np-sheet",
-            set_vexpand: true,
+        adw::BreakpointBin {
+            // Low enough that the drawer never becomes the window's floor.
+            // The whole point of the compact layout is that the app can be
+            // tiled to half a screen, and a minimum here would undo that.
+            set_size_request: (300, 260),
 
-            gtk::Box {
+            #[wrap(Some)]
+            set_child = &gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
-                set_halign: gtk::Align::Center,
-                set_valign: gtk::Align::Center,
-                set_hexpand: true,
-                set_spacing: 24,
-                set_margin_all: 32,
+                add_css_class: "np-sheet",
 
-                #[name = "art_slot"]
+                // The queue toggle sits above everything, because in the
+                // compact layout the queue takes the artwork's place and a
+                // toggle that travelled with it would be a door that locks
+                // behind you.
                 gtk::Box {
-                    set_halign: gtk::Align::Center,
-                },
-
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_halign: gtk::Align::Center,
-                    set_spacing: 4,
-
-                    gtk::Label {
-                        add_css_class: "title-1",
-                        set_ellipsize: gtk::pango::EllipsizeMode::End,
-                        set_max_width_chars: 34,
-                        set_use_markup: false,
-                        #[watch]
-                        set_label: &model.snap.title,
-                    },
-                    gtk::Label {
-                        add_css_class: "title-4",
-                        add_css_class: "dim-label",
-                        set_ellipsize: gtk::pango::EllipsizeMode::End,
-                        set_max_width_chars: 40,
-                        set_use_markup: false,
-                        #[watch]
-                        set_label: &model.subtitle(),
-                    },
-                },
-
-                gtk::Box {
-                    set_spacing: 10,
-                    set_halign: gtk::Align::Center,
-                    set_hexpand: true,
-
-                    gtk::Label {
-                        add_css_class: "numeric",
-                        add_css_class: "caption",
-                        #[watch]
-                        set_label: &format_duration(model.snap.position_ms),
-                    },
-
-                    #[name = "scrubber"]
-                    gtk::Scale {
-                        set_hexpand: true,
-                        set_draw_value: false,
-                        #[watch]
-                        set_range: (0.0, model.snap.duration_ms.max(1) as f64),
-                        #[watch]
-                        set_sensitive: model.snap.duration_ms > 0,
-                        connect_change_value[sender] => move |_, _, v| {
-                            sender.input(PlayerViewInput::Scrub(v));
-                            gtk::glib::Propagation::Proceed
-                        },
-                    },
-
-                    gtk::Label {
-                        add_css_class: "numeric",
-                        add_css_class: "caption",
-                        #[watch]
-                        set_label: &format_duration(
-                            model.snap.duration_ms.saturating_sub(model.snap.position_ms),
-                        ),
-                    },
-                },
-
-                gtk::Box {
-                    set_spacing: 12,
-                    set_halign: gtk::Align::Center,
+                    set_halign: gtk::Align::End,
+                    set_margin_top: 6,
+                    set_margin_end: 10,
 
                     gtk::ToggleButton {
-                        set_icon_name: "media-playlist-shuffle-symbolic",
-                        set_tooltip_text: Some("Shuffle"),
+                        set_icon_name: "view-list-symbolic",
+                        set_tooltip_text: Some("Queue"),
                         add_css_class: "flat",
                         add_css_class: "circular",
                         #[watch]
-                        set_active: model.snap.shuffle,
+                        set_active: model.queue_shown,
+                        // Not a flip: `#[watch] set_active` makes this a
+                        // two-way binding and GTK fires `toggled` for a
+                        // programmatic set exactly as for a click, so a flip
+                        // would answer its own echo.
                         connect_toggled[sender] => move |b| {
-                            sender.input(PlayerViewInput::Shuffle(b.is_active()));
-                        },
-                    },
-
-                    gtk::Button {
-                        set_icon_name: "media-skip-backward-symbolic",
-                        add_css_class: "flat",
-                        add_css_class: "circular",
-                        #[watch]
-                        set_sensitive: model.snap.has_previous,
-                        connect_clicked[sender] => move |_| {
-                            sender.input(PlayerViewInput::Previous);
-                        },
-                    },
-
-                    gtk::Button {
-                        add_css_class: "suggested-action",
-                        add_css_class: "circular",
-                        set_width_request: 56,
-                        set_height_request: 56,
-                        #[watch]
-                        set_icon_name: if model.snap.playing {
-                            "media-playback-pause-symbolic"
-                        } else {
-                            "media-playback-start-symbolic"
-                        },
-                        #[watch]
-                        set_sensitive: model.snap.active,
-                        connect_clicked[sender] => move |_| {
-                            sender.input(PlayerViewInput::PlayPause);
-                        },
-                    },
-
-                    gtk::Button {
-                        set_icon_name: "media-skip-forward-symbolic",
-                        add_css_class: "flat",
-                        add_css_class: "circular",
-                        #[watch]
-                        set_sensitive: model.snap.has_next,
-                        connect_clicked[sender] => move |_| {
-                            sender.input(PlayerViewInput::Next);
-                        },
-                    },
-
-                    gtk::Button {
-                        add_css_class: "flat",
-                        add_css_class: "circular",
-                        set_tooltip_text: Some("Repeat"),
-                        #[watch]
-                        set_icon_name: match model.snap.repeat {
-                            Repeat::One => "media-playlist-repeat-song-symbolic",
-                            _ => "media-playlist-repeat-symbolic",
-                        },
-                        #[watch]
-                        set_opacity: if matches!(model.snap.repeat, Repeat::Off) { 0.5 } else { 1.0 },
-                        connect_clicked[sender] => move |_| {
-                            sender.input(PlayerViewInput::RepeatCycle);
+                            sender.input(PlayerViewInput::SetQueueShown(b.is_active()));
                         },
                     },
                 },
-            },
 
-            gtk::Separator { set_orientation: gtk::Orientation::Vertical },
+                // Artwork, metadata, and — when there is width — the transport
+                // and the queue beside them.
+                #[name = "top"]
+                gtk::Box {
+                    set_vexpand: true,
+                    set_spacing: 24,
+                    set_margin_start: 24,
+                    set_margin_end: 24,
+                    // Horizontal whenever the artwork has something to sit
+                    // beside: the controls when wide, the metadata when the
+                    // queue has taken the vertical space.
+                    #[watch]
+                    set_orientation: if model.wide || model.queue_shown {
+                        gtk::Orientation::Horizontal
+                    } else {
+                        gtk::Orientation::Vertical
+                    },
 
-            #[local_ref]
-            queue -> adw::ToolbarView {
-                set_width_request: 360,
+                    #[name = "art_slot"]
+                    gtk::Box {
+                        set_halign: gtk::Align::Center,
+                        #[watch]
+                        set_valign: if model.wide {
+                            gtk::Align::Center
+                        } else {
+                            gtk::Align::Start
+                        },
+                    },
+
+                    #[name = "mid"]
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_hexpand: true,
+                        set_spacing: 16,
+                        #[watch]
+                        set_valign: if model.wide {
+                            gtk::Align::Center
+                        } else {
+                            gtk::Align::Start
+                        },
+
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 2,
+                            #[watch]
+                            set_halign: if model.centred_text() {
+                                gtk::Align::Center
+                            } else {
+                                gtk::Align::Start
+                            },
+
+                            gtk::Label {
+                                add_css_class: "title-1",
+                                set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                set_max_width_chars: 28,
+                                set_use_markup: false,
+                                #[watch]
+                                set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
+                                #[watch]
+                                set_label: &model.snap.title,
+                            },
+                            gtk::Label {
+                                add_css_class: "title-4",
+                                add_css_class: "dim-label",
+                                set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                set_max_width_chars: 34,
+                                set_use_markup: false,
+                                #[watch]
+                                set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
+                                #[watch]
+                                set_label: &model.subtitle(),
+                            },
+                        },
+
+                        // Where the transport lives when there is width for it
+                        // to sit under the metadata.
+                        #[name = "transport_wide"]
+                        gtk::Box { set_orientation: gtk::Orientation::Vertical },
+                    },
+
+                    // Where the queue lives when it can be a column of its own.
+                    #[name = "queue_wide"]
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        #[watch]
+                        // Only when it is a column of its own; in the compact
+                        // layout the queue is the full width and must not carry
+                        // a floor.
+                        set_width_request: if model.wide { 320 } else { -1 },
+                    },
+                },
+
+                // ...and where each goes when it cannot.
+                #[name = "queue_compact"]
+                gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_vexpand: true,
+                },
+
+                #[name = "transport_compact"]
+                gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_margin_start: 24,
+                    set_margin_end: 24,
+                    set_margin_bottom: 18,
+                },
             },
         }
     }
@@ -228,11 +371,16 @@ impl SimpleComponent for PlayerView {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let model = PlayerView {
+        let mut model = PlayerView {
             snap: Snapshot::default(),
             cover: Cover::new(240),
             scrubbing: false,
             scrub_gen: 0,
+            wide: true,
+            queue_shown: false,
+            transport: gtk::Box::new(gtk::Orientation::Vertical, 12),
+            slots: None,
+            bits: None,
         };
         let queue = QUEUE_SLOT
             .with(|q| q.borrow().clone())
@@ -240,6 +388,32 @@ impl SimpleComponent for PlayerView {
         let widgets = view_output!();
         model.cover.attach_first(&widgets.art_slot);
         model.cover.square("audio-x-generic-symbolic");
+
+        model.bits = Some(build_transport(&model.transport, &sender));
+        model.slots = Some(Slots {
+            queue,
+            queue_wide: widgets.queue_wide.clone(),
+            queue_compact: widgets.queue_compact.clone(),
+            transport_wide: widgets.transport_wide.clone(),
+            transport_compact: widgets.transport_compact.clone(),
+        });
+        model.relayout();
+
+        // One breakpoint. The other decision — whether the queue is showing —
+        // is the user's, and combining the two is what `relayout` is for.
+        if let Ok(condition) =
+            adw::BreakpointCondition::parse(&format!("max-width: {}px", WIDE_PX - 1))
+        {
+            let breakpoint = adw::Breakpoint::new(condition);
+            let narrowed = sender.clone();
+            breakpoint.connect_apply(move |_| narrowed.input(PlayerViewInput::Wide(false)));
+            let widened = sender.clone();
+            breakpoint.connect_unapply(move |_| widened.input(PlayerViewInput::Wide(true)));
+            widgets.root.add_breakpoint(breakpoint);
+        } else {
+            tracing::warn!("unparsable breakpoint; the player will not adapt");
+        }
+
         ComponentParts { model, widgets }
     }
 
@@ -254,6 +428,7 @@ impl SimpleComponent for PlayerView {
                 };
                 self.snap = *snap;
                 self.snap.position_ms = position;
+                self.refresh_transport();
             }
             PlayerViewInput::Artwork(path) => match path {
                 Some(path) => self.cover.set_file(&path),
@@ -262,6 +437,7 @@ impl SimpleComponent for PlayerView {
             PlayerViewInput::Scrub(v) => {
                 self.scrubbing = true;
                 self.snap.position_ms = v as u64;
+                self.refresh_transport();
                 // Debounced: a drag emits on every motion event, and seeking on
                 // each one would have MusicKit re-buffering continuously.
                 self.scrub_gen = self.scrub_gen.wrapping_add(1);
@@ -288,6 +464,19 @@ impl SimpleComponent for PlayerView {
             }
             PlayerViewInput::Previous => {
                 let _ = sender.output(NowPlayingOutput::Previous);
+            }
+            PlayerViewInput::Wide(wide) => {
+                if self.wide != wide {
+                    self.wide = wide;
+                    self.relayout();
+                }
+            }
+            PlayerViewInput::SetQueueShown(shown) => {
+                if self.queue_shown == shown {
+                    return; // our own echo
+                }
+                self.queue_shown = shown;
+                self.relayout();
             }
             PlayerViewInput::Shuffle(on) => {
                 let _ = sender.output(NowPlayingOutput::SetShuffle(on));
@@ -324,6 +513,98 @@ pub fn hand_over_queue(queue: adw::ToolbarView) {
 }
 
 impl PlayerView {
+    /// Text is centred only when the artwork is above it — a column reads as a
+    /// column. Beside the artwork, or beside a thumbnail, it aligns left.
+    fn centred_text(&self) -> bool {
+        !self.wide && !self.queue_shown
+    }
+
+    /// Push the current snapshot into the hand-built transport.
+    ///
+    /// The macro's `#[watch]` cannot reach these — they are built outside its
+    /// tree so they can move between layouts — so this is the equivalent, and
+    /// it has the same obligation: set **every** property it cares about, since
+    /// the last track left its own values behind.
+    fn refresh_transport(&self) {
+        let Some(bits) = self.bits.as_ref() else {
+            return;
+        };
+        bits.elapsed
+            .set_label(&format_duration(self.snap.position_ms));
+        bits.remaining.set_label(&format_duration(
+            self.snap.duration_ms.saturating_sub(self.snap.position_ms),
+        ));
+        bits.scale
+            .set_range(0.0, self.snap.duration_ms.max(1) as f64);
+        bits.scale.set_sensitive(self.snap.duration_ms > 0);
+        // Only when it is not the user's: a drag must not be argued with.
+        if !self.scrubbing {
+            bits.scale.set_value(self.snap.position_ms as f64);
+        }
+        bits.play.set_icon_name(if self.snap.playing {
+            "media-playback-pause-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        });
+        bits.play.set_sensitive(self.snap.active);
+        bits.previous.set_sensitive(self.snap.has_previous);
+        bits.next.set_sensitive(self.snap.has_next);
+        // `set_active` fires `toggled`, and the handler would send the value
+        // straight back — so only touch it when it actually differs.
+        if bits.shuffle.is_active() != self.snap.shuffle {
+            bits.shuffle.set_active(self.snap.shuffle);
+        }
+        bits.repeat.set_icon_name(match self.snap.repeat {
+            Repeat::One => "media-playlist-repeat-song-symbolic",
+            _ => "media-playlist-repeat-symbolic",
+        });
+        bits.repeat
+            .set_opacity(if matches!(self.snap.repeat, Repeat::Off) {
+                0.5
+            } else {
+                1.0
+            });
+    }
+
+    /// Put the transport and the queue where this layout wants them.
+    ///
+    /// They are **moved, not duplicated**. The transport is one widget with one
+    /// set of signal handlers, and the queue is the app's own `QueueView` — a
+    /// second copy of either would be two things claiming to be the same
+    /// player, which is the failure this whole component is arranged to avoid.
+    ///
+    /// Called on a breakpoint or a toggle, so a handful of times a session
+    /// rather than per frame.
+    fn relayout(&self) {
+        let Some(slots) = self.slots.as_ref() else {
+            return;
+        };
+        // Wide: the transport sits under the metadata, the queue is a column of
+        // its own. Compact: both go full width beneath, and the queue takes the
+        // vertical space the artwork gives up.
+        let (transport_home, queue_home) = if self.wide {
+            (&slots.transport_wide, &slots.queue_wide)
+        } else {
+            (&slots.transport_compact, &slots.queue_compact)
+        };
+        reparent(&self.transport, transport_home);
+        reparent(&slots.queue, queue_home);
+
+        // The artwork is the elastic element: large when it is the subject,
+        // a thumbnail once the queue needs the room.
+        self.cover.resize(if self.queue_shown && !self.wide {
+            ART_THUMB
+        } else {
+            ART_LARGE
+        });
+
+        slots.queue.set_visible(self.queue_shown);
+        slots.queue_wide.set_visible(self.queue_shown && self.wide);
+        slots
+            .queue_compact
+            .set_visible(self.queue_shown && !self.wide);
+    }
+
     fn subtitle(&self) -> String {
         match (self.snap.artist.is_empty(), self.snap.album.is_empty()) {
             (false, false) => format!("{} — {}", self.snap.artist, self.snap.album),
