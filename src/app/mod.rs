@@ -676,7 +676,7 @@ impl Component for AppModel {
 
                         #[wrap(Some)]
                         #[local_ref]
-                        set_sheet = player_sheet_content -> adw::BreakpointBin {},
+                        set_sheet = player_sheet_content -> gtk::Box {},
 
                         // Navigation on the left, and an OverlaySplitView
                         // rather than a NavigationSplitView because it can be
