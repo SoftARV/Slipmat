@@ -507,6 +507,8 @@ src/
     supervise.rs     # keeping the sidecar alive; folding in its events
     status.rs        # what the pane shows when it is not showing music
     chrome.rs        # the menu, its accelerators, and the three dialogs
+    row_menu.rs      # the per-row context menu, and what each item sends
+    writes.rs        # library writes: the optimistic row change, and taking it back
   settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
   session.rs         # what was playing, → $XDG_STATE_HOME/tonearm/session.json
   style.rs           # accent colour + the Now Playing tint. The only CSS.
@@ -539,7 +541,11 @@ Makefile             # make install → ~/.local (no sudo); make sidecar; make c
 ```
 
 `app/` is split by **what a thing does**, not by layer, so a change usually
-lands in one file. Every sibling is an `impl AppModel` block — legal, and able
+lands in one file. **A new `impl AppModel` method goes in the sibling
+that owns its concern** — and if none does, that is a new sibling, not another
+method in `mod.rs`. This drifts if it is not watched: `mod.rs` was split once at
+3085 lines and had grown back past 2800 before anyone looked, almost all of it
+helper methods added where the model happened to be. Every sibling is an `impl AppModel` block — legal, and able
 to touch private fields, because a child module can see its parent's. `mod.rs`
 keeps only the three things that have to be in one place: the model, the
 messages, and the `Component` impl holding `view!` and the reducer. The reducer
