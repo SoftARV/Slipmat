@@ -869,6 +869,32 @@ recycling. Five hundred means every row is real, and something upstream — a
 `Clamp` in the wrong place, a `Box` between the view and its `ScrolledWindow` —
 is asking the view for its full height.
 
+**`AdwClampScrollable`, not `AdwClamp`, around a scrollable child.** A plain
+clamp does not implement `GtkScrollable`, so putting one between a
+`ScrolledWindow` and a `GtkListView` breaks the list's height allocation and it
+stops materialising rows part way down. Moving the clamp *outside* the scroller
+fixes that and costs something else: the clamp is then what the window sizes,
+so the scroller is only as wide as the clamp and its scrollbar sits in the
+middle of the window instead of at the edge. `AdwClampScrollable` passes the
+scrollable interface through to its child and settles both — verified the only
+way that matters, by counting widgets: 205 for 534 tracks, unchanged.
+
+A `GtkScrolledWindow` that spans the window then paints the `view` background
+across it, a shade darker than the window. That was invisible while it was
+clamped and centred, because it read as the list's own surface.
+`.plain-scroller` in `style.rs` clears it.
+
+**And a `bottom_bar` is drawn over the content, not beside it.** The Now
+Playing bar is `AdwBottomSheet`'s, so the last row of every scrollable sat
+behind it — *reachable*, since the scroller had already run to its end, and
+invisible, which is the worst pair because nothing suggests there is more to
+see. Maximising appeared to fix it and sent one diagnosis chasing a ten-pixel
+measurement discrepancy that was real and irrelevant. `bottom-bar-height`
+notifies, so the content's bottom margin follows the bar rather than guessing
+at a height that changes with theme and text scale. It is set once, on the
+sheet's content, which is every scrollable in the app at one stroke — the queue
+is the only one outside it, and it lives in the drawer, above the bar.
+
 **A rebuild is expensive, so do not do one that changes nothing.** Every tile
 that binds decodes its cover on the GTK thread — measured at **2.5ms per
 cover** — and a rebuild binds far more of them than are visible. Switching
