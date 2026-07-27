@@ -2572,6 +2572,19 @@ impl AppModel {
             // a genuine scroll to the top by the user is never fought over.
             if let Some(adj) = probe {
                 let want = adj.value();
+                // Which item was at the top, so the view can be re-anchored by
+                // *item* rather than by pixel. Setting the adjustment alone
+                // moved the viewport while ListView's own anchor stayed on item
+                // 0, so it rendered nothing until a scroll forced a re-layout —
+                // the list simply vanished.
+                let rows = self.library.len().max(1) as f64;
+                let row_height = adj.upper() / rows;
+                let top_item = if row_height > 0.0 {
+                    (want / row_height).floor() as u32
+                } else {
+                    0
+                };
+                let view = self.library.view.clone();
                 if want > adj.page_size() {
                     let handler = std::rc::Rc::new(std::cell::RefCell::new(None));
                     let slot = handler.clone();
@@ -2580,7 +2593,11 @@ impl AppModel {
                         if a.value() > 1.0 || want > a.upper() - a.page_size() {
                             return;
                         }
-                        a.set_value(want);
+                        // `scroll_to`, not `set_value`: it moves the anchor as
+                        // well as the viewport, which is what actually puts the
+                        // rows back. NONE rather than FOCUS — nothing here
+                        // should steal focus.
+                        view.scroll_to(top_item, gtk::ListScrollFlags::NONE, None);
                         if let Some(id) = slot.borrow_mut().take() {
                             a.disconnect(id);
                         }
