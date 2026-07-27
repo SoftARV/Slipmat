@@ -2536,22 +2536,70 @@ impl AppModel {
             return; // not a library track — nothing to take off the list
         }
 
+        // The scrolled window behind the list, so the position can be put back
+        // when GTK discards it. See the note further down.
+        let probe = self
+            .library
+            .view
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
+            .map(|sw| sw.vadjustment());
         if let Some(index) = row {
-            // Take focus out of the row before destroying it.
-            //
-            // This is issue #6's lead, and this list reproduces it: the removal
-            // is invoked from a popover parented to the row itself, so focus is
-            // inside the widget about to go. GTK moves focus on destruction and
-            // scrolls to wherever it lands — which, with nothing better, is the
-            // top. Restoring the adjustment afterwards was tried twice and
-            // clamped both times (#6), so this attacks the cause rather than
-            // the symptom.
-            if self.library.view.focus_child().is_some() {
-                self.library.view.set_focus_child(None::<&gtk::Widget>);
-            }
             self.library.remove(index as u32);
             // The widgets it owned are gone with it.
             self.library_icons.borrow_mut().remove(catalog_id);
+
+            // Put the scroll position back once GTK has thrown it away.
+            //
+            // Measured, after five blind attempts (#6): across a single-row
+            // removal `value` is *correct* immediately and still correct 50ms
+            // later, `upper` shrinks by exactly one row as it should — and then
+            // somewhere between 50ms and 100ms `GtkListView` sets `value` to
+            // 0.0 while `upper` is still healthy, and leaves it there.
+            //
+            //     before   value=26000 upper=29535
+            //     +50ms    value=26000 upper=29480
+            //     +100ms   value=0.0   upper=29480
+            //
+            // So this is not the clamp #6 assumed. Nothing is forcing the value
+            // down; it is assigned. That is why restoring it in an idle, or
+            // when `upper` settles, both failed — they ran *before* the
+            // assignment and corrected a value that was not yet wrong.
+            //
+            // Rather than guess at a delay, watch for the assignment and undo
+            // it: the first time the value drops to near zero while there is
+            // plenty of room above, put it back and stop listening. Bounded, so
+            // a genuine scroll to the top by the user is never fought over.
+            if let Some(adj) = probe {
+                let want = adj.value();
+                if want > adj.page_size() {
+                    let handler = std::rc::Rc::new(std::cell::RefCell::new(None));
+                    let slot = handler.clone();
+                    let id = adj.connect_value_changed(move |a| {
+                        // Only the collapse, and only while it is unjustified.
+                        if a.value() > 1.0 || want > a.upper() - a.page_size() {
+                            return;
+                        }
+                        a.set_value(want);
+                        if let Some(id) = slot.borrow_mut().take() {
+                            a.disconnect(id);
+                        }
+                    });
+                    *handler.borrow_mut() = Some(id);
+                    // Stop listening either way, so a later legitimate jump to
+                    // the top is left alone.
+                    let a = adj.clone();
+                    let slot = handler.clone();
+                    gtk::glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(500),
+                        move || {
+                            if let Some(id) = slot.borrow_mut().take() {
+                                a.disconnect(id);
+                            }
+                        },
+                    );
+                }
+            }
         }
         tracing::info!(
             catalog_id,
