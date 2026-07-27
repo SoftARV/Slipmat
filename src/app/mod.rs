@@ -2189,8 +2189,20 @@ impl AppModel {
                     // see their own click is absurd — so mirror it locally and
                     // repaint just that row.
                     match action {
-                        LibraryAction::Favorite => self.set_favorite(&catalog_id, true),
-                        LibraryAction::AddToLibrary => {}
+                        LibraryAction::Favorite => {
+                            self.set_favorite(&catalog_id, true);
+                            // Favouriting *adds to the library* — Apple's
+                            // behaviour, measured (#34). So the menu must stop
+                            // offering "Add to Library" for it too.
+                            self.set_in_library(&catalog_id, true);
+                        }
+                        // Mirrored so the menu stops offering an add that has
+                        // already happened. No library id yet — the 202 carries
+                        // no body and Apple assigns one asynchronously — so
+                        // "Remove from Library" stays hidden until a reload
+                        // learns it. Offering a removal we cannot address would
+                        // be a menu item that quietly does nothing.
+                        LibraryAction::AddToLibrary => self.set_in_library(&catalog_id, true),
                     }
                 }
                 Err(err) => {
@@ -2500,25 +2512,40 @@ impl AppModel {
     /// a rebuild here would throw the reader back to the top, which is the same
     /// complaint pagination had.
     pub(super) fn drop_removed_track(&mut self, catalog_id: &str) {
+        // **Index first.** `visible_entries` is derived from `all_tracks`, so
+        // asking it where the row is *after* the retain always answers `None`
+        // — the model has already forgotten it. That left the row on screen
+        // until a manual refresh, which is exactly what this function exists to
+        // avoid.
+        //
+        // Only the Songs list mirrors `all_tracks`; a catalog search showing
+        // the same song is still a valid result and keeps its row, so it is
+        // only asked in library scope.
+        let row = (self.scope() == SearchScope::Library)
+            .then(|| {
+                self.visible_entries()
+                    .iter()
+                    .position(|e| e.catalog_id() == Some(catalog_id))
+            })
+            .flatten();
+
         let before = self.all_tracks.len();
         self.all_tracks
             .retain(|t| t.catalog_id.as_deref() != Some(catalog_id));
         if self.all_tracks.len() == before {
-            return; // not a library track — a catalog row stays where it is
+            return; // not a library track — nothing to take off the list
         }
-        // Only the Songs list mirrors `all_tracks`; a catalog search showing the
-        // same song is still a valid search result and keeps its row.
-        if self.scope() == SearchScope::Library
-            && let Some(index) = self
-                .visible_entries()
-                .iter()
-                .position(|e| e.catalog_id() == Some(catalog_id))
-        {
+
+        if let Some(index) = row {
             self.library.remove(index as u32);
             // The widgets it owned are gone with it.
             self.library_icons.borrow_mut().remove(catalog_id);
         }
-        tracing::info!(catalog_id, "track removed from the library");
+        tracing::info!(
+            catalog_id,
+            removed_row = row.is_some(),
+            "track left the library"
+        );
     }
 
     /// Put back a removal the sidecar refused, and say so in words a person can
