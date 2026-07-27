@@ -26,6 +26,7 @@ relm4::new_stateless_action!(NextAction, AppMenuActionGroup, "next");
 relm4::new_stateless_action!(PreviousAction, AppMenuActionGroup, "previous");
 relm4::new_stateless_action!(VolumeUpAction, AppMenuActionGroup, "volume-up");
 relm4::new_stateless_action!(VolumeDownAction, AppMenuActionGroup, "volume-down");
+relm4::new_stateless_action!(CloseWindowAction, AppMenuActionGroup, "close-window");
 relm4::new_stateless_action!(ToggleQueueAction, AppMenuActionGroup, "toggle-queue");
 relm4::new_stateless_action!(ToggleSidebarAction, AppMenuActionGroup, "toggle-sidebar");
 relm4::new_stateless_action!(SignOutAction, AppMenuActionGroup, "sign-out");
@@ -94,6 +95,15 @@ pub(super) fn register_actions(
     group.add_action(RelmAction::<VolumeDownAction>::new_stateless(move |_| {
         s.input(AppMsg::VolumeDown)
     }));
+    // The keyboard equivalent of the close button, and deliberately the *same*
+    // message — so it inherits the same two meanings: hide and keep playing when
+    // something is loaded, quit when nothing is. A `Ctrl`+`W` that quit outright
+    // while the close button did not would be the worse kind of surprise.
+    let s = sender.clone();
+    group.add_action(RelmAction::<CloseWindowAction>::new_stateless(move |_| {
+        s.input(AppMsg::WindowCloseRequested)
+    }));
+
     let s = sender.clone();
     group.add_action(RelmAction::<ToggleQueueAction>::new_stateless(move |_| {
         s.input(AppMsg::ToggleQueue)
@@ -106,6 +116,7 @@ pub(super) fn register_actions(
     app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
     app.set_accelerators_for_action::<ShortcutsAction>(&["<Control>question"]);
     app.set_accels_for_action("app.quit", &["<Control>q"]);
+    app.set_accelerators_for_action::<CloseWindowAction>(&["<Control>w"]);
     app.set_accelerators_for_action::<PlayPauseAction>(&["<Control>k"]);
     app.set_accelerators_for_action::<NextAction>(&["<Control>Right"]);
     app.set_accelerators_for_action::<PreviousAction>(&["<Control>Left"]);
@@ -173,6 +184,7 @@ pub(super) fn show_shortcuts(parent: &adw::ApplicationWindow) {
 
     let general = adw::ShortcutsSection::new(Some("General"));
     for (title, accel) in [
+        ("Close the window", "<Control>w"),
         ("Toggle the sidebar", "F9"),
         ("Toggle the queue", "<Control>u"),
         ("Preferences", "<Control>comma"),
