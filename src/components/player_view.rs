@@ -17,6 +17,7 @@
 use relm4::adw;
 use relm4::adw::prelude::*;
 use relm4::gtk;
+use relm4::gtk::{gdk, glib};
 use relm4::prelude::*;
 
 use super::cover::Cover;
@@ -124,15 +125,31 @@ pub fn fill_window(
         })
     };
 
+    // One handler at a time, not one per realize.
+    //
+    // Hiding the window unrealizes it and `Ctrl`+`W` makes that routine (#32),
+    // so `realize` fires more than once per session and each firing sees a new
+    // `GdkSurface`. Connecting without disconnecting leaves a handler on every
+    // surface the window has ever had. They are harmless — a dead surface never
+    // notifies, and `set_size_request` no-ops on an unchanged value — but the
+    // list only grows, which is the kind of thing that is free until it is not.
+    let connected: std::rc::Rc<std::cell::RefCell<Option<(gdk::Surface, glib::SignalHandlerId)>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
     window.connect_realize({
         let apply = apply.clone();
         move |window| {
             let Some(surface) = window.surface() else {
                 return;
             };
+            if let Some((old, id)) = connected.borrow_mut().take() {
+                old.disconnect(id);
+            }
             apply();
-            let apply = apply.clone();
-            surface.connect_height_notify(move |_| apply());
+            let id = surface.connect_height_notify({
+                let apply = apply.clone();
+                move |_| apply()
+            });
+            *connected.borrow_mut() = Some((surface, id));
         }
     });
 
@@ -372,7 +389,6 @@ impl SimpleComponent for PlayerView {
                     // used to sit in the metadata column, which put it beside
                     // the artwork rather than below it in every layout wide
                     // enough to have a choice.
-                    #[name = "player_col"]
                     gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
                         set_hexpand: true,
@@ -544,9 +560,16 @@ impl SimpleComponent for PlayerView {
             art_px: std::rc::Rc::new(std::cell::Cell::new(ART_LARGE)),
             art_anim: None,
         };
-        let queue = QUEUE_SLOT
-            .with(|q| q.borrow().clone())
-            .expect("the queue widget must be handed over before the player view is built");
+        // Rule 5: no `.expect()` here. A missing handover is a construction
+        // order mistake rather than a runtime condition, so it should never
+        // happen — but "should never happen" is exactly what the rule is about,
+        // and a drawer with an empty queue pane is a far better failure than a
+        // player that will not start. It is loud in the log and silent to the
+        // user, who cannot act on it either way.
+        let queue = QUEUE_SLOT.with(|q| q.borrow().clone()).unwrap_or_else(|| {
+            tracing::error!("no queue widget was handed over; the drawer's queue will be empty");
+            adw::ToolbarView::new()
+        });
         let widgets = view_output!();
         model.cover.attach_first(&widgets.art_slot);
         model.cover.square("audio-x-generic-symbolic");

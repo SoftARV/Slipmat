@@ -677,10 +677,10 @@ impl Component for AppModel {
                         // to click behind it, and dismissing by clicking away
                         // is what a drawer should do.
                         set_modal: true,
-                        // Not a `#[watch]`. See `post_view`.
+                        // Not a `#[watch]`. See `sync_animated`.
                         set_open: model.show_queue,
                         // The bar is only meaningful once there is a player.
-                        // Not a `#[watch]`. See `post_view`.
+                        // Not a `#[watch]`. See `sync_animated`.
                         set_reveal_bottom_bar: matches!(model.stage, Stage::Ready),
 
                         // Dragged shut, or clicked away from — the model has to
@@ -710,7 +710,7 @@ impl Component for AppModel {
                         set_content = &adw::OverlaySplitView {
                             set_min_sidebar_width: 200.0,
                             set_max_sidebar_width: 260.0,
-                            // Not a `#[watch]`. See `post_view`.
+                            // Not a `#[watch]`. See `sync_animated`.
                             set_show_sidebar: model.show_sidebar,
                             // **The model has to adopt what the widget did.**
                             //
@@ -1785,7 +1785,7 @@ impl Component for AppModel {
 
 /// The three widget properties that are animated, sampled together so a
 /// transition in any of them can be spotted without repeating the comparison.
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct Animated {
     sidebar: bool,
     queue: bool,

@@ -361,7 +361,6 @@ impl Component for QueueView {
                     set_description: Some("Play something and it will show up here."),
                 },
 
-                #[name = "scroller"]
                 add_named[Some("queue")] = &gtk::ScrolledWindow {
                     set_vexpand: true,
 

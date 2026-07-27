@@ -405,7 +405,6 @@ impl SimpleComponent for NowPlaying {
                     connect_clicked => NowPlayingInput::Previous,
                 },
 
-                #[name = "play_button"]
                 gtk::Button {
                     add_css_class: "circular",
                     add_css_class: "suggested-action",
@@ -434,7 +433,6 @@ impl SimpleComponent for NowPlaying {
                 // to be *visible* — a plain button used to give no indication
                 // at all — and that is what [`mode_opacity`] is for; which
                 // flavour of on comes through the icon. Clicking cycles.
-                #[name = "repeat_button"]
                 gtk::Button {
                     add_css_class: "flat",
                     add_css_class: "circular",
