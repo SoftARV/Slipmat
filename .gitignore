@@ -19,3 +19,4 @@ flatpak-repo/
 
 # fetched on demand by packaging/flatpak/generate-sources.sh
 packaging/flatpak/.flatpak-cargo-generator.py
+Tonearm.flatpak
