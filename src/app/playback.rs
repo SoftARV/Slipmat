@@ -55,11 +55,30 @@ impl AppModel {
     }
 
     /// Post the notification for whatever is playing now.
+    ///
+    /// **Nothing is sent while the window has focus.** The Now Playing bar is
+    /// already on screen saying the same thing, so a banner over it is the app
+    /// telling you what you are looking at. Notifications earn their place when
+    /// Tonearm is behind something else or has no window at all — which, since
+    /// #32, is a state it can be in for hours.
+    ///
+    /// Checked here rather than in `maybe_notify` because the artwork path
+    /// defers this call, and focus can change while a cover is being fetched.
+    /// The honest moment to ask is the moment of sending.
     pub(super) fn send_track_notification(&mut self) {
         self.notify_when_art_lands = None;
         let Some(item) = self.player.now_playing.as_ref() else {
             return;
         };
+
+        if relm4::main_application()
+            .windows()
+            .iter()
+            .any(gtk::prelude::GtkWindowExt::is_active)
+        {
+            tracing::debug!("not notifying: the window has focus");
+            return;
+        }
         notify::track_changed(
             relm4::main_application().upcast_ref::<gtk::gio::Application>(),
             &item.title,
