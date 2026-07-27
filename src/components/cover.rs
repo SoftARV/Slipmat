@@ -180,6 +180,17 @@ impl Cover {
         self.avatar.set_text(Some(name));
     }
 
+    /// Show a cover that was decoded off the GTK thread.
+    ///
+    /// The counterpart to [`Cover::set_file`], and the one a grid tile uses:
+    /// `set_file` decodes where it is called, which for a grid means hundreds
+    /// of decodes in the frame that fills it (#27).
+    pub fn set_decoded(&self, cover: crate::components::artwork::Decoded) {
+        self.empty.set(false);
+        self.image.set_paintable(Some(&cover.into_texture()));
+        self.stack.set_visible_child_name("image");
+    }
+
     /// Show a picture that is now on disk.
     pub fn set_file(&self, path: &Path) {
         if self.round.get() {
