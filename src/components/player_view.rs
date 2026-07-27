@@ -54,7 +54,7 @@ struct Slots {
 }
 
 /// How much of the window the open drawer claims.
-const WINDOW_FRACTION: f64 = 0.8;
+const WINDOW_FRACTION: f64 = 0.7;
 
 /// The shortest the drawer may ever be, in logical pixels. A floor low enough
 /// that it is never what stops the window from shrinking.
@@ -148,7 +148,17 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
     scrubber_row.append(&elapsed);
     scrubber_row.append(&scale);
     scrubber_row.append(&remaining);
-    into.append(&scrubber_row);
+    // Clamped rather than filling. A scrubber that spans a maximised window is
+    // both hard to aim — one pixel is most of a second — and unlike anything
+    // else in the drawer, which is a centred column. `AdwClamp` is the widget
+    // for "up to this wide, then centre", and using it keeps the ceiling out of
+    // the widget's own minimum, so the compact layout still shrinks freely.
+    into.append(
+        &adw::Clamp::builder()
+            .maximum_size(SCRUB_MAX_W)
+            .child(&scrubber_row)
+            .build(),
+    );
 
     let buttons = gtk::Box::builder()
         .spacing(10)
@@ -250,6 +260,9 @@ const WIDE_PX: i32 = 860;
 const ART_LARGE: i32 = 260;
 const ART_THUMB: i32 = 72;
 
+/// The widest the scrubber may get before it stops growing and centres.
+const SCRUB_MAX_W: i32 = 520;
+
 /// How long the scrubber waits after the last movement before seeking.
 const SCRUB_COMMIT_MS: u64 = 250;
 
@@ -328,9 +341,11 @@ impl SimpleComponent for PlayerView {
                 // queue column next to it is showing.
                 #[name = "top"]
                 gtk::Box {
-                    set_spacing: 24,
-                    set_margin_start: 24,
-                    set_margin_end: 24,
+                    // No padding and no spacing **here**: the queue is one of
+                    // this box's two children and it wants to sit flush against
+                    // the drawer's edge, the way it did as a sidebar. Padding
+                    // is the player column's own business, below.
+                    set_spacing: 0,
                     // Only claims the height when it is the thing worth
                     // looking at. In the compact layout with the queue open
                     // the queue is, and this shrinks to the thumbnail and the
@@ -348,6 +363,8 @@ impl SimpleComponent for PlayerView {
                         set_orientation: gtk::Orientation::Vertical,
                         set_hexpand: true,
                         set_spacing: 16,
+                        set_margin_start: 24,
+                        set_margin_end: 24,
                         // Centred in the drawer when it is a column, pinned to
                         // the top when the queue is below it and wants the rest.
                         #[watch]

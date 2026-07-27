@@ -244,10 +244,11 @@ impl Component for QueueView {
         adw::ToolbarView {
 
             add_top_bar = &adw::HeaderBar {
-                // The queue is the rightmost pane while it is open, so the
-                // window controls live here. The content header hides its own
-                // when this is showing, so they never appear twice.
-                set_show_end_title_buttons: true,
+                // No window controls. This was true when the queue was the
+                // window's rightmost pane and the content header stood down
+                // for it; inside the drawer it is a second close button laid
+                // over the real one, which is the redundancy you see.
+                set_show_end_title_buttons: false,
 
                 #[wrap(Some)]
                 set_title_widget = &adw::WindowTitle {
