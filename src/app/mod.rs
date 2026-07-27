@@ -1721,7 +1721,46 @@ impl Component for AppModel {
         root: &Self::Root,
     ) {
         let view_before = self.view;
+        // The three animated properties, sampled before and after. See below.
+        let animated_before = self.animated_state();
         self.update(msg, sender.clone(), root);
+
+        // **Written only on an actual transition, and never from the view.**
+        //
+        // These three drive an `AdwAnimation` each — the sidebar's spring, the
+        // drawer's slide, the bottom bar's reveal — and writing one is asking
+        // an animation to start or re-aim. That is fine when something
+        // changed and catastrophic on a timer.
+        //
+        // They were `#[watch]`es, which re-assert after *every* message, and
+        // during playback those never stop: a `refreshTokens` a second, a
+        // position tick twice a second. Then a guarded `post_view` compared
+        // against the *widget* instead, which is no better — a widget and a
+        // model that disagree persistently disagree on every message too, so
+        // it still wrote on every one.
+        //
+        // Comparing against our own previous value is what actually bounds it:
+        // no message, no transition, no write. Measured from a core dump of a
+        // wedged process, twice: the main thread spinning at 100% inside
+        // `adw_spring_animation_set_value_to` under
+        // `adw_overlay_split_view_set_show_sidebar`, reached from `update_view`
+        // while handling — both times — a routine `refreshTokens`.
+        //
+        // A GTK layout loop logs nothing, because no message is being
+        // processed. That is how it tells itself apart from a runaway reducer
+        // (#37), which logs a dispatch per lap.
+        let animated_after = self.animated_state();
+        if animated_after.sidebar != animated_before.sidebar {
+            widgets.nav_split.set_show_sidebar(animated_after.sidebar);
+        }
+        if animated_after.queue != animated_before.queue {
+            widgets.player_sheet.set_open(animated_after.queue);
+        }
+        if animated_after.bottom_bar != animated_before.bottom_bar {
+            widgets
+                .player_sheet
+                .set_reveal_bottom_bar(animated_after.bottom_bar);
+        }
 
         if self.view != view_before {
             // `set_text` fires `search-changed`, but `SearchChanged` returns
@@ -1737,37 +1776,6 @@ impl Component for AppModel {
             // Only the slow ones: at ~60fps anything over 16ms drops a frame,
             // and a message that costs more than a few is worth naming.
             tracing::debug!(ms, "view refresh");
-        }
-    }
-
-    /// The three properties that must **not** be `#[watch]`ed, and why.
-    ///
-    /// `#[watch]` re-asserts its value after every message, and during playback
-    /// those never stop arriving — a `refreshTokens` a second, a position tick
-    /// twice a second. That is harmless for a label. These three are not
-    /// labels: each drives an `AdwAnimation`, so re-asserting one is asking a
-    /// spring to re-aim mid-flight, twice a second, forever.
-    ///
-    /// It hung the app. Measured from a core dump of the wedged process, the
-    /// main thread was spinning at 100% inside
-    /// `adw_spring_animation_set_value_to`, called from
-    /// `adw_overlay_split_view_set_show_sidebar`, called from `update_view`.
-    /// No message was being processed and nothing was logged, which is how a
-    /// GTK layout loop tells itself apart from a runaway reducer (#37) — that
-    /// one logs a dispatch per lap.
-    ///
-    /// So: written only when the widget does not already agree. A no-op write
-    /// is free for a label and is not free for an animation.
-    fn post_view(&self, widgets: &mut Self::Widgets) {
-        if widgets.nav_split.shows_sidebar() != self.show_sidebar {
-            widgets.nav_split.set_show_sidebar(self.show_sidebar);
-        }
-        if widgets.player_sheet.is_open() != self.show_queue {
-            widgets.player_sheet.set_open(self.show_queue);
-        }
-        let reveal = matches!(self.stage, Stage::Ready);
-        if widgets.player_sheet.reveals_bottom_bar() != reveal {
-            widgets.player_sheet.set_reveal_bottom_bar(reveal);
         }
     }
 
@@ -1787,7 +1795,24 @@ impl Component for AppModel {
     }
 }
 
+/// The three widget properties that are animated, sampled together so a
+/// transition in any of them can be spotted without repeating the comparison.
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Animated {
+    sidebar: bool,
+    queue: bool,
+    bottom_bar: bool,
+}
+
 impl AppModel {
+    fn animated_state(&self) -> Animated {
+        Animated {
+            sidebar: self.show_sidebar,
+            queue: self.show_queue,
+            bottom_bar: matches!(self.stage, Stage::Ready),
+        }
+    }
+
     fn handle(
         &mut self,
         msg: AppMsg,
