@@ -190,6 +190,12 @@ pub struct AppModel {
     /// Whether the navigation sidebar is open. Persisted, like the section:
     /// someone who closes it wants it closed next time too.
     show_sidebar: bool,
+    /// Whether the sidebar is currently an overlay rather than a pane.
+    ///
+    /// Mirrored from the split view rather than derived from a width we would
+    /// have to measure ourselves: the breakpoint already owns this decision,
+    /// and two places computing it is two places to disagree.
+    sidebar_collapsed: bool,
     /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
@@ -490,6 +496,15 @@ pub enum AppMsg {
     /// A tile is on screen and its cover is not on disk yet.
     NeedTileArt(String, Artwork),
     ToggleSidebar,
+    /// The split view changed the sidebar's visibility by itself — a click
+    /// outside it while collapsed. A fact, not a request: the widget has
+    /// already done it.
+    SidebarShown(bool),
+    /// A sidebar row was activated. Dismisses the sidebar if it is an overlay,
+    /// and does nothing at all if it is a pane.
+    SectionChosen,
+    /// The breakpoint turned the sidebar into an overlay, or back into a pane.
+    SidebarCollapsed(bool),
     /// The results list is near its end; fetch the next page if there is one.
     LoadMoreCatalog,
     /// Re-fetch one library section. There is no section-less "reload": each
@@ -693,6 +708,25 @@ impl Component for AppModel {
                             set_max_sidebar_width: 260.0,
                             #[watch]
                             set_show_sidebar: model.show_sidebar,
+                            // **The model has to adopt what the widget did.**
+                            //
+                            // Collapsed, this is an overlay, and the widget
+                            // dismisses itself on a click outside — but the
+                            // `#[watch]` above runs after *every* message, and
+                            // during playback those never stop arriving. So it
+                            // wrote `true` straight back and the sidebar
+                            // reappeared before the click had finished.
+                            //
+                            // The same shape as the volume binding, in its
+                            // quieter form: there the two values ping-ponged,
+                            // here the model simply never learns. `SidebarShown`
+                            // is the half that was missing.
+                            connect_show_sidebar_notify[sender] => move |split| {
+                                sender.input(AppMsg::SidebarShown(split.shows_sidebar()));
+                            },
+                            connect_collapsed_notify[sender] => move |split| {
+                                sender.input(AppMsg::SidebarCollapsed(split.is_collapsed()));
+                            },
 
                             #[wrap(Some)]
                             set_sidebar = &adw::ToolbarView {
@@ -750,6 +784,15 @@ impl Component for AppModel {
                                                             View::from_row(row.index()),
                                                         ));
                                                     }
+                                                },
+                                                // Choosing a section is the end
+                                                // of what an overlay sidebar is
+                                                // for, so it gets out of the
+                                                // way — but only when it *is*
+                                                // an overlay. Beside a pane, it
+                                                // stays put.
+                                                connect_row_activated[sender] => move |_, _| {
+                                                    sender.input(AppMsg::SectionChosen);
                                                 },
 
                                                 // Index 0 — Apple Music. The
@@ -1378,6 +1421,7 @@ impl Component for AppModel {
             library,
             show_queue: false,
             show_sidebar: settings.show_sidebar,
+            sidebar_collapsed: false,
             marked_playing: None,
             library_icons: row_registry(),
             current_track: current_track(),
@@ -1938,6 +1982,22 @@ impl AppModel {
             AppMsg::SetNotifyTrackChange(on) => {
                 self.settings.notify_track_change = on;
                 self.settings.save();
+            }
+            AppMsg::SidebarShown(shown) => {
+                if self.show_sidebar == shown {
+                    return; // our own write coming back
+                }
+                // Adopted, but **not** persisted. Dismissing an overlay is not
+                // a statement about how you want the window laid out when it
+                // is wide enough to hold a real pane; only `ToggleSidebar` is
+                // deliberate enough to be a preference.
+                self.show_sidebar = shown;
+            }
+            AppMsg::SidebarCollapsed(collapsed) => self.sidebar_collapsed = collapsed,
+            AppMsg::SectionChosen => {
+                if self.sidebar_collapsed {
+                    self.show_sidebar = false;
+                }
             }
             AppMsg::ToggleSidebar => {
                 self.show_sidebar = !self.show_sidebar;
