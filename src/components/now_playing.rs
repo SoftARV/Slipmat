@@ -271,7 +271,12 @@ impl SimpleComponent for NowPlaying {
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 set_valign: gtk::Align::Center,
-                set_hexpand: false,
+                // **The one that stretches.** The scale used to be, and with
+                // it gone the slack has to go somewhere: giving it to the text
+                // is what the bar has most use for, and it is also what keeps
+                // the clock beside it from moving the transport when a digit
+                // is added.
+                set_hexpand: true,
                 // No minimum width. This carried a 240px floor, and a floor in
                 // the bar is a floor under the whole window — the app could not
                 // be tiled to half a screen. The labels ellipsize instead,
@@ -307,9 +312,10 @@ impl SimpleComponent for NowPlaying {
                 gtk::Label {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
-                    // Natural width, not minimum: about the width the fixed
-                    // 240px request used to buy, but able to give it back.
-                    set_max_width_chars: 22,
+                    // Natural width, not minimum. Roomier than it was, now
+                    // that the widest thing in the bar has gone and the text
+                    // is what the space is for.
+                    set_max_width_chars: 40,
                     add_css_class: "heading",
                     #[watch]
                     set_visible: model.snap.active,
@@ -327,7 +333,7 @@ impl SimpleComponent for NowPlaying {
                 gtk::Label {
                     set_xalign: 0.0,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
-                    set_max_width_chars: 26,
+                    set_max_width_chars: 48,
                     add_css_class: "caption",
                     add_css_class: "dim-label",
                     set_use_markup: false,
@@ -343,36 +349,23 @@ impl SimpleComponent for NowPlaying {
 
             // --- elapsed / total -------------------------------------------
             //
-            // The scale that used to sit between these is now the line across
-            // the top, so the two readings sit together. `hexpand` moved here
-            // from the scale: something in the middle has to take the slack, or
-            // the transport stops being pushed to the right.
-            gtk::Box {
-                set_orientation: gtk::Orientation::Horizontal,
-                set_halign: gtk::Align::Center,
+            // One label beside the track rather than two in the middle of the
+            // bar. Centred, they read as a caption for nothing; here they
+            // belong to the thing they are timing.
+            //
+            // **No `width-chars`.** A fixed width would be a floor under the
+            // window, which is what the rest of this bar spent a commit
+            // getting rid of, and it is not needed: the metadata beside it is
+            // the hexpanding child, so when "9:59" becomes "10:00" the extra
+            // pixel comes out of the text's slack and the transport does not
+            // move.
+            #[name = "time"]
+            gtk::Label {
+                add_css_class: "numeric",
+                add_css_class: "caption",
+                add_css_class: "dim-label",
                 set_valign: gtk::Align::Center,
-                set_spacing: 4,
-                set_hexpand: true,
-
-                // Fixed width. `numeric` gives tabular figures, but "0:59" and
-                // "1:00:00" are different lengths, and a label that resizes
-                // would shuffle everything beside it on every tick.
-                #[name = "elapsed"]
-                gtk::Label {
-                    add_css_class: "numeric",
-                    add_css_class: "caption",
-                    set_width_chars: 5,
-                    set_xalign: 1.0,
-                },
-
-                #[name = "total"]
-                gtk::Label {
-                    add_css_class: "numeric",
-                    add_css_class: "caption",
-                    add_css_class: "dim-label",
-                    set_width_chars: 5,
-                    set_xalign: 0.0,
-                },
+            },
             },
 
             // --- transport -------------------------------------------------
@@ -614,12 +607,7 @@ impl SimpleComponent for NowPlaying {
     fn post_view(&self, widgets: &mut Self::Widgets) {
         // `set_label` compares internally and no-ops when unchanged, so these
         // are free on a tick that only moved the slider.
-        widgets
-            .elapsed
-            .set_label(&format_duration(self.shown_position_ms()));
-        widgets
-            .total
-            .set_label(&format_duration(self.snap.duration_ms));
+        widgets.time.set_label(&self.time_label());
 
         // `gtk_image_set_from_file` does **not** compare — it reloads and
         // re-decodes every time it is called. This function runs on every
@@ -747,6 +735,20 @@ impl NowPlaying {
         }
     }
 
+    /// `elapsed / total`, or nothing at all for a track with no known length —
+    /// a lone "0:04" beside a slash and a blank says the app has lost track of
+    /// something, when in fact there is simply nothing to divide by yet.
+    fn time_label(&self) -> String {
+        if self.snap.duration_ms == 0 {
+            return String::new();
+        }
+        format!(
+            "{} / {}",
+            format_duration(self.shown_position_ms()),
+            format_duration(self.snap.duration_ms)
+        )
+    }
+
     fn progress(&self) -> f64 {
         if self.snap.duration_ms == 0 {
             return 0.0;
@@ -838,6 +840,21 @@ mod tests {
             synced_at: None,
             advance: None,
         }
+    }
+
+    #[test]
+    fn a_track_with_no_length_shows_no_clock() {
+        assert_eq!(model(Snapshot::default()).time_label(), "");
+    }
+
+    #[test]
+    fn the_clock_reads_elapsed_over_total() {
+        let m = model(Snapshot {
+            position_ms: 64_000,
+            duration_ms: 217_000,
+            ..Default::default()
+        });
+        assert_eq!(m.time_label(), "1:04 / 3:37");
     }
 
     #[test]
