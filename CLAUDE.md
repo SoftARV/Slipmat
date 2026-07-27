@@ -81,6 +81,47 @@ redistribution is not the obstacle it looked like — a Flatpak or an AUR packag
 would carry Electron and nothing more, and the CDM download needs only network
 access and a writable, persistent config directory.
 
+**And that is now measured rather than reasoned.** Tonearm was run inside a real
+`org.gnome.Platform//49` sandbox with `--nofilesystem=home`, a private `HOME`
+carrying the Apple session but **no CDM**, and playback worked:
+
+```text
+widevine ready: {"status":"updated","version":"4.10.3050.0"}
+…/.config/Tonearm/WidevineCdm/4.10.3050.0/_platform_specific/linux_x64/libwidevinecdm.so
+```
+
+So the component updater reaches out over `--share=network`, writes into the
+app's own config directory, and the CDM decrypts — a track played. The original
+plan called a sandboxed CDM "genuinely hard" and deferred Flatpak on the
+strength of it; that was reasoning, and it was wrong. What is actually hard is
+the *build*, not the runtime.
+
+Three things that experiment settled, and that a manifest has to carry:
+
+- **`org.electronjs.Electron2.BaseApp`, for zypak.** Chromium's SUID sandbox
+  cannot work inside Flatpak's — without it the sidecar aborts on
+  `chrome-sandbox is owned by root and has mode 4755` and rule 6 restarts it
+  forever. `ELECTRON_DISABLE_SANDBOX=1` proves the rest works but is not the
+  answer to ship.
+- **`--device=dri`.** Without it GTK falls back to software rendering — `egl:
+  failed to create dri2 screen` — and the grids scroll badly enough to read as
+  an app problem rather than a packaging one.
+- **`--own-name=dev.miguelrincon.Tonearm`** and the MPRIS name. Flatpak's bus
+  proxy only lets an app own names matching its ID, and `GtkApplication` exits
+  0 without a window if it cannot register.
+
+One thing it did **not** settle, and which the real build must re-check:
+`gdk_pixbuf` decoding failed there while everything else worked. Measured on
+the same covers: 650 fetched, **0** backdrops written, against 20 on the host.
+`Cover::set_file` renders fine because `GtkImage` goes through `GdkTexture`;
+`artwork::decode` and `artwork::backdrop` both call
+`Pixbuf::from_file_at_scale` and both came back empty, which is exactly the two
+features that vanished. It may be an artefact of running a *host-built* binary
+against a foreign runtime — the honest answer is that mixing those two is not a
+fair test, and the question should be asked again once the app is built inside
+the SDK. If it persists, moving those two calls to `gdk::Texture` is the fix,
+since that path already works.
+
 Two Linux facts that follow, and that you must not design around:
 
 - **No VMP signing needed.** Linux Widevine reports `PLATFORM_UNVERIFIED`; the
