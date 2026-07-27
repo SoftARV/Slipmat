@@ -21,9 +21,12 @@ src/app/mod.rs                      2690  # the model, the messages, `view!` and
                                           # 2650 -> 2680: the window breakpoint that lets the
                                           # navigation sidebar collapse, without which the app
                                           # cannot be tiled to half a screen.
-src/components/now_playing.rs       1220  # one component, and the one whose seek arithmetic took
+src/components/now_playing.rs       1240  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
+                                          # 1220 -> 1240: `mode_opacity`, shared with the drawer
+                                          # and the queue header so one control cannot read two
+                                          # ways in one app.
 src/music/client.rs                  940  # one endpoint per method against one API. Long because
                                           # Apple is, and each method is short.
 src/music/types.rs                   815  # the JSON boundary (rule 9). Wire types and our types

@@ -21,7 +21,7 @@ use relm4::prelude::*;
 use relm4::typed_view::list::{RelmListItem, TypedListView};
 use relm4::{Component, ComponentParts, ComponentSender, adw, gtk, view};
 
-use crate::components::now_playing::Repeat;
+use crate::components::now_playing::{Repeat, mode_opacity};
 use crate::components::{CurrentTrack, RowRegistry, current_track, row_registry};
 use crate::music::types::format_duration;
 
@@ -202,11 +202,9 @@ fn apply_playing(icon: &gtk::Image, remove: &gtk::Button, playing: bool) {
 
 pub struct QueueView {
     list: TypedListView<QueueItem, gtk::NoSelection>,
-    /// Mirrored from the player, never authored here (rule 3) — but **held**,
-    /// which is the half that matters. The shuffle button reports its own
-    /// changes, so the model has to adopt a click straight away; otherwise the
-    /// next view pass writes the stale value back into the widget, GTK reports
-    /// that as a change too, and the two ping-pong. See `Shuffled`.
+    /// Mirrored from the player, never authored here (rule 3). Both buttons
+    /// are plain, so these only ever *display*: nothing here can report a
+    /// change back and there is no binding to break.
     shuffle: bool,
     repeat: Repeat,
     count: usize,
@@ -234,9 +232,9 @@ pub enum QueueViewInput {
         shuffle: bool,
         repeat: Repeat,
     },
-    /// The shuffle button reported a change — the user's, or our own write
-    /// coming back. Only the first is worth forwarding.
-    Shuffled(bool),
+    /// The shuffle button was clicked. No payload — the value is derived from
+    /// the mirrored one, so this view never invents one (rule 3).
+    ShuffleClicked,
     /// The repeat button was clicked. No payload — the next mode is derived
     /// from the mirrored one, so this view never invents a value (rule 3).
     RepeatClicked,
@@ -305,25 +303,27 @@ impl Component for QueueView {
                 // Packed end-first, so left to right these read
                 // shuffle, repeat, hide.
                 //
-                // Deliberately **no** `#[watch] set_active` on the shuffle
-                // button. That is the two-way binding that froze a desktop:
-                // GTK reports a programmatic set exactly as it reports a
-                // click, and relm4 re-runs the view after every message, so a
-                // watch would write the stale value back and the widget would
-                // answer it. `update_with_view` sets it only when it differs,
-                // and `Shuffled` adopts a click before it forwards it.
-                #[name = "shuffle"]
-                pack_end = &gtk::ToggleButton {
+                // Both plain buttons, weighted by `mode_opacity` rather than
+                // filled — the same reading as the bar and the drawer.
+                //
+                // That is not only a look. A `GtkToggleButton` here would be a
+                // control that both reports *and* displays state in a
+                // component that does not own the value, which is the shape
+                // that froze a desktop: relm4 re-runs the view after every
+                // message and GTK reports a programmatic `set_active`
+                // identically to a click. A button only ever reports clicks,
+                // so there is nothing to echo and no guard to get wrong.
+                pack_end = &gtk::Button {
                     set_icon_name: "media-playlist-shuffle-symbolic",
                     set_tooltip_text: Some("Shuffle"),
                     add_css_class: "flat",
-                    connect_toggled[sender] => move |b| {
-                        sender.input(QueueViewInput::Shuffled(b.is_active()));
+                    #[watch]
+                    set_opacity: mode_opacity(model.shuffle),
+                    connect_clicked[sender] => move |_| {
+                        sender.input(QueueViewInput::ShuffleClicked);
                     },
                 },
 
-                // A plain button, not a toggle: repeat has three states, and
-                // it only ever reports a click. Nothing to echo.
                 pack_end = &gtk::Button {
                     add_css_class: "flat",
                     set_tooltip_text: Some("Repeat"),
@@ -333,7 +333,7 @@ impl Component for QueueView {
                         _ => "media-playlist-repeat-symbolic",
                     },
                     #[watch]
-                    set_opacity: if matches!(model.repeat, Repeat::Off) { 0.5 } else { 1.0 },
+                    set_opacity: mode_opacity(!matches!(model.repeat, Repeat::Off)),
                     connect_clicked[sender] => move |_| {
                         sender.input(QueueViewInput::RepeatClicked);
                     },
@@ -418,12 +418,6 @@ impl Component for QueueView {
             QueueViewInput::SetModes { shuffle, repeat } => {
                 self.shuffle = shuffle;
                 self.repeat = repeat;
-                // Only when it actually differs. `set_active` makes GTK report
-                // a change, which comes straight back as `Shuffled` — the
-                // second half of the guard is in that arm.
-                if widgets.shuffle.is_active() != self.shuffle {
-                    widgets.shuffle.set_active(self.shuffle);
-                }
                 self.update_view(widgets, sender);
                 return;
             }
@@ -431,17 +425,8 @@ impl Component for QueueView {
                 let _ = sender.output(QueueViewOutput::SetRepeat(self.repeat.next()));
                 return;
             }
-            QueueViewInput::Shuffled(on) => {
-                // Our own write coming back. Equal to what is held means it was
-                // not the user, so there is nothing to forward.
-                if self.shuffle == on {
-                    return;
-                }
-                // Adopt it *before* forwarding, so the next view pass writes
-                // back what the widget already holds rather than the value the
-                // player has not confirmed yet.
-                self.shuffle = on;
-                let _ = sender.output(QueueViewOutput::SetShuffle(on));
+            QueueViewInput::ShuffleClicked => {
+                let _ = sender.output(QueueViewOutput::SetShuffle(!self.shuffle));
                 return;
             }
             QueueViewInput::Sync { entries, playing } => {

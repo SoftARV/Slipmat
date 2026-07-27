@@ -57,6 +57,17 @@ const SEEK_SETTLE_MS: u64 = 1_500;
 /// seconds.
 const SEEK_HOLD: Duration = Duration::from_secs(10);
 
+/// How a mode button reads when its mode is off.
+///
+/// Shuffle and repeat are not transport buttons — they change what "next"
+/// *means* rather than doing anything now — so they say on or off by weight
+/// rather than by the pressed-in circle a `GtkToggleButton` draws, and the
+/// icon says which flavour of on. Shared with the drawer and the queue header
+/// so the same control cannot read two ways in one app.
+pub fn mode_opacity(on: bool) -> f64 {
+    if on { 1.0 } else { 0.45 }
+}
+
 /// How much one keyboard press or one scale step moves the volume.
 ///
 /// Shared by the volume button's adjustment and the `Ctrl`+`Up`/`Down`
@@ -200,7 +211,7 @@ pub enum NowPlayingInput {
     /// Redraw the slider from the interpolated position. Carries nothing and
     /// touches nothing but the two widgets that show time.
     Advance,
-    ShuffleToggled(bool),
+    ShuffleClicked,
     RepeatCycled,
     /// The queue button was clicked. Carries nothing: the app owns whether the
     /// sidebar is open, and the button follows it rather than leading.
@@ -409,18 +420,22 @@ impl SimpleComponent for NowPlaying {
                 // in it: they change what "next" *means* rather than doing
                 // anything now, and a toggle that looks like a transport button
                 // gets pressed by accident.
-                gtk::ToggleButton {
+                //
+                // A plain button, weighted by [`mode_opacity`]. It was a
+                // `GtkToggleButton`, whose "on" is a filled circle — a heavier
+                // mark than a mode deserves next to the transport, and one the
+                // drawer had no equivalent of, so the same control read two
+                // ways in one app.
+                gtk::Button {
                     set_icon_name: "media-playlist-shuffle-symbolic",
                     set_tooltip_text: Some("Shuffle"),
                     add_css_class: "flat",
                     add_css_class: "circular",
                     #[watch]
-                    set_active: model.snap.shuffle,
+                    set_opacity: mode_opacity(model.snap.shuffle),
                     #[watch]
                     set_sensitive: model.snap.active,
-                    connect_clicked[sender] => move |b| {
-                        sender.input(NowPlayingInput::ShuffleToggled(b.is_active()));
-                    },
+                    connect_clicked => NowPlayingInput::ShuffleClicked,
                 },
 
                 gtk::Button {
@@ -458,13 +473,12 @@ impl SimpleComponent for NowPlaying {
                     connect_clicked => NowPlayingInput::Next,
                 },
 
-                // A ToggleButton, even though repeat has three states and a
-                // toggle has two. "Off" versus "on" is the distinction that
-                // needs to be *visible* — a plain button gave no indication at
-                // all that repeat was off — and which flavour of on it is comes
-                // through the icon. Clicking still cycles.
+                // Three states, so never a toggle. "Off" versus "on" still has
+                // to be *visible* — a plain button used to give no indication
+                // at all — and that is what [`mode_opacity`] is for; which
+                // flavour of on comes through the icon. Clicking cycles.
                 #[name = "repeat_button"]
-                gtk::ToggleButton {
+                gtk::Button {
                     add_css_class: "flat",
                     add_css_class: "circular",
                     #[watch]
@@ -472,7 +486,7 @@ impl SimpleComponent for NowPlaying {
                     #[watch]
                     set_tooltip_text: Some(model.snap.repeat.tooltip()),
                     #[watch]
-                    set_active: model.snap.repeat != Repeat::Off,
+                    set_opacity: mode_opacity(model.snap.repeat != Repeat::Off),
                     #[watch]
                     set_sensitive: model.snap.active,
                     connect_clicked => NowPlayingInput::RepeatCycled,
@@ -632,7 +646,8 @@ impl SimpleComponent for NowPlaying {
                 self.snap.volume = v;
                 let _ = sender.output(NowPlayingOutput::SetVolume(v));
             }
-            NowPlayingInput::ShuffleToggled(on) => {
+            NowPlayingInput::ShuffleClicked => {
+                let on = !self.snap.shuffle;
                 // Sent, not stored. The button's own state is a `#[watch]` on
                 // the snapshot, so it snaps back if MusicKit disagrees — the
                 // mirror stays the only source of truth (rule 3).

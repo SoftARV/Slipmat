@@ -20,7 +20,7 @@ use relm4::gtk;
 use relm4::prelude::*;
 
 use super::cover::Cover;
-use super::now_playing::{NowPlayingOutput, Snapshot};
+use super::now_playing::{NowPlayingOutput, Repeat, Snapshot, mode_opacity};
 use crate::music::types::format_duration;
 
 pub struct PlayerView {
@@ -183,6 +183,12 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
             .build()
     };
 
+    // Flanking the transport, and only while the queue is closed — the queue's
+    // own header carries them once it is open, and two live copies of one
+    // control on screen at once is the redundancy this drawer keeps avoiding.
+    let shuffle = button("media-playlist-shuffle-symbolic", &["flat", "circular"]);
+    shuffle.set_tooltip_text(Some("Shuffle"));
+    let repeat = button("media-playlist-repeat-symbolic", &["flat", "circular"]);
     let previous = button("media-skip-backward-symbolic", &["flat", "circular"]);
     let play = button(
         "media-playback-start-symbolic",
@@ -202,18 +208,21 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
         (&play, PlayerViewInput::PlayPause),
         (&next, PlayerViewInput::Next),
         (&queue, PlayerViewInput::SetQueueShown(true)),
+        (&shuffle, PlayerViewInput::ShuffleClicked),
+        (&repeat, PlayerViewInput::RepeatClicked),
     ] {
         let sender = sender.clone();
         widget.connect_clicked(move |_| sender.input(msg.clone()));
     }
 
-    // Three, so play is genuinely in the middle. Shuffle and repeat used to
-    // flank them, and they belong to the queue rather than to the transport —
-    // they now live in the queue's own header, beside the thing they act on.
+    // Play is in the middle either way: five with the modes, three without,
+    // and a hidden widget takes no space.
     for w in [
-        previous.upcast_ref::<gtk::Widget>(),
+        shuffle.upcast_ref::<gtk::Widget>(),
+        previous.upcast_ref(),
         play.upcast_ref(),
         next.upcast_ref(),
+        repeat.upcast_ref(),
     ] {
         buttons.append(w);
     }
@@ -233,6 +242,8 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
         previous,
         next,
         queue,
+        shuffle,
+        repeat,
     }
 }
 
@@ -245,6 +256,8 @@ struct Bits {
     previous: gtk::Button,
     next: gtk::Button,
     queue: gtk::Button,
+    shuffle: gtk::Button,
+    repeat: gtk::Button,
 }
 
 /// Move a widget to a new parent, if it is not already there.
@@ -295,6 +308,11 @@ pub enum PlayerViewInput {
     /// The width breakpoint crossed.
     Wide(bool),
     SetQueueShown(bool),
+    /// Flip shuffle. No payload: the value is derived from the mirrored one,
+    /// so this view never invents one (rule 3).
+    ShuffleClicked,
+    /// Cycle repeat, for the same reason.
+    RepeatClicked,
 }
 
 #[relm4::component(pub)]
@@ -634,6 +652,12 @@ impl SimpleComponent for PlayerView {
                 self.queue_shown = shown;
                 self.relayout();
             }
+            PlayerViewInput::ShuffleClicked => {
+                let _ = sender.output(NowPlayingOutput::SetShuffle(!self.snap.shuffle));
+            }
+            PlayerViewInput::RepeatClicked => {
+                let _ = sender.output(NowPlayingOutput::SetRepeat(self.snap.repeat.next()));
+            }
         }
     }
 }
@@ -703,6 +727,13 @@ impl PlayerView {
         });
         bits.play.set_sensitive(self.snap.active);
         bits.previous.set_sensitive(self.snap.has_previous);
+        bits.shuffle.set_opacity(mode_opacity(self.snap.shuffle));
+        bits.repeat.set_icon_name(match self.snap.repeat {
+            Repeat::One => "media-playlist-repeat-song-symbolic",
+            _ => "media-playlist-repeat-symbolic",
+        });
+        bits.repeat
+            .set_opacity(mode_opacity(!matches!(self.snap.repeat, Repeat::Off)));
         bits.next.set_sensitive(self.snap.has_next);
     }
 
@@ -749,6 +780,8 @@ impl PlayerView {
         // which is what keeps it from reading as a duplicate.
         if let Some(bits) = self.bits.as_ref() {
             bits.queue.set_visible(!self.queue_shown);
+            bits.shuffle.set_visible(!self.queue_shown);
+            bits.repeat.set_visible(!self.queue_shown);
         }
 
         // The revealers decide what is on screen now, so the queue itself
