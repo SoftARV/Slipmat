@@ -191,12 +191,18 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
     let next = button("media-skip-forward-symbolic", &["flat", "circular"]);
     let repeat = button("media-playlist-repeat-symbolic", &["flat", "circular"]);
     repeat.set_tooltip_text(Some("Repeat"));
+    // Only the way *in*. Closing belongs to the queue's own header, so this
+    // hides once the queue is showing rather than becoming a second control
+    // for the same thing.
+    let queue = button("view-list-symbolic", &["flat", "circular"]);
+    queue.set_tooltip_text(Some("Queue"));
 
     for (widget, msg) in [
         (&previous, PlayerViewInput::Previous),
         (&play, PlayerViewInput::PlayPause),
         (&next, PlayerViewInput::Next),
         (&repeat, PlayerViewInput::RepeatCycle),
+        (&queue, PlayerViewInput::SetQueueShown(true)),
     ] {
         let sender = sender.clone();
         widget.connect_clicked(move |_| sender.input(msg.clone()));
@@ -208,6 +214,7 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
         play.upcast_ref(),
         next.upcast_ref(),
         repeat.upcast_ref(),
+        queue.upcast_ref(),
     ] {
         buttons.append(w);
     }
@@ -222,6 +229,7 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
         previous,
         next,
         repeat,
+        queue,
     }
 }
 
@@ -235,6 +243,7 @@ struct Bits {
     previous: gtk::Button,
     next: gtk::Button,
     repeat: gtk::Button,
+    queue: gtk::Button,
 }
 
 /// Move a widget to a new parent, if it is not already there.
@@ -309,32 +318,6 @@ impl SimpleComponent for PlayerView {
             set_child = &gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 add_css_class: "np-sheet",
-
-                // The queue toggle sits above everything, because in the
-                // compact layout the queue takes the artwork's place and a
-                // toggle that travelled with it would be a door that locks
-                // behind you.
-                gtk::Box {
-                    set_halign: gtk::Align::End,
-                    set_margin_top: 6,
-                    set_margin_end: 10,
-
-                    gtk::ToggleButton {
-                        set_icon_name: "view-list-symbolic",
-                        set_tooltip_text: Some("Queue"),
-                        add_css_class: "flat",
-                        add_css_class: "circular",
-                        #[watch]
-                        set_active: model.queue_shown,
-                        // Not a flip: `#[watch] set_active` makes this a
-                        // two-way binding and GTK fires `toggled` for a
-                        // programmatic set exactly as for a click, so a flip
-                        // would answer its own echo.
-                        connect_toggled[sender] => move |b| {
-                            sender.input(PlayerViewInput::SetQueueShown(b.is_active()));
-                        },
-                    },
-                },
 
                 // The player column and, when there is width for it, the queue
                 // beside it. Horizontal always: what changes is whether the
@@ -724,6 +707,13 @@ impl PlayerView {
         // a thumbnail once the queue needs the room.
         self.cover
             .resize(if self.stacked() { ART_LARGE } else { ART_THUMB });
+
+        // One control at a time: the transport's button opens the queue, the
+        // queue's own header closes it. Two buttons, but never both on screen,
+        // which is what keeps it from reading as a duplicate.
+        if let Some(bits) = self.bits.as_ref() {
+            bits.queue.set_visible(!self.queue_shown);
+        }
 
         slots.queue.set_visible(self.queue_shown);
         slots.queue_wide.set_visible(self.queue_shown && self.wide);
