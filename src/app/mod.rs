@@ -2493,6 +2493,34 @@ impl AppModel {
         popover.popup();
     }
 
+    /// Drop a track the library no longer holds, without rebuilding the list.
+    ///
+    /// Called only once the sidecar confirms, so a refused removal never takes
+    /// a row off screen. `TypedListView::remove` keeps the scroll position —
+    /// a rebuild here would throw the reader back to the top, which is the same
+    /// complaint pagination had.
+    pub(super) fn drop_removed_track(&mut self, catalog_id: &str) {
+        let before = self.all_tracks.len();
+        self.all_tracks
+            .retain(|t| t.catalog_id.as_deref() != Some(catalog_id));
+        if self.all_tracks.len() == before {
+            return; // not a library track — a catalog row stays where it is
+        }
+        // Only the Songs list mirrors `all_tracks`; a catalog search showing the
+        // same song is still a valid search result and keeps its row.
+        if self.scope() == SearchScope::Library
+            && let Some(index) = self
+                .visible_entries()
+                .iter()
+                .position(|e| e.catalog_id() == Some(catalog_id))
+        {
+            self.library.remove(index as u32);
+            // The widgets it owned are gone with it.
+            self.library_icons.borrow_mut().remove(catalog_id);
+        }
+        tracing::info!(catalog_id, "track removed from the library");
+    }
+
     /// Put back a removal the sidecar refused, and say so in words a person can
     /// act on.
     ///
@@ -2547,6 +2575,15 @@ impl AppModel {
         for page in &mut self.pages {
             page.set_in_library(catalog_id, in_library);
         }
+        // And the live rows, so the menu stops offering a removal that has
+        // already happened.
+        let lists =
+            std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
+        for registry in lists {
+            if let Some(w) = registry.borrow().get(catalog_id) {
+                w.set_in_library(in_library, None);
+            }
+        }
     }
 
     /// Record a favourite locally and repaint the row, without rebuilding the
@@ -2567,7 +2604,9 @@ impl AppModel {
             std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
         for registry in lists {
             if let Some(w) = registry.borrow().get(catalog_id) {
-                w.star.set_visible(on);
+                // Star *and* facts: the menu reads the facts, so repainting
+                // alone left a just-un-starred row still offering to un-star it.
+                w.set_favorite(on);
             }
         }
     }

@@ -147,9 +147,12 @@ impl AppModel {
                 queue_len,
             } => {
                 tracing::debug!(%cmd, state, queue_len, "sidecar finished command");
-                // Confirmed, so there is nothing left to put back.
-                if self.pending_write.as_ref().is_some_and(|p| p.cmd == cmd) {
-                    self.pending_write = None;
+                // Confirmed, so there is nothing left to put back — and a
+                // confirmed library removal is the moment the row may go.
+                if let Some(pending) = self.pending_write.take_if(|p| p.cmd == cmd)
+                    && pending.cmd == "removeFromLibrary"
+                {
+                    self.drop_removed_track(&pending.catalog_id);
                 }
             }
             Event::Tokens(tokens) => {

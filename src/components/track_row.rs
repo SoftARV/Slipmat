@@ -89,14 +89,14 @@ impl Entry {
 /// What the recycled widget is currently showing, for the context-menu gesture
 /// — which is older than any particular track and must not capture one.
 #[derive(Debug, Clone)]
-struct RowFacts {
-    catalog_id: String,
+pub struct RowFacts {
+    pub catalog_id: String,
     /// The `i.…` id, present only for a track read out of the library. Removal
     /// needs it and the catalog id will not do — the two id spaces are not
     /// interchangeable.
-    library_id: Option<String>,
-    in_library: bool,
-    favorite: bool,
+    pub library_id: Option<String>,
+    pub in_library: bool,
+    pub favorite: bool,
 }
 
 /// What a right-click on a row is asking for: a menu, for this track, here.
@@ -157,6 +157,32 @@ pub struct LibraryRowWidgets {
     pub star: gtk::Image,
     pub icon: gtk::Image,
     pub root: gtk::Box,
+    /// What the row menu will read if it opens next.
+    ///
+    /// Published because repainting the star is not enough: the menu decides
+    /// what to offer from these facts, captured at bind time. Updating the
+    /// model and the star but not this is why a just-un-starred row still
+    /// offered "Remove Favourite".
+    pub facts: std::rc::Rc<std::cell::RefCell<Option<RowFacts>>>,
+}
+
+impl LibraryRowWidgets {
+    /// Correct what the menu will see, without rebinding the row.
+    pub fn set_favorite(&self, on: bool) {
+        if let Some(facts) = self.facts.borrow_mut().as_mut() {
+            facts.favorite = on;
+        }
+        self.star.set_visible(on);
+    }
+
+    /// As above for library membership, which has no mark of its own — so this
+    /// only has to correct the facts.
+    pub fn set_in_library(&self, in_library: bool, library_id: Option<String>) {
+        if let Some(facts) = self.facts.borrow_mut().as_mut() {
+            facts.in_library = in_library;
+            facts.library_id = library_id;
+        }
+    }
 }
 
 impl LibraryItem {
@@ -447,6 +473,7 @@ impl RelmListItem for LibraryItem {
                             star: widgets.star.clone(),
                             icon: widgets.icon.clone(),
                             root: root.clone(),
+                            facts: widgets.showing.clone(),
                         },
                     );
                 }
