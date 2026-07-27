@@ -338,12 +338,19 @@ impl SimpleComponent for PlayerView {
                                     #[watch]
                                     set_visible: !model.snap.active,
 
+                                    // They differ in **length**, not in
+                                    // weight: a title runs long and an artist
+                                    // is usually a name, so two bars of the
+                                    // same thickness at clearly different
+                                    // lengths is what reads as those two
+                                    // things. Making the second thinner as
+                                    // well made it read as a caption.
                                     gtk::Box {
-                                        set_size_request: (220, 16),
+                                        set_size_request: (240, 16),
                                         add_css_class: "np-skeleton",
                                     },
                                     gtk::Box {
-                                        set_size_request: (150, 12),
+                                        set_size_request: (120, 16),
                                         add_css_class: "np-skeleton",
                                     },
                                 },
