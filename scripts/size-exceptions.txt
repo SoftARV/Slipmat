@@ -33,7 +33,7 @@ src/app/library.rs                   700  # four collections and the catalog sea
 src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
-src/components/player_view.rs        700  # the expanded player: one `view!` plus a transport built
+src/components/player_view.rs        740  # the expanded player: one `view!` plus a transport built
                                           # by hand because it *moves* between two layouts, and the
                                           # refresh that `#[watch]` cannot do for widgets outside
                                           # the macro's tree. Splitting the transport out would put

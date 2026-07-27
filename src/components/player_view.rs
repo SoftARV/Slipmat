@@ -49,7 +49,7 @@ struct Slots {
     queue: adw::ToolbarView,
     queue_wide: gtk::Box,
     queue_compact: gtk::Box,
-    transport_wide: gtk::Box,
+    transport_stacked: gtk::Box,
     transport_compact: gtk::Box,
 }
 
@@ -323,83 +323,108 @@ impl SimpleComponent for PlayerView {
                     },
                 },
 
-                // Artwork, metadata, and — when there is width — the transport
-                // and the queue beside them.
+                // The player column and, when there is width for it, the queue
+                // beside it. Horizontal always: what changes is whether the
+                // queue column next to it is showing.
                 #[name = "top"]
                 gtk::Box {
-                    set_vexpand: true,
                     set_spacing: 24,
                     set_margin_start: 24,
                     set_margin_end: 24,
-                    // Horizontal whenever the artwork has something to sit
-                    // beside: the controls when wide, the metadata when the
-                    // queue has taken the vertical space.
+                    // Only claims the height when it is the thing worth
+                    // looking at. In the compact layout with the queue open
+                    // the queue is, and this shrinks to the thumbnail and the
+                    // title above it.
                     #[watch]
-                    set_orientation: if model.wide || model.queue_shown {
-                        gtk::Orientation::Horizontal
-                    } else {
-                        gtk::Orientation::Vertical
-                    },
+                    set_vexpand: model.stacked(),
 
-                    #[name = "art_slot"]
-                    gtk::Box {
-                        set_halign: gtk::Align::Center,
-                        #[watch]
-                        set_valign: if model.wide {
-                            gtk::Align::Center
-                        } else {
-                            gtk::Align::Start
-                        },
-                    },
-
-                    #[name = "mid"]
+                    // The player, as one column: artwork, then what is
+                    // playing, then the transport **under** it. The transport
+                    // used to sit in the metadata column, which put it beside
+                    // the artwork rather than below it in every layout wide
+                    // enough to have a choice.
+                    #[name = "player_col"]
                     gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
                         set_hexpand: true,
                         set_spacing: 16,
+                        // Centred in the drawer when it is a column, pinned to
+                        // the top when the queue is below it and wants the rest.
                         #[watch]
-                        set_valign: if model.wide {
+                        set_valign: if model.stacked() {
                             gtk::Align::Center
                         } else {
                             gtk::Align::Start
                         },
 
+                        // Artwork above the metadata, except in the one layout
+                        // with no room for it — compact, queue open — where the
+                        // artwork shrinks to a thumbnail and sits beside it.
+                        #[name = "head"]
                         gtk::Box {
-                            set_orientation: gtk::Orientation::Vertical,
-                            set_spacing: 2,
+                            set_spacing: 16,
                             #[watch]
-                            set_halign: if model.centred_text() {
-                                gtk::Align::Center
+                            set_orientation: if model.stacked() {
+                                gtk::Orientation::Vertical
                             } else {
-                                gtk::Align::Start
+                                gtk::Orientation::Horizontal
                             },
 
-                            gtk::Label {
-                                add_css_class: "title-1",
-                                set_ellipsize: gtk::pango::EllipsizeMode::End,
-                                set_max_width_chars: 28,
-                                set_use_markup: false,
+                            #[name = "art_slot"]
+                            gtk::Box {
                                 #[watch]
-                                set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
+                                set_halign: if model.stacked() {
+                                    gtk::Align::Center
+                                } else {
+                                    gtk::Align::Start
+                                },
                                 #[watch]
-                                set_label: &model.snap.title,
+                                set_valign: if model.stacked() {
+                                    gtk::Align::End
+                                } else {
+                                    gtk::Align::Center
+                                },
                             },
-                            gtk::Label {
-                                add_css_class: "title-4",
-                                add_css_class: "dim-label",
-                                set_ellipsize: gtk::pango::EllipsizeMode::End,
-                                set_max_width_chars: 34,
-                                set_use_markup: false,
+
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_hexpand: true,
+                                set_valign: gtk::Align::Center,
+                                set_spacing: 2,
                                 #[watch]
-                                set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
-                                #[watch]
-                                set_label: &model.subtitle(),
+                                set_halign: if model.centred_text() {
+                                    gtk::Align::Center
+                                } else {
+                                    gtk::Align::Start
+                                },
+
+                                gtk::Label {
+                                    add_css_class: "title-1",
+                                    set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                    set_max_width_chars: 28,
+                                    set_use_markup: false,
+                                    #[watch]
+                                    set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
+                                    #[watch]
+                                    set_label: &model.snap.title,
+                                },
+                                gtk::Label {
+                                    add_css_class: "title-4",
+                                    add_css_class: "dim-label",
+                                    set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                    set_max_width_chars: 34,
+                                    set_use_markup: false,
+                                    #[watch]
+                                    set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
+                                    #[watch]
+                                    set_label: &model.subtitle(),
+                                },
                             },
                         },
 
-                        // Where the transport lives when there is width for it
-                        // to sit under the metadata.
-                        #[name = "transport_wide"]
+                        // Where the transport lives whenever the artwork is
+                        // above it, which is every layout but one.
+                        #[name = "transport_stacked"]
                         gtk::Box { set_orientation: gtk::Orientation::Vertical },
                     },
 
@@ -461,7 +486,7 @@ impl SimpleComponent for PlayerView {
             queue,
             queue_wide: widgets.queue_wide.clone(),
             queue_compact: widgets.queue_compact.clone(),
-            transport_wide: widgets.transport_wide.clone(),
+            transport_stacked: widgets.transport_stacked.clone(),
             transport_compact: widgets.transport_compact.clone(),
         });
         model.relayout();
@@ -580,10 +605,22 @@ pub fn hand_over_queue(queue: adw::ToolbarView) {
 }
 
 impl PlayerView {
+    /// Whether the artwork sits **above** the rest of the player rather than
+    /// beside it.
+    ///
+    /// One question, asked in four places, and the reason it is a method: this
+    /// is the layout. Every layout stacks — artwork, then what is playing, then
+    /// the transport under it — except the single case with no vertical room to
+    /// spare, compact with the queue open, where the artwork becomes a
+    /// thumbnail beside the title and the queue takes the height.
+    fn stacked(&self) -> bool {
+        self.wide || !self.queue_shown
+    }
+
     /// Text is centred only when the artwork is above it — a column reads as a
-    /// column. Beside the artwork, or beside a thumbnail, it aligns left.
+    /// column. Beside a thumbnail, it aligns left.
     fn centred_text(&self) -> bool {
-        !self.wide && !self.queue_shown
+        self.stacked()
     }
 
     /// Push the current snapshot into the hand-built transport.
@@ -646,24 +683,30 @@ impl PlayerView {
         let Some(slots) = self.slots.as_ref() else {
             return;
         };
-        // Wide: the transport sits under the metadata, the queue is a column of
-        // its own. Compact: both go full width beneath, and the queue takes the
-        // vertical space the artwork gives up.
-        let (transport_home, queue_home) = if self.wide {
-            (&slots.transport_wide, &slots.queue_wide)
+        // The transport goes under the artwork wherever the artwork is above
+        // it, which is everywhere but the compact layout with the queue open —
+        // there it drops to the foot of the drawer, under the queue, because
+        // that is still below the artwork and it must stay visible.
+        //
+        // The queue's home is a different question, and asking it separately is
+        // the point: it depends on width alone, the transport's on the layout.
+        let transport_home = if self.stacked() {
+            &slots.transport_stacked
         } else {
-            (&slots.transport_compact, &slots.queue_compact)
+            &slots.transport_compact
+        };
+        let queue_home = if self.wide {
+            &slots.queue_wide
+        } else {
+            &slots.queue_compact
         };
         reparent(&self.transport, transport_home);
         reparent(&slots.queue, queue_home);
 
         // The artwork is the elastic element: large when it is the subject,
         // a thumbnail once the queue needs the room.
-        self.cover.resize(if self.queue_shown && !self.wide {
-            ART_THUMB
-        } else {
-            ART_LARGE
-        });
+        self.cover
+            .resize(if self.stacked() { ART_LARGE } else { ART_THUMB });
 
         slots.queue.set_visible(self.queue_shown);
         slots.queue_wide.set_visible(self.queue_shown && self.wide);
