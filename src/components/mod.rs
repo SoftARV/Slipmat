@@ -122,6 +122,58 @@ pub fn dead_tracks() -> DeadTracks {
     std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new()))
 }
 
+/// What has changed about a track since it was fetched, shared with every row.
+///
+/// Third of its kind, and for the third time the same reason: a row must not
+/// carry state that can change while it is off screen. `CurrentTrack` and
+/// `DeadTracks` already work this way; favourites and library membership did
+/// not, and paid for it three times in one evening — the star cleared while the
+/// menu still offered to un-star, "Add to Library" kept being offered for a
+/// song already added, and un-favouriting came undone the moment the row
+/// scrolled out and back.
+///
+/// Each of those was one copy of the truth left behind. `Track` is what Apple
+/// said when we asked; this is what has happened since; the row combines them
+/// at bind time. Nothing else needs updating, which is the point — there is no
+/// list store clone to patch, because the clone is no longer authoritative.
+///
+/// Cleared when a section reloads: fresh data supersedes anything remembered
+/// here.
+pub type TrackOverrides =
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, TrackOverride>>>;
+
+/// `None` on a field means "nothing has happened to it" — which is different
+/// from `Some(false)`, and is why these are options rather than bools.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TrackOverride {
+    pub favorite: Option<bool>,
+    pub in_library: Option<bool>,
+}
+
+pub fn track_overrides() -> TrackOverrides {
+    std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()))
+}
+
+/// Apply whatever has happened to a track on top of what was fetched.
+pub fn overridden(
+    overrides: &TrackOverrides,
+    catalog_id: Option<&str>,
+    fetched_favorite: bool,
+    fetched_in_library: bool,
+) -> (bool, bool) {
+    let Some(id) = catalog_id else {
+        return (fetched_favorite, fetched_in_library);
+    };
+    let map = overrides.borrow();
+    let Some(over) = map.get(id) else {
+        return (fetched_favorite, fetched_in_library);
+    };
+    (
+        over.favorite.unwrap_or(fetched_favorite),
+        over.in_library.unwrap_or(fetched_in_library),
+    )
+}
+
 /// Count a recycled widget being built, and say so at `trace` level.
 ///
 /// `setup` runs once per *widget*, not once per item, so this is the direct

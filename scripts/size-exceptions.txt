@@ -22,7 +22,7 @@ src/music/client.rs                  940  # one endpoint per method against one 
                                           # Apple is, and each method is short.
 src/music/types.rs                   815  # the JSON boundary (rule 9). Wire types and our types
                                           # side by side is the point — they are read together.
-src/app/library.rs                   680  # four collections and the catalog search, all landing in
+src/app/library.rs                   700  # four collections and the catalog search, all landing in
                                           # the same list.
 src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists

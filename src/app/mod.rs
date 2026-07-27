@@ -54,7 +54,8 @@ use crate::components::queue_view::{QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::LibraryRowWidgets;
 use crate::components::track_row::{Entry, LibraryItem, RowMenuRequest};
 use crate::components::{
-    CurrentTrack, DeadTracks, RowRegistry, current_track, dead_tracks, row_registry,
+    CurrentTrack, DeadTracks, RowRegistry, TrackOverrides, current_track, dead_tracks,
+    row_registry, track_overrides,
 };
 use crate::mpris::Mpris;
 use crate::music::types::{Album, Artist, Artwork, Playlist, Track};
@@ -194,6 +195,11 @@ pub struct AppModel {
     current_track: CurrentTrack,
     /// Ids MusicKit refused, shared with every library row; see `DeadTracks`.
     dead_rows: DeadTracks,
+    /// What has changed about a track since it was fetched — favourites and
+    /// library membership — shared with every row in every list. See
+    /// `components::TrackOverrides`: this replaces patching four separate
+    /// copies of the same fact.
+    row_overrides: TrackOverrides,
     /// The full library from the last load. The filter reads this, never the
     /// factory, so narrowing and then clearing a search is lossless.
     all_tracks: Vec<Track>,
@@ -1326,6 +1332,7 @@ impl Component for AppModel {
             library_icons: row_registry(),
             current_track: current_track(),
             dead_rows: dead_tracks(),
+            row_overrides: track_overrides(),
             // filled from `dead_ids` once the model exists (see below)
             all_tracks: Vec::new(),
             library_query: String::new(),

@@ -25,7 +25,7 @@ use relm4::{adw, gtk};
 
 use crate::components::cover::Cover;
 use crate::components::track_row::{Entry, LibraryItem, LibraryRowWidgets};
-use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
+use crate::components::{CurrentTrack, DeadTracks, RowRegistry, TrackOverrides};
 use crate::music::types::{Album, Artist, Artwork, Playlist};
 
 /// Header artwork, in logical pixels. The widget is pinned to exactly this so
@@ -105,6 +105,9 @@ impl PageKind {
 pub struct RowState {
     pub current: CurrentTrack,
     pub dead: DeadTracks,
+    /// Favourites and membership as they are now. Shared with the lists behind
+    /// this page, so un-starring a song here is true everywhere it appears.
+    pub overrides: TrackOverrides,
 }
 
 pub struct DetailPage {
@@ -288,46 +291,6 @@ impl DetailPage {
         self.header.set_show_end_title_buttons(show);
     }
 
-    /// Update a track's favourite flag in this page's own copy of the list, so
-    /// a later rebind does not undo what the user just did.
-    pub fn set_favorite(&mut self, catalog_id: &str, on: bool) {
-        self.patch(catalog_id, |track| track.favorite = on);
-    }
-
-    /// Apply a change to **both** copies of a track: the page's own list and
-    /// the clone inside the view's store.
-    ///
-    /// The store's copy is what `RelmListItem::bind` reads when a recycled row
-    /// comes back, so updating only `entries` means the change survives until
-    /// the row scrolls out of view and no further.
-    fn patch(&mut self, catalog_id: &str, patch: impl Fn(&mut crate::music::types::Track)) {
-        for entry in &mut self.entries {
-            if let Entry::Song(track) = entry
-                && track.catalog_id.as_deref() == Some(catalog_id)
-            {
-                patch(track);
-            }
-        }
-        for index in 0..self.list.len() {
-            let Some(item) = self.list.get(index) else {
-                continue;
-            };
-            let mut item = item.borrow_mut();
-            if let Entry::Song(track) = &mut item.entry
-                && track.catalog_id.as_deref() == Some(catalog_id)
-            {
-                patch(track);
-                break;
-            }
-        }
-    }
-
-    /// As [`Self::set_favorite`], for library membership — which the row menu
-    /// reads to decide whether "Add to Library" is worth offering.
-    pub fn set_in_library(&mut self, catalog_id: &str, in_library: bool) {
-        self.patch(catalog_id, |track| track.in_library = in_library);
-    }
-
     /// This page's own row widgets, so the play marker can find them.
     pub fn registry(&self) -> &RowRegistry<LibraryRowWidgets> {
         &self.registry
@@ -433,6 +396,7 @@ impl DetailPage {
                 self.registry.clone(),
                 self.state.current.clone(),
                 self.state.dead.clone(),
+                self.state.overrides.clone(),
             )
         });
         self.list.extend_from_iter(items);
