@@ -69,6 +69,7 @@ use crate::settings::{Section, Settings, Theme};
 /// `PlayerState::interpolated_position_ms` fills the gaps; this timer just
 /// drives the repaint. Removed entirely when not playing — a paused player
 /// should cost nothing (the same discipline as Pitwall's suspend-gated poll).
+mod background;
 mod chrome;
 mod library;
 mod pages;
@@ -284,6 +285,9 @@ pub struct AppModel {
     /// Which kinds the catalog search asks for. Not persisted: a filter belongs
     /// to the search you are running, not to how you like the app.
     catalog_filter: CatalogFilter,
+    /// Keeps the process alive while the window is hidden. `None` means the
+    /// app is only alive because a window is open, which is the normal state.
+    background: Option<gtk::gio::ApplicationHoldGuard>,
     /// Removals sent to the sidecar and not yet confirmed, by the id each
     /// command carried. See [`PendingWrite`].
     pending_writes: std::collections::HashMap<String, PendingWrite>,
@@ -437,6 +441,10 @@ pub enum AppMsg {
     Unfavorite {
         catalog_id: String,
     },
+    /// The window's close button, or the WM. Not a quit: see the handler.
+    WindowCloseRequested,
+    /// The window is on screen again, however that happened.
+    WindowShown,
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
     /// Empty the queue and stop.
@@ -557,6 +565,8 @@ pub enum CommandMsg {
     LibraryPlaylists(Result<Vec<Playlist>, String>),
     /// A library write came back. `Ok` means Apple **accepted** it, not that
     /// it is done — see `Client::add_to_library`.
+    /// Whether the Background portal agreed to list us. Advisory only.
+    BackgroundPortal(Result<(), String>),
     LibraryWritten {
         catalog_id: String,
         action: LibraryAction,
@@ -579,6 +589,22 @@ impl Component for AppModel {
     view! {
         adw::ApplicationWindow {
             set_title: Some("Tonearm"),
+
+            // Closing a music player mid-song should not stop the music.
+            // Always `Stop` — the reducer decides whether this is a hide or a
+            // quit, because that depends on whether anything is loaded and the
+            // handler cannot see the model.
+            connect_close_request[sender] => move |_| {
+                sender.input(AppMsg::WindowCloseRequested);
+                gtk::glib::Propagation::Stop
+            },
+
+            // Any route back to a visible window — relaunching, the Background
+            // Apps list, the media applet — means we are no longer running
+            // without one, so the hold goes.
+            connect_show[sender] => move |_| {
+                sender.input(AppMsg::WindowShown);
+            },
             set_default_width: 1000,
             set_default_height: 680,
 
@@ -1333,6 +1359,7 @@ impl Component for AppModel {
             catalog: Vec::new(),
             catalog_paged: 0,
             catalog_filter: CatalogFilter::default(),
+            background: None,
             pending_writes: std::collections::HashMap::new(),
             pages: Vec::new(),
             next_page_id: 1,
@@ -1959,6 +1986,15 @@ impl AppModel {
                 // the user was looking at no longer exists in that order.
                 self.rebuild_rows();
             }
+            AppMsg::WindowCloseRequested => self.close_window(root, &sender),
+            AppMsg::WindowShown => {
+                // Dropping the guard is the whole of it: with a window on
+                // screen GTK keeps the app alive by itself, and `background`
+                // should mean what its name says.
+                if self.background.take().is_some() {
+                    tracing::info!("window shown; no longer background-only");
+                }
+            }
             AppMsg::RemoveFromLibrary {
                 library_id,
                 catalog_id,
@@ -2188,6 +2224,23 @@ impl AppModel {
                     }
                 }
             }
+            // Advisory: the app is already in the background by the time this
+            // answers. A refusal costs discoverability in Quick Settings, not
+            // playback, so it is logged rather than toasted.
+            CommandMsg::BackgroundPortal(result) => match result {
+                Ok(()) => tracing::info!("background portal: listed"),
+                // Almost always "no AppId detected": the portal identifies a
+                // non-sandboxed app from its systemd scope, which only exists
+                // when it was launched from its .desktop entry. A binary run
+                // straight from a terminal cannot be listed, and that is a
+                // property of the session rather than a fault here — playback
+                // is unaffected either way.
+                Err(err) => tracing::warn!(
+                    %err,
+                    "background portal refused; Quick Settings will not list Tonearm \
+                     (expected when not launched from its .desktop entry)"
+                ),
+            },
             CommandMsg::LibraryWritten {
                 catalog_id,
                 action,
