@@ -200,6 +200,11 @@ impl AppModel {
                     self.toast(detail);
                 }
             }
+            // Logged rather than acted on: the model forgot its half when it
+            // sent the command. This is the sidecar confirming it dropped
+            // Apple's cookies too, which is the half that used to be skipped
+            // silently — so it is worth being able to see in a log.
+            Event::SignedOut => tracing::info!("apple session cleared"),
             _ => {}
         }
         // Captured before the mirror moves on, so a transition can be reported

@@ -1494,10 +1494,10 @@ impl AppModel {
             }
             AppMsg::SignOutConfirmed => {
                 tracing::info!("signing out");
-                // Tell MusicKit first: it drops Apple's session, and the
-                // sidecar's `authorizationStatusDidChange` will confirm it
-                // rather than us assuming.
-                self.send(Command::Unauthorize);
+                // The sidecar drops Apple's session — cookies and all, not just
+                // MusicKit's token — and its `authorizationStatusDidChange`
+                // confirms it rather than us assuming.
+                self.send(Command::SignOut);
                 self.forget_session();
             }
             AppMsg::PlayPause => self.send(Command::PlayPause),
