@@ -13,6 +13,23 @@ use relm4::gtk;
 
 use super::{AppModel, Stage, View};
 
+/// Spinner or status page, while the sidecar is still coming up.
+///
+/// The distinction is whether waiting is the whole answer. Starting, fetching
+/// the CDM and connecting all resolve by themselves in a few seconds — measured
+/// at ~5s total, of which roughly 95% is Apple's own page and MusicKit booting,
+/// so there is very little here to make faster. Those stages want motion.
+///
+/// Signed out, broken and reconnecting are different: each needs the user to
+/// read something or do something, and a spinner over them would promise a
+/// resolution that is not coming.
+fn startup_page(stage: &Stage) -> &'static str {
+    match stage {
+        Stage::Starting | Stage::InstallingWidevine | Stage::Connecting => "loading",
+        Stage::SignedOut | Stage::Broken(_) | Stage::Restarting(_) | Stage::Ready => "status",
+    }
+}
+
 impl AppModel {
     /// Is there anything for the content pane to show?
     ///
@@ -32,6 +49,25 @@ impl AppModel {
         }
     }
 
+    /// What the spinner page says it is waiting for.
+    ///
+    /// Bringing the sidecar up comes first: during those stages no section is
+    /// loading anything, so naming the section would be a lie about what is
+    /// actually slow.
+    pub(super) fn waiting_for(&self) -> String {
+        if !matches!(self.stage, Stage::Ready) {
+            return self.headline();
+        }
+        match self.view {
+            View::Search => "Searching Apple Music",
+            View::Albums => "Loading your albums",
+            View::Artists => "Loading your artists",
+            View::Playlists => "Loading your playlists",
+            View::Songs => "Loading your library",
+        }
+        .into()
+    }
+
     pub(super) fn page(&self) -> &'static str {
         // Only the *first* load takes over the screen. A reload with content
         // already on show keeps it up and just disables the refresh button —
@@ -47,7 +83,18 @@ impl AppModel {
         if !self.showing_library() {
             // A dead sidecar or a signed-out session outranks everything: no
             // section has anything to show.
-            return "status";
+            //
+            // But *how* it says so depends on whether waiting is the answer.
+            // Bringing the sidecar up takes about five seconds, measured, and
+            // roughly 95% of that is Apple's own page and MusicKit booting —
+            // there is almost nothing here to make faster. What there was to
+            // fix is that those seconds were spent on a `StatusPage` whose icon
+            // never moves, which reads as frozen rather than busy.
+            //
+            // So the transient stages get the spinner, and the ones that need a
+            // decision — signed out, broken, reconnecting — keep the status
+            // page, which can say what to do about it.
+            return startup_page(&self.stage);
         }
 
         match self.view {
@@ -171,6 +218,32 @@ impl AppModel {
                 .map(|t| t.storefront.to_uppercase())
                 .unwrap_or_default(),
             _ => String::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_stages_that_resolve_themselves_get_a_spinner() {
+        // Motion promises "wait and this will finish". True while the sidecar
+        // is coming up; a lie for the three that need the user to read or do
+        // something, and a spinner over those is how a stuck app looks busy.
+        for stage in [
+            Stage::Starting,
+            Stage::InstallingWidevine,
+            Stage::Connecting,
+        ] {
+            assert_eq!(startup_page(&stage), "loading", "{stage:?}");
+        }
+        for stage in [
+            Stage::SignedOut,
+            Stage::Broken("Apple changed the page".into()),
+            Stage::Restarting(2),
+        ] {
+            assert_eq!(startup_page(&stage), "status", "{stage:?}");
         }
     }
 }

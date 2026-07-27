@@ -956,13 +956,7 @@ impl Component for AppModel {
                                             gtk::Label {
                                                 add_css_class: "title-2",
                                                 #[watch]
-                                                set_label: match model.view {
-                                                    View::Search => "Searching Apple Music",
-                                                    View::Albums => "Loading your albums",
-                                                    View::Artists => "Loading your artists",
-                                                    View::Playlists => "Loading your playlists",
-                                                    View::Songs => "Loading your library",
-                                                },
+                                                set_label: &model.waiting_for(),
                                             },
                                         },
 
