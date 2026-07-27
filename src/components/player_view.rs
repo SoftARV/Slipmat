@@ -20,7 +20,7 @@ use relm4::gtk;
 use relm4::prelude::*;
 
 use super::cover::Cover;
-use super::now_playing::{NowPlayingOutput, Repeat, Snapshot};
+use super::now_playing::{NowPlayingOutput, Snapshot};
 use crate::music::types::format_duration;
 
 pub struct PlayerView {
@@ -183,15 +183,6 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
             .build()
     };
 
-    let shuffle = gtk::ToggleButton::builder()
-        .icon_name("media-playlist-shuffle-symbolic")
-        .tooltip_text("Shuffle")
-        .css_classes(["flat", "circular"])
-        .build();
-    {
-        let sender = sender.clone();
-        shuffle.connect_toggled(move |b| sender.input(PlayerViewInput::Shuffle(b.is_active())));
-    }
     let previous = button("media-skip-backward-symbolic", &["flat", "circular"]);
     let play = button(
         "media-playback-start-symbolic",
@@ -200,8 +191,6 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
     play.set_width_request(56);
     play.set_height_request(56);
     let next = button("media-skip-forward-symbolic", &["flat", "circular"]);
-    let repeat = button("media-playlist-repeat-symbolic", &["flat", "circular"]);
-    repeat.set_tooltip_text(Some("Repeat"));
     // Only the way *in*. Closing belongs to the queue's own header, so this
     // hides once the queue is showing rather than becoming a second control
     // for the same thing.
@@ -212,34 +201,37 @@ fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerView>) -> Bit
         (&previous, PlayerViewInput::Previous),
         (&play, PlayerViewInput::PlayPause),
         (&next, PlayerViewInput::Next),
-        (&repeat, PlayerViewInput::RepeatCycle),
         (&queue, PlayerViewInput::SetQueueShown(true)),
     ] {
         let sender = sender.clone();
         widget.connect_clicked(move |_| sender.input(msg.clone()));
     }
 
+    // Three, so play is genuinely in the middle. Shuffle and repeat used to
+    // flank them, and they belong to the queue rather than to the transport —
+    // they now live in the queue's own header, beside the thing they act on.
     for w in [
-        shuffle.upcast_ref::<gtk::Widget>(),
-        previous.upcast_ref(),
+        previous.upcast_ref::<gtk::Widget>(),
         play.upcast_ref(),
         next.upcast_ref(),
-        repeat.upcast_ref(),
-        queue.upcast_ref(),
     ] {
         buttons.append(w);
     }
     into.append(&buttons);
 
+    // Under the play button rather than beside it, so it never disturbs the
+    // count that keeps play centred.
+    let queue_row = gtk::Box::builder().halign(gtk::Align::Center).build();
+    queue_row.append(&queue);
+    into.append(&queue_row);
+
     Bits {
         elapsed,
         remaining,
         scale,
-        shuffle,
         play,
         previous,
         next,
-        repeat,
         queue,
     }
 }
@@ -249,11 +241,9 @@ struct Bits {
     elapsed: gtk::Label,
     remaining: gtk::Label,
     scale: gtk::Scale,
-    shuffle: gtk::ToggleButton,
     play: gtk::Button,
     previous: gtk::Button,
     next: gtk::Button,
-    repeat: gtk::Button,
     queue: gtk::Button,
 }
 
@@ -302,13 +292,9 @@ pub enum PlayerViewInput {
     PlayPause,
     Next,
     Previous,
-    Shuffle(bool),
     /// The width breakpoint crossed.
     Wide(bool),
     SetQueueShown(bool),
-    /// Cycle to the next repeat mode. No payload: the mirror says what is
-    /// current, and this view must not have an opinion of its own (rule 3).
-    RepeatCycle,
 }
 
 #[relm4::component(pub)]
@@ -363,6 +349,13 @@ impl SimpleComponent for PlayerView {
                         set_spacing: 16,
                         set_margin_start: 24,
                         set_margin_end: 24,
+                        // Not on `top`: the queue shares that box and wants to
+                        // stay flush. The drawer's drag handle is drawn over
+                        // the top edge, so without this the artwork starts
+                        // under it and, in the compact layout, the title is
+                        // written straight through it.
+                        set_margin_top: 24,
+                        set_margin_bottom: 24,
                         // Centred in the drawer when it is a column, pinned to
                         // the top when the queue is below it and wants the rest.
                         #[watch]
@@ -475,7 +468,14 @@ impl SimpleComponent for PlayerView {
                 gtk::Revealer {
                     set_transition_type: gtk::RevealerTransitionType::SlideUp,
                     set_transition_duration: QUEUE_ANIM_MS,
-                    set_vexpand: true,
+                    // **Only while it is actually showing.** A collapsed
+                    // revealer draws nothing but still claims its share of the
+                    // expansion, so leaving this on meant this and `top` split
+                    // the drawer's height between them — and the player,
+                    // centred inside its half, sat in the upper part of the
+                    // drawer with the rest of it empty below.
+                    #[watch]
+                    set_vexpand: model.queue_shown && !model.wide,
 
                     #[wrap(Some)]
                     #[name = "queue_compact"]
@@ -634,19 +634,6 @@ impl SimpleComponent for PlayerView {
                 self.queue_shown = shown;
                 self.relayout();
             }
-            PlayerViewInput::Shuffle(on) => {
-                let _ = sender.output(NowPlayingOutput::SetShuffle(on));
-            }
-            PlayerViewInput::RepeatCycle => {
-                // Cycles through the three modes; the mirror decides what is
-                // next, exactly as the bar's button does.
-                let next = match self.snap.repeat {
-                    Repeat::Off => Repeat::All,
-                    Repeat::All => Repeat::One,
-                    Repeat::One => Repeat::Off,
-                };
-                let _ = sender.output(NowPlayingOutput::SetRepeat(next));
-            }
         }
     }
 }
@@ -717,21 +704,6 @@ impl PlayerView {
         bits.play.set_sensitive(self.snap.active);
         bits.previous.set_sensitive(self.snap.has_previous);
         bits.next.set_sensitive(self.snap.has_next);
-        // `set_active` fires `toggled`, and the handler would send the value
-        // straight back — so only touch it when it actually differs.
-        if bits.shuffle.is_active() != self.snap.shuffle {
-            bits.shuffle.set_active(self.snap.shuffle);
-        }
-        bits.repeat.set_icon_name(match self.snap.repeat {
-            Repeat::One => "media-playlist-repeat-song-symbolic",
-            _ => "media-playlist-repeat-symbolic",
-        });
-        bits.repeat
-            .set_opacity(if matches!(self.snap.repeat, Repeat::Off) {
-                0.5
-            } else {
-                1.0
-            });
     }
 
     /// Put the transport and the queue where this layout wants them.

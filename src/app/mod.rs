@@ -1320,6 +1320,8 @@ impl Component for AppModel {
                 QueueViewOutput::Remove(id) => AppMsg::RemoveFromQueue(id),
                 QueueViewOutput::Clear => AppMsg::ClearQueue,
                 QueueViewOutput::Hide => AppMsg::ShowQueuePane(false),
+                QueueViewOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
+                QueueViewOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
             });
 
         // The queue **moves** into the expanded player rather than being

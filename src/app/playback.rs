@@ -160,6 +160,12 @@ impl AppModel {
         // Both shapes of the same player get the same snapshot. Deriving the
         // drawer's state separately is how two views of one thing come to
         // disagree.
+        // Shuffle and repeat live in the queue's header, so it needs them too —
+        // from the same snapshot as the other two, for the same reason.
+        self.queue_view.emit(QueueViewInput::SetModes {
+            shuffle: snap.shuffle,
+            repeat: snap.repeat,
+        });
         self.player_view
             .emit(PlayerViewInput::Sync(Box::new(snap.clone())));
         self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));
