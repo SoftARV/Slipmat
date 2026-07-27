@@ -359,47 +359,22 @@ impl Component for QueueView {
                 // `restore_scroll_after_edit` handles it. One symptom, two
                 // causes — which is what made porting the library's fix here
                 // both unnecessary and harmful.
-                // Restore the offset after GTK discards it.
+                // **The queue does not restore its scroll. See #6.**
                 //
-                // Measured with no intervention at all (#6): `value` holds for
-                // 1ms and is 0.0 by 30ms, while `upper` is healthy — the same
-                // assignment the library hits, only sooner (50-100ms there).
+                // It has the same underlying fault as the library — measured,
+                // `value` holds for a millisecond and is 0.0 by 30ms while
+                // `upper` is healthy — but every attempt to correct it here was
+                // worse than the jump. Re-anchoring after the fact is a visible
+                // trip to the top and back; asserting it up front left the list
+                // rendering a single row until a hover; and neither landed on
+                // exactly the old position, because the anchor is derived from
+                // a pixel offset over a mean row height.
                 //
-                //     before  value=10333 upper=25676 rows=523
-                //     +1ms    value=10333 upper=25676
-                //     +30ms   value=0.0   upper=25631
-                //
-                // The anchor comes from the adjustment. The registry-based
-                // `topmost_visible` this used to call returned the first id in
-                // queue order with a registry entry — which includes recycled
-                // and off-screen rows, so it answered position 0 while the user
-                // was 3553px down, and the re-anchor obeyed. That was a second,
-                // separate bug wearing the same symptom.
-                let adj = widgets.scroller.vadjustment();
-                let rows = self.shown.len().max(1) as f64;
-                let row_height = adj.upper() / rows;
-                let top_item = if row_height > 0.0 {
-                    (adj.value() / row_height).floor() as usize
-                } else {
-                    0
-                };
-
-                let structural = self.apply(entries, playing, sender.input_sender().clone());
-
-                if structural && top_item > 0 {
-                    let target = top_item.min(self.shown.len().saturating_sub(1));
-                    tracing::debug!(
-                        top_item,
-                        target,
-                        rows = self.shown.len(),
-                        "queue: re-anchoring"
-                    );
-                    crate::components::restore_scroll_after_edit(
-                        &self.list.view,
-                        &adj,
-                        target as u32,
-                    );
-                }
+                // The library keeps its restore because there it is invisible
+                // and exact. Here it is neither, so the honest thing is to let
+                // the list jump rather than perform a worse animation on the
+                // way. Removing a track is rare; that scroll is not worth this.
+                self.apply(entries, playing, sender.input_sender().clone());
             }
             QueueViewInput::ScrollToPlaying => {
                 if let Some(index) = self.playing_index() {
