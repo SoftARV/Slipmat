@@ -42,11 +42,22 @@ pub struct PlayerView {
     /// The containers `relayout` moves things between. Only available once the
     /// widgets exist, which is after `view_output!`.
     slots: Option<Slots>,
+    /// The artwork's live pixel size. In a `Cell` behind an `Rc` because the
+    /// animation callback owns a copy and outlives any one `relayout` — and
+    /// reading it back is what lets an interrupted transition resume from
+    /// where it actually is rather than snapping to where it started.
+    art_px: std::rc::Rc<std::cell::Cell<i32>>,
+    /// Drives the artwork between its two sizes. `None` until `init` has a
+    /// widget to hang it on: an animation needs a frame clock, and a frame
+    /// clock comes from a widget.
+    art_anim: Option<adw::TimedAnimation>,
 }
 
 /// The four places something can live, plus the queue itself.
 struct Slots {
     queue: adw::ToolbarView,
+    queue_wide_rev: gtk::Revealer,
+    queue_compact_rev: gtk::Revealer,
     queue_wide: gtk::Box,
     queue_compact: gtk::Box,
     transport_stacked: gtk::Box,
@@ -269,6 +280,10 @@ const WIDE_PX: i32 = 860;
 const ART_LARGE: i32 = 260;
 const ART_THUMB: i32 = 72;
 
+/// How long the queue takes to slide in or out, and the artwork to follow it.
+/// One number for both: they are one movement and must not finish apart.
+const QUEUE_ANIM_MS: u32 = 250;
+
 /// The widest the scrubber may get before it stops growing and centres.
 const SCRUB_MAX_W: i32 = 520;
 
@@ -429,22 +444,45 @@ impl SimpleComponent for PlayerView {
                     },
 
                     // Where the queue lives when it can be a column of its own.
-                    #[name = "queue_wide"]
-                    gtk::Box {
-                        set_orientation: gtk::Orientation::Vertical,
-                        #[watch]
-                        // Only when it is a column of its own; in the compact
-                        // layout the queue is the full width and must not carry
-                        // a floor.
-                        set_width_request: if model.wide { 320 } else { -1 },
+                    //
+                    // Wrapped in a `GtkRevealer` so it slides in from the edge
+                    // rather than appearing. That also animates everything
+                    // beside it for free: the revealer grows its own width
+                    // over the transition, so the player column is squeezed
+                    // continuously instead of jumping to its new size.
+                    #[name = "queue_wide_rev"]
+                    gtk::Revealer {
+                        set_transition_type: gtk::RevealerTransitionType::SlideLeft,
+                        set_transition_duration: QUEUE_ANIM_MS,
+
+                        #[wrap(Some)]
+                        #[name = "queue_wide"]
+                        set_child = &gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            #[watch]
+                            // Only when it is a column of its own; in the
+                            // compact layout the queue is the full width and
+                            // must not carry a floor.
+                            set_width_request: if model.wide { 320 } else { -1 },
+                        },
                     },
                 },
 
-                // ...and where each goes when it cannot.
-                #[name = "queue_compact"]
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
+                // ...and where each goes when it cannot. Upwards here, because
+                // in the compact layout the queue rises from the foot of the
+                // drawer rather than in from the side.
+                #[name = "queue_compact_rev"]
+                gtk::Revealer {
+                    set_transition_type: gtk::RevealerTransitionType::SlideUp,
+                    set_transition_duration: QUEUE_ANIM_MS,
                     set_vexpand: true,
+
+                    #[wrap(Some)]
+                    #[name = "queue_compact"]
+                    set_child = &gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_vexpand: true,
+                    },
                 },
 
                 #[name = "transport_compact"]
@@ -465,7 +503,7 @@ impl SimpleComponent for PlayerView {
     ) -> ComponentParts<Self> {
         let mut model = PlayerView {
             snap: Snapshot::default(),
-            cover: Cover::new(240),
+            cover: Cover::new(ART_LARGE),
             scrubbing: false,
             scrub_gen: 0,
             wide: true,
@@ -473,6 +511,8 @@ impl SimpleComponent for PlayerView {
             transport: gtk::Box::new(gtk::Orientation::Vertical, 12),
             slots: None,
             bits: None,
+            art_px: std::rc::Rc::new(std::cell::Cell::new(ART_LARGE)),
+            art_anim: None,
         };
         let queue = QUEUE_SLOT
             .with(|q| q.borrow().clone())
@@ -482,8 +522,32 @@ impl SimpleComponent for PlayerView {
         model.cover.square("audio-x-generic-symbolic");
 
         model.bits = Some(build_transport(&model.transport, &sender));
+
+        // The artwork has no widget that will animate a size request for it,
+        // so this is the one place the drawer drives a value by hand. The
+        // callback is deliberately idempotent — `AdwTimedAnimation` can hand
+        // back the same rounded pixel twice on consecutive frames, and
+        // re-setting the size would queue a resize for no change.
+        let px = model.art_px.clone();
+        let cover = model.cover.clone();
+        let anim = adw::TimedAnimation::new(
+            &widgets.art_slot,
+            f64::from(ART_LARGE),
+            f64::from(ART_LARGE),
+            QUEUE_ANIM_MS,
+            adw::CallbackAnimationTarget::new(move |value| {
+                let size = value.round() as i32;
+                if px.replace(size) != size {
+                    cover.resize(size);
+                }
+            }),
+        );
+        anim.set_easing(adw::Easing::EaseOutCubic);
+        model.art_anim = Some(anim);
         model.slots = Some(Slots {
             queue,
+            queue_wide_rev: widgets.queue_wide_rev.clone(),
+            queue_compact_rev: widgets.queue_compact_rev.clone(),
             queue_wide: widgets.queue_wide.clone(),
             queue_compact: widgets.queue_compact.clone(),
             transport_stacked: widgets.transport_stacked.clone(),
@@ -704,9 +768,9 @@ impl PlayerView {
         reparent(&slots.queue, queue_home);
 
         // The artwork is the elastic element: large when it is the subject,
-        // a thumbnail once the queue needs the room.
-        self.cover
-            .resize(if self.stacked() { ART_LARGE } else { ART_THUMB });
+        // a thumbnail once the queue needs the room — and it travels between
+        // the two rather than cutting, so it reads as the same picture moving.
+        self.resize_cover(if self.stacked() { ART_LARGE } else { ART_THUMB });
 
         // One control at a time: the transport's button opens the queue, the
         // queue's own header closes it. Two buttons, but never both on screen,
@@ -715,11 +779,37 @@ impl PlayerView {
             bits.queue.set_visible(!self.queue_shown);
         }
 
-        slots.queue.set_visible(self.queue_shown);
-        slots.queue_wide.set_visible(self.queue_shown && self.wide);
+        // The revealers decide what is on screen now, so the queue itself
+        // stays visible: hiding it would pre-empt the very transition the
+        // revealer is there to play, and the close would be a cut.
+        slots.queue.set_visible(true);
         slots
-            .queue_compact
-            .set_visible(self.queue_shown && !self.wide);
+            .queue_wide_rev
+            .set_reveal_child(self.queue_shown && self.wide);
+        slots
+            .queue_compact_rev
+            .set_reveal_child(self.queue_shown && !self.wide);
+    }
+
+    /// Send the artwork to `target`, animating unless there is nothing to
+    /// animate with.
+    ///
+    /// Interrupting is the case that matters — toggling the queue twice
+    /// quickly — so the new run starts from the size on screen *now*, which is
+    /// what `art_px` holds, rather than from the size it was meant to be.
+    fn resize_cover(&self, target: i32) {
+        if self.art_px.get() == target {
+            return;
+        }
+        let Some(anim) = self.art_anim.as_ref() else {
+            self.art_px.set(target);
+            self.cover.resize(target);
+            return;
+        };
+        anim.pause();
+        anim.set_value_from(f64::from(self.art_px.get()));
+        anim.set_value_to(f64::from(target));
+        anim.play();
     }
 
     fn subtitle(&self) -> String {
