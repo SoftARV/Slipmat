@@ -366,7 +366,6 @@ impl SimpleComponent for NowPlaying {
                 add_css_class: "dim-label",
                 set_valign: gtk::Align::Center,
             },
-            },
 
             // --- transport -------------------------------------------------
             gtk::Box {
