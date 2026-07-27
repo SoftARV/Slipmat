@@ -61,8 +61,16 @@ sidecar-run: sidecar
 gapless:
 	./scripts/gapless-check.sh
 
+# A native `flatpak-builder` if there is one, otherwise the Flathub app. They
+# are the same tool; the difference is that the flatpak'd one runs sandboxed,
+# and on a CI runner that sandbox cannot see runtimes installed into the user
+# installation — it fails with `Unable to find sdk org.gnome.Sdk version 49`
+# twenty seconds after installing exactly that.
+FLATPAK_BUILDER := $(shell command -v flatpak-builder >/dev/null 2>&1 \
+	&& echo flatpak-builder || echo flatpak run org.flatpak.Builder)
+
 flatpak:
-	flatpak run org.flatpak.Builder --force-clean --user --install \
+	$(FLATPAK_BUILDER) --force-clean --user --install \
 		--repo=flatpak-repo build-dir packaging/flatpak/dev.miguelrincon.Tonearm.yml
 
 flatpak-bundle: flatpak

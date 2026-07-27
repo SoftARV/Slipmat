@@ -105,11 +105,12 @@ jobs:
       - name: Install flatpak and the toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq flatpak
+          # `flatpak-builder` natively, not the Flathub app: the sandboxed
+          # one cannot see runtimes in the user installation from a runner.
+          sudo apt-get install -y -qq flatpak flatpak-builder
           flatpak remote-add --user --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install -y --user --noninteractive flathub \
-            org.flatpak.Builder \
             org.gnome.Platform//49 \
             org.gnome.Sdk//49 \
             org.freedesktop.Sdk.Extension.rust-stable//25.08 \
