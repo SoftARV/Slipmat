@@ -547,12 +547,9 @@ pub enum CommandMsg {
     /// cosmetic and must not become a toast.
     Artwork {
         path: Option<PathBuf>,
-        /// A colour taken from that cover, for the Now Playing bar. Carried
-        /// here rather than in its own message because the two are read from
-        /// one decode and must be applied together.
-        tint: Option<(u8, u8, u8)>,
-        /// A tiny copy of the same cover, for the drawer's backdrop. Same
-        /// reason as `tint`: one decode, applied together or not at all.
+        /// A tiny copy of the cover, to go behind the bar and the drawer.
+        /// Carried here rather than in its own message because the cover and
+        /// what is drawn from it must be applied together.
         backdrop: Option<PathBuf>,
     },
     /// An album page's contents. Tagged with the page id: by the time this
@@ -2036,9 +2033,8 @@ impl AppModel {
                 self.pending_start = None;
                 self.last_item = None;
                 crate::session::clear();
-                crate::style::set_bar_tint(None);
-                crate::style::set_sheet_backdrop(None);
-                crate::style::set_sheet_backdrop(None);
+                crate::style::set_backdrop(None);
+                crate::style::set_backdrop(None);
             }
             AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
                 Some(index) => {
@@ -2482,21 +2478,15 @@ impl AppModel {
                 tracing::warn!(%err, "library load failed");
                 self.toast(&format!("Couldn't load your library: {err}"));
             }
-            CommandMsg::Artwork {
-                path,
-                tint,
-                backdrop,
-            } => {
+            CommandMsg::Artwork { path, backdrop } => {
                 if path.is_none() {
                     // Cosmetic. The bar falls back to a generic icon.
                     tracing::debug!("artwork unavailable");
                 }
                 self.art_path = path.clone();
-                // Recolour the bar from the cover that just landed. Read off
-                // the GTK thread alongside the fetch, so this is only the CSS
-                // swap.
-                crate::style::set_bar_tint(tint);
-                crate::style::set_sheet_backdrop(backdrop.as_deref());
+                // Put the cover behind the player. Scaled off the GTK thread
+                // alongside the fetch, so this is only the CSS swap.
+                crate::style::set_backdrop(backdrop.as_deref());
                 self.now_playing
                     .emit(NowPlayingInput::ArtworkReady(path.clone()));
                 self.player_view.emit(PlayerViewInput::Artwork(path));
@@ -2616,8 +2606,7 @@ impl AppModel {
         self.last_queue = None;
         self.pending_start = None;
         crate::session::clear();
-        crate::style::set_bar_tint(None);
-        crate::style::set_sheet_backdrop(None);
+        crate::style::set_backdrop(None);
         self.push_snapshot();
     }
 
