@@ -227,9 +227,11 @@ pub struct AppModel {
     /// from it; never store both.
     view: View,
     /// How the Songs list is ordered. Applied in `visible_entries`.
-    sort: SortBy,
+    sorts: view::Sorts,
+    /// The sort popover's two actions, kept so the menu can be re-pointed at
+    /// another section's choice when the view changes.
+    sort_actions: Option<(gtk::gio::SimpleAction, gtk::gio::SimpleAction)>,
     /// Whether the user flipped the sort's natural direction.
-    sort_reversed: bool,
     /// The user's library albums and artists, loaded on first visit rather than
     /// at startup — launching should not wait on three collections.
     albums: Vec<Album>,
@@ -1122,7 +1124,13 @@ impl Component for AppModel {
                                             set_tooltip_text: Some("Sort"),
                                             add_css_class: "flat",
                                             #[watch]
-                                            set_visible: model.view == View::Songs,
+                                            // Every library section, not just
+                                            // Songs. Search is the exception:
+                                            // Apple ranked those results and
+                                            // re-ordering them locally would
+                                            // throw away the ranking without
+                                            // being able to reproduce it.
+                                            set_visible: model.view != View::Search,
                                             // Visibility follows the section,
                                             // which says nothing about whether
                                             // there is a list to reorder yet.
@@ -1421,7 +1429,7 @@ impl Component for AppModel {
             art_sender.input(AppMsg::NeedTileArt(key, art));
         });
 
-        let model = AppModel {
+        let mut model = AppModel {
             stage: Stage::Starting,
             queue_view,
             player_view,
@@ -1440,8 +1448,25 @@ impl Component for AppModel {
             library_query: String::new(),
             catalog_query: String::new(),
             view: View::from(settings.section),
-            sort: SortBy::parse(&settings.sort),
-            sort_reversed: settings.sort_reversed,
+            sorts: view::Sorts {
+                songs: view::Sort {
+                    by: SortBy::parse(&settings.sort).valid_for(View::Songs),
+                    reversed: settings.sort_reversed,
+                },
+                albums: view::Sort {
+                    by: SortBy::parse(&settings.album_sort).valid_for(View::Albums),
+                    reversed: settings.album_sort_reversed,
+                },
+                artists: view::Sort {
+                    by: SortBy::parse(&settings.artist_sort).valid_for(View::Artists),
+                    reversed: settings.artist_sort_reversed,
+                },
+                playlists: view::Sort {
+                    by: SortBy::parse(&settings.playlist_sort).valid_for(View::Playlists),
+                    reversed: settings.playlist_sort_reversed,
+                },
+            },
+            sort_actions: None,
             albums: Vec::new(),
             artists: Vec::new(),
             playlists: Vec::new(),
@@ -1558,29 +1583,12 @@ impl Component for AppModel {
         // The sort menu, built imperatively so the radio state can be bound to
         // a stateful action rather than hand-managed across five items.
         {
-            let menu = gtk::gio::Menu::new();
-
-            // Its own section, because reversing is a different question from
-            // choosing a key — and it stays put while the radio list changes.
-            let direction = gtk::gio::Menu::new();
-            direction.append(Some("_Reverse Order"), Some("sort.reverse"));
-            menu.append_section(None, &direction);
-
-            let keys = gtk::gio::Menu::new();
-            for option in SortBy::ALL {
-                let item = gtk::gio::MenuItem::new(Some(option.label()), None);
-                item.set_action_and_target_value(Some("sort.by"), Some(&option.id().to_variant()));
-                keys.append_item(&item);
-            }
-            menu.prepend_section(None, &keys);
-            widgets.sort_button.set_menu_model(Some(&menu));
-
             // A stateful action gives the popover its radio dots for free, and
             // keeps the checked item honest when the setting is restored.
             let action = gtk::gio::SimpleAction::new_stateful(
                 "by",
                 Some(&String::static_variant_type()),
-                &model.sort.id().to_variant(),
+                &model.sorts.get(model.view).by.id().to_variant(),
             );
             let sort_sender = sender.clone();
             action.connect_activate(move |action, target| {
@@ -1598,7 +1606,7 @@ impl Component for AppModel {
             let reverse = gtk::gio::SimpleAction::new_stateful(
                 "reverse",
                 None,
-                &model.sort_reversed.to_variant(),
+                &model.sorts.get(model.view).reversed.to_variant(),
             );
             let rev_sender = sender.clone();
             reverse.connect_activate(move |action, _| {
@@ -1614,6 +1622,11 @@ impl Component for AppModel {
             widgets
                 .sort_button
                 .insert_action_group("sort", Some(&group));
+            model.sort_actions = Some((action, reverse));
+            // Built here rather than inline, so there is one place that decides
+            // what the popover holds — including that Artists get no radio list
+            // at all, which an inline version quietly got wrong.
+            model.sync_sort_menu(&widgets.sort_button);
         }
 
         // The catalog type filter, same shape as the sort menu above: a
@@ -1737,6 +1750,7 @@ impl Component for AppModel {
             // early when the text already matches the active query — which it
             // does by now, because `update` set it first. No loop.
             widgets.search_entry.set_text(self.query());
+            self.sync_sort_menu(&widgets.sort_button);
         }
 
         let painting = std::time::Instant::now();
@@ -2209,17 +2223,17 @@ impl AppModel {
                 crate::style::set_accent(accent);
             }
             AppMsg::SetSort(sort) => {
-                if sort == self.sort {
+                let mut current = self.sorts.get(self.view);
+                if sort == current.by {
                     return;
                 }
-                self.sort = sort;
-                self.settings.sort = sort.id().into();
-                self.settings.save();
-                tracing::info!(sort = sort.id(), "library sort");
-                self.built_rows = None;
+                current.by = sort;
+                self.sorts.set(self.view, current);
+                self.persist_sorts();
+                tracing::info!(sort = sort.id(), section = ?self.view, "sort");
                 // A rebuild resets the scroll, which is right here: the list
                 // the user was looking at no longer exists in that order.
-                self.rebuild_rows();
+                self.resort();
             }
             AppMsg::WindowCloseRequested => self.close_window(root, &sender),
             AppMsg::PlayerDrawer(open) => {
@@ -2304,11 +2318,11 @@ impl AppModel {
                 });
             }
             AppMsg::ToggleSortDirection => {
-                self.sort_reversed = !self.sort_reversed;
-                self.built_rows = None;
-                self.settings.sort_reversed = self.sort_reversed;
-                self.settings.save();
-                self.rebuild_rows();
+                let mut current = self.sorts.get(self.view);
+                current.reversed = !current.reversed;
+                self.sorts.set(self.view, current);
+                self.persist_sorts();
+                self.resort();
             }
             AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
             AppMsg::Enqueue { catalog_id, next } => {

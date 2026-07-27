@@ -9,7 +9,8 @@
 //! exactly where they drift, so the conversions and the tests that pin them
 //! live together.
 
-use crate::music::types::Track;
+use super::AppModel;
+use crate::music::types::{Album, Artist, Playlist, Track};
 use crate::settings::Section;
 
 /// Which sidebar section is showing.
@@ -181,10 +182,45 @@ pub enum SortBy {
     Artist,
     Album,
     Year,
+    /// When it was saved to the library.
+    ///
+    /// **Only offered where Apple actually sends it.** Measured against a real
+    /// library: 420 of 420 albums and 8 of 8 playlists carry `dateAdded`, and
+    /// **0 of 541 songs** do — the same attribute, documented for all three,
+    /// present for two. A sort that silently orders by nothing is worse than
+    /// one that is not offered, so `SortBy::for_view` is what decides.
+    Added,
+    /// When a playlist was last edited. Playlists only; 8 of 8 carry it.
+    Updated,
 }
 
 impl SortBy {
-    pub(super) const ALL: [Self; 4] = [Self::Title, Self::Artist, Self::Album, Self::Year];
+    /// What each section can honestly be sorted by.
+    ///
+    /// Not one list: the keys differ because the *data* differs. An album has a
+    /// year and a date added; a playlist has neither an artist nor a year; a
+    /// library artist carries **only a name**, so its menu would be a single
+    /// radio button and it gets the direction toggle instead.
+    pub(super) fn for_view(view: View) -> &'static [Self] {
+        match view {
+            // Search results are songs, so they sort like songs.
+            View::Songs | View::Search => &[Self::Title, Self::Artist, Self::Album, Self::Year],
+            View::Albums => &[Self::Title, Self::Artist, Self::Year, Self::Added],
+            View::Playlists => &[Self::Title, Self::Added, Self::Updated],
+            View::Artists => &[Self::Title],
+        }
+    }
+
+    /// The first key a section offers, used when a restored one does not apply
+    /// to it — a playlist cannot sort by artist however the ini file reads.
+    pub(super) fn valid_for(self, view: View) -> Self {
+        let allowed = Self::for_view(view);
+        if allowed.contains(&self) {
+            self
+        } else {
+            allowed[0]
+        }
+    }
 
     pub(super) fn label(self) -> &'static str {
         match self {
@@ -192,6 +228,8 @@ impl SortBy {
             Self::Artist => "Artist",
             Self::Album => "Album",
             Self::Year => "Year",
+            Self::Added => "Recently Added",
+            Self::Updated => "Recently Updated",
         }
     }
 
@@ -202,6 +240,8 @@ impl SortBy {
             Self::Artist => "artist",
             Self::Album => "album",
             Self::Year => "year",
+            Self::Added => "added",
+            Self::Updated => "updated",
         }
     }
 
@@ -210,6 +250,8 @@ impl SortBy {
             "artist" => Self::Artist,
             "album" => Self::Album,
             "year" => Self::Year,
+            "added" => Self::Added,
+            "updated" => Self::Updated,
             _ => Self::Title,
         }
     }
@@ -220,7 +262,7 @@ impl SortBy {
     /// means the direction toggle always means the same thing on screen — the
     /// arrow points the way the list actually runs.
     pub(super) fn descends_by_default(self) -> bool {
-        matches!(self, Self::Year)
+        matches!(self, Self::Year | Self::Added | Self::Updated)
     }
 
     /// Order two tracks. Every arm falls back to title, so the list is stable —
@@ -240,7 +282,139 @@ impl SortBy {
             // Ascending here; `descends_by_default` flips it for display, so
             // Year reads newest-first without this arm knowing about direction.
             Self::Year => a.year.cmp(&b.year).then_with(by_title),
+            // Songs do not carry these — `for_view` never offers them here —
+            // but a restored setting could still name one, so they order by
+            // title rather than pretending.
+            Self::Added | Self::Updated => by_title(),
         }
+    }
+
+    /// Order two albums. Same discipline as [`SortBy::compare`]: every arm
+    /// falls back to title so ties cannot swap places between rebuilds.
+    pub(super) fn compare_album(self, a: &Album, b: &Album) -> std::cmp::Ordering {
+        let fold = |s: &str| s.to_lowercase();
+        let by_title = || fold(&a.name).cmp(&fold(&b.name));
+        match self {
+            Self::Artist => fold(&a.artist).cmp(&fold(&b.artist)).then_with(by_title),
+            Self::Year => a.year.cmp(&b.year).then_with(by_title),
+            Self::Added => a.date_added.cmp(&b.date_added).then_with(by_title),
+            _ => by_title(),
+        }
+    }
+
+    /// Order two playlists.
+    pub(super) fn compare_playlist(self, a: &Playlist, b: &Playlist) -> std::cmp::Ordering {
+        let fold = |s: &str| s.to_lowercase();
+        let by_title = || fold(&a.name).cmp(&fold(&b.name));
+        match self {
+            Self::Added => a.date_added.cmp(&b.date_added).then_with(by_title),
+            Self::Updated => a.last_modified.cmp(&b.last_modified).then_with(by_title),
+            _ => by_title(),
+        }
+    }
+
+    /// Order two artists. Only ever by name, because that is all a library
+    /// artist has — the direction toggle is the whole control here.
+    pub(super) fn compare_artist(a: &Artist, b: &Artist) -> std::cmp::Ordering {
+        a.name.to_lowercase().cmp(&b.name.to_lowercase())
+    }
+}
+
+impl AppModel {
+    /// Write every section's sort to the ini file.
+    ///
+    /// All four together rather than only the one that changed: they live in
+    /// one file, `save` writes the whole thing anyway, and picking out the
+    /// changed one is a chance to forget one.
+    pub(super) fn persist_sorts(&mut self) {
+        let s = &mut self.settings;
+        let sorts = self.sorts;
+        s.sort = sorts.songs.by.id().into();
+        s.sort_reversed = sorts.songs.reversed;
+        s.album_sort = sorts.albums.by.id().into();
+        s.album_sort_reversed = sorts.albums.reversed;
+        s.artist_sort = sorts.artists.by.id().into();
+        s.artist_sort_reversed = sorts.artists.reversed;
+        s.playlist_sort = sorts.playlists.by.id().into();
+        s.playlist_sort_reversed = sorts.playlists.reversed;
+        s.save();
+    }
+
+    /// Rebuild whichever section is showing, in its new order.
+    ///
+    /// The fingerprint is cleared first: it exists to skip a rebuild that would
+    /// change nothing, and a new sort changes everything.
+    pub(super) fn resort(&mut self) {
+        match self.view {
+            View::Albums => {
+                self.built_albums = None;
+                self.rebuild_albums();
+            }
+            View::Artists => {
+                self.built_artists = None;
+                self.rebuild_artists();
+            }
+            View::Playlists => {
+                self.built_playlists = None;
+                self.rebuild_playlists();
+            }
+            View::Songs | View::Search => {
+                self.built_rows = None;
+                self.rebuild_rows();
+            }
+        }
+    }
+}
+
+/// What one section is sorted by, and whether the user flipped it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sort {
+    pub by: SortBy,
+    pub reversed: bool,
+}
+
+/// Every section's sort, kept apart on purpose.
+///
+/// One shared setting would mean choosing "Recently Added" for albums and
+/// finding songs claiming to be sorted by a date they do not have. The keys
+/// differ because the data does, so the choices do too.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Sorts {
+    pub songs: Sort,
+    pub albums: Sort,
+    pub artists: Sort,
+    pub playlists: Sort,
+}
+
+impl Default for Sort {
+    fn default() -> Self {
+        Self {
+            by: SortBy::Title,
+            reversed: false,
+        }
+    }
+}
+
+impl Sorts {
+    /// The sort in force for `view`. Search shares the songs list's, because
+    /// it *is* the songs list showing other results.
+    pub(super) fn get(&self, view: View) -> Sort {
+        match view {
+            View::Albums => self.albums,
+            View::Artists => self.artists,
+            View::Playlists => self.playlists,
+            View::Songs | View::Search => self.songs,
+        }
+    }
+
+    pub(super) fn set(&mut self, view: View, sort: Sort) {
+        let slot = match view {
+            View::Albums => &mut self.albums,
+            View::Artists => &mut self.artists,
+            View::Playlists => &mut self.playlists,
+            View::Songs | View::Search => &mut self.songs,
+        };
+        *slot = sort;
     }
 }
 
@@ -263,6 +437,54 @@ mod tests {
         ] {
             assert_eq!(View::from_row(view.row()), view);
         }
+    }
+
+    #[test]
+    fn a_section_only_offers_keys_its_data_has() {
+        // Measured, not assumed: 420/420 albums and 8/8 playlists carry
+        // `dateAdded`, and 0/541 songs do. Offering "Recently Added" on the
+        // songs list would sort by an empty string and look like it worked.
+        assert!(!SortBy::for_view(View::Songs).contains(&SortBy::Added));
+        assert!(SortBy::for_view(View::Albums).contains(&SortBy::Added));
+        assert!(SortBy::for_view(View::Playlists).contains(&SortBy::Added));
+        // Only playlists are ever edited after the fact.
+        assert!(SortBy::for_view(View::Playlists).contains(&SortBy::Updated));
+        assert!(!SortBy::for_view(View::Albums).contains(&SortBy::Updated));
+        // A library artist carries a name and nothing else, so there is
+        // nothing to choose between — the direction toggle is the control.
+        assert_eq!(SortBy::for_view(View::Artists), &[SortBy::Title]);
+    }
+
+    #[test]
+    fn a_restored_sort_a_section_cannot_honour_falls_back() {
+        // The ini file outlives any one version of this list.
+        assert_eq!(SortBy::Updated.valid_for(View::Albums), SortBy::Title);
+        assert_eq!(SortBy::Artist.valid_for(View::Playlists), SortBy::Title);
+        assert_eq!(SortBy::Added.valid_for(View::Albums), SortBy::Added);
+    }
+
+    #[test]
+    fn each_section_keeps_its_own_sort() {
+        let mut sorts = Sorts::default();
+        sorts.set(
+            View::Albums,
+            Sort {
+                by: SortBy::Added,
+                reversed: true,
+            },
+        );
+        assert_eq!(sorts.get(View::Albums).by, SortBy::Added);
+        // Untouched by the album choice, which is the whole point.
+        assert_eq!(sorts.get(View::Songs).by, SortBy::Title);
+        // Search is the songs list showing other results, so it shares.
+        sorts.set(
+            View::Songs,
+            Sort {
+                by: SortBy::Artist,
+                reversed: false,
+            },
+        );
+        assert_eq!(sorts.get(View::Search).by, SortBy::Artist);
     }
 
     #[test]
@@ -352,7 +574,14 @@ mod tests {
 
     #[test]
     fn every_sort_round_trips_through_its_persisted_id() {
-        for sort in SortBy::ALL {
+        for sort in [
+            SortBy::Title,
+            SortBy::Artist,
+            SortBy::Album,
+            SortBy::Year,
+            SortBy::Added,
+            SortBy::Updated,
+        ] {
             assert_eq!(SortBy::parse(sort.id()), sort);
         }
         // A hand-edited or future-version ini must not break startup.

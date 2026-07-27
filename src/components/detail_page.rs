@@ -435,6 +435,7 @@ mod tests {
         // Library ids 404 against /catalog and vice versa, so the flag set at
         // parse time — not the id's shape — decides the endpoint.
         let mut album = Album {
+            date_added: String::new(),
             id: "1234".into(),
             name: "Superestrella".into(),
             artist: "Aitana".into(),

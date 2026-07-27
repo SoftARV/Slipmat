@@ -503,6 +503,7 @@ mod tests {
                 library: false,
             }),
             Entry::Album(Album {
+                date_added: String::new(),
                 id: "al1".into(),
                 name: "Superestrella".into(),
                 artist: "Aitana".into(),

@@ -17,7 +17,7 @@ use relm4::ComponentSender;
 
 use super::{
     AppModel, CATALOG_BROWSE_ROWS, CATALOG_LIMIT, CatalogFilter, CommandMsg, LIBRARY_MAX,
-    SearchScope, Tile,
+    SearchScope, SortBy, Tile, View,
 };
 use crate::components::grid_item::{ArtRegistry, GridItem};
 use crate::components::track_row::{Entry, LibraryItem, apply_row_state};
@@ -123,11 +123,11 @@ impl AppModel {
                 // Sorted here rather than in `all_tracks`, so changing the
                 // order never has to re-fetch and Apple's own load order stays
                 // available underneath.
-                let sort = self.sort;
-                tracks.sort_by(|a, b| sort.compare(a, b));
+                let sort = self.sorts.get(self.view);
+                tracks.sort_by(|a, b| sort.by.compare(a, b));
                 // Reversed rather than sorted the other way, so ties keep the
                 // stable order the comparator already gave them.
-                if sort.descends_by_default() != self.sort_reversed {
+                if sort.by.descends_by_default() != sort.reversed {
                     tracks.reverse();
                 }
                 tracks.into_iter().map(Entry::Song).collect()
@@ -225,8 +225,8 @@ impl AppModel {
         let fingerprint = format!(
             "{}\u{1}{}\u{1}{}\u{1}{:?}",
             self.query(),
-            self.sort.id(),
-            self.sort_reversed,
+            self.sorts.get(self.view).by.id(),
+            self.sorts.get(self.view).reversed,
             self.scope()
         );
         if self.built_rows.as_deref() == Some(fingerprint.as_str()) {
@@ -364,7 +364,15 @@ impl AppModel {
     pub(super) fn rebuild_albums(&mut self) {
         // Already showing exactly this? Then the widgets are correct and
         // rebuilding them would only re-decode every cover — see `built_albums`.
-        let fingerprint = self.library_query.trim().to_lowercase();
+        // The sort is part of the fingerprint: the widgets already on screen
+        // may be the right ones in the wrong order.
+        let sort = self.sorts.get(View::Albums);
+        let fingerprint = format!(
+            "{}\u{1}{}\u{1}{}",
+            self.library_query.trim().to_lowercase(),
+            sort.by.id(),
+            sort.reversed
+        );
         if self.built_albums.as_deref() == Some(fingerprint.as_str()) {
             return;
         }
@@ -374,7 +382,7 @@ impl AppModel {
         let _timed = crate::app::Timed("albums", started);
 
         let needle = self.library_query.trim().to_lowercase();
-        let tiles: Vec<Tile> = self
+        let mut albums: Vec<_> = self
             .albums
             .iter()
             .filter(|a| {
@@ -383,8 +391,16 @@ impl AppModel {
                     || a.artist.to_lowercase().contains(&needle)
             })
             .cloned()
-            .map(Tile::Album)
             .collect();
+        // Sorted on the domain objects rather than the tiles: a `Tile` is a
+        // display shape and the keys live on the album. Reversed rather than
+        // sorted the other way, so ties keep the comparator's stable order —
+        // the same discipline the songs list follows.
+        albums.sort_by(|a, b| sort.by.compare_album(a, b));
+        if sort.by.descends_by_default() != sort.reversed {
+            albums.reverse();
+        }
+        let tiles: Vec<Tile> = albums.into_iter().map(Tile::Album).collect();
         self.album_grid.clear();
         self.album_art_widgets.borrow_mut().clear();
         let items = self.grid_items(tiles, &self.album_art_widgets);
@@ -417,7 +433,15 @@ impl AppModel {
     pub(super) fn rebuild_playlists(&mut self) {
         // Already showing exactly this? Then the widgets are correct and
         // rebuilding them would only re-decode every cover — see `built_playlists`.
-        let fingerprint = self.library_query.trim().to_lowercase();
+        // The sort is part of the fingerprint: the widgets already on screen
+        // may be the right ones in the wrong order.
+        let sort = self.sorts.get(View::Playlists);
+        let fingerprint = format!(
+            "{}\u{1}{}\u{1}{}",
+            self.library_query.trim().to_lowercase(),
+            sort.by.id(),
+            sort.reversed
+        );
         if self.built_playlists.as_deref() == Some(fingerprint.as_str()) {
             return;
         }
@@ -427,7 +451,7 @@ impl AppModel {
         let _timed = crate::app::Timed("playlists", started);
 
         let needle = self.library_query.trim().to_lowercase();
-        let tiles: Vec<Tile> = self
+        let mut playlists: Vec<_> = self
             .playlists
             .iter()
             .filter(|p| {
@@ -436,8 +460,12 @@ impl AppModel {
                     || p.curator.to_lowercase().contains(&needle)
             })
             .cloned()
-            .map(Tile::Playlist)
             .collect();
+        playlists.sort_by(|a, b| sort.by.compare_playlist(a, b));
+        if sort.by.descends_by_default() != sort.reversed {
+            playlists.reverse();
+        }
+        let tiles: Vec<Tile> = playlists.into_iter().map(Tile::Playlist).collect();
         self.playlist_grid.clear();
         self.playlist_art_widgets.borrow_mut().clear();
         let items = self.grid_items(tiles, &self.playlist_art_widgets);
@@ -447,7 +475,14 @@ impl AppModel {
     pub(super) fn rebuild_artists(&mut self) {
         // Already showing exactly this? Then the widgets are correct and
         // rebuilding them would only re-decode every cover — see `built_artists`.
-        let fingerprint = self.library_query.trim().to_lowercase();
+        // Only a direction to remember: a library artist carries nothing but a
+        // name, so there is no key to choose between.
+        let sort = self.sorts.get(View::Artists);
+        let fingerprint = format!(
+            "{}\u{1}{}",
+            self.library_query.trim().to_lowercase(),
+            sort.reversed
+        );
         if self.built_artists.as_deref() == Some(fingerprint.as_str()) {
             return;
         }
@@ -457,13 +492,19 @@ impl AppModel {
         let _timed = crate::app::Timed("artists", started);
 
         let needle = self.library_query.trim().to_lowercase();
-        let tiles: Vec<Tile> = self
+        let mut artists: Vec<_> = self
             .artists
             .iter()
             .filter(|a| needle.is_empty() || a.name.to_lowercase().contains(&needle))
             .cloned()
-            .map(Tile::Artist)
             .collect();
+        // No key to choose, so no `descends_by_default` either: the toggle is
+        // the whole control, and it means A–Z or Z–A.
+        artists.sort_by(SortBy::compare_artist);
+        if sort.reversed {
+            artists.reverse();
+        }
+        let tiles: Vec<Tile> = artists.into_iter().map(Tile::Artist).collect();
         self.artist_grid.clear();
         self.artist_art_widgets.borrow_mut().clear();
         let items = self.grid_items(tiles, &self.artist_art_widgets);
@@ -577,6 +618,7 @@ mod tests {
             albums: (0..albums)
                 .map(|i| Album {
                     id: format!("al{i}"),
+                    date_added: String::new(),
                     name: format!("al{i}"),
                     artist: String::new(),
                     artwork: None,
@@ -597,6 +639,8 @@ mod tests {
             playlists: (0..playlists)
                 .map(|i| Playlist {
                     id: format!("pl{i}"),
+                    date_added: String::new(),
+                    last_modified: String::new(),
                     name: format!("pl{i}"),
                     curator: String::new(),
                     description: String::new(),

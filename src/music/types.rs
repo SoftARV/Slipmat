@@ -125,6 +125,9 @@ impl Artwork {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Album {
     pub id: String,
+    /// When this was added to the library, ISO 8601, or empty. Sorts
+    /// lexicographically, which for ISO 8601 is also chronologically.
+    pub date_added: String,
     pub name: String,
     pub artist: String,
     pub artwork: Option<Artwork>,
@@ -142,6 +145,9 @@ pub struct Album {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Playlist {
     pub id: String,
+    /// ISO 8601, or empty. See `AlbumAttributes::date_added`.
+    pub date_added: String,
+    pub last_modified: String,
     pub name: String,
     /// Who made it — Apple's editors for a catalog playlist, empty for one of
     /// your own, which is the common case in a library.
@@ -373,6 +379,12 @@ pub(crate) struct PlayParams {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AlbumAttributes {
+    /// Documented on `LibraryAlbums.Attributes`, and **that is not evidence
+    /// it arrives** — `dateAdded` is documented for library songs too and was
+    /// measured as 0 of 541. Parsed so the question can be counted rather
+    /// than argued about.
+    #[serde(default)]
+    pub date_added: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -390,6 +402,7 @@ impl From<Resource<AlbumAttributes>> for Album {
         let a = res.attributes;
         Album {
             id: res.id,
+            date_added: a.as_ref().map(|a| a.date_added.clone()).unwrap_or_default(),
             name: a.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
             artist: a
                 .as_ref()
@@ -443,6 +456,15 @@ impl From<Resource<ArtistAttributes>> for Artist {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PlaylistAttributes {
+    /// Same question as `AlbumAttributes::date_added`, same reason for
+    /// counting rather than assuming.
+    #[serde(default)]
+    pub date_added: String,
+    /// Documented on `LibraryPlaylists.Attributes` only. A playlist you edit
+    /// is one whose order changed, which is a different and arguably more
+    /// useful "recent" than when you first saved it.
+    #[serde(default)]
+    pub last_modified_date: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -464,6 +486,11 @@ impl From<Resource<PlaylistAttributes>> for Playlist {
         let a = res.attributes;
         Playlist {
             id: res.id,
+            date_added: a.as_ref().map(|a| a.date_added.clone()).unwrap_or_default(),
+            last_modified: a
+                .as_ref()
+                .map(|a| a.last_modified_date.clone())
+                .unwrap_or_default(),
             name: a.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
             curator: a
                 .as_ref()
@@ -730,6 +757,8 @@ mod tests {
             id: "p.abc".into(),
             relationships: None,
             attributes: Some(PlaylistAttributes {
+                date_added: String::new(),
+                last_modified_date: String::new(),
                 name: "Late night".into(),
                 curator_name: String::new(),
                 artwork: None,
@@ -790,6 +819,8 @@ mod tests {
             id: "pl.123".into(),
             relationships: None,
             attributes: Some(PlaylistAttributes {
+                date_added: String::new(),
+                last_modified_date: String::new(),
                 name: "Today's Hits".into(),
                 curator_name: "Apple Music".into(),
                 artwork: Some(ArtworkAttributes {

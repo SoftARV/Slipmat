@@ -14,6 +14,54 @@ use relm4::{ComponentSender, adw, gtk};
 use super::{AppModel, AppMsg};
 use crate::style::Accent;
 
+impl super::AppModel {
+    /// Point the sort popover at the section now showing.
+    ///
+    /// Both halves are needed. The **menu** changes because the keys differ per
+    /// section, and the **action states** change because each section remembers
+    /// its own choice — without the second, the radio dot would sit on whatever
+    /// the last section chose and lie about the list underneath it.
+    ///
+    /// Artists get no key list at all: a library artist carries only a name, so
+    /// there is nothing to choose between and the popover is just the direction
+    /// toggle.
+    pub(super) fn sync_sort_menu(&self, button: &gtk::MenuButton) {
+        use gtk::prelude::ToVariant;
+        let sort = self.sorts.get(self.view);
+
+        let menu = gtk::gio::Menu::new();
+        let direction = gtk::gio::Menu::new();
+        direction.append(Some("_Reverse Order"), Some("sort.reverse"));
+        menu.append_section(None, &direction);
+        if super::SortBy::for_view(self.view).len() > 1 {
+            menu.prepend_section(None, &sort_keys_menu(self.view));
+        }
+        button.set_menu_model(Some(&menu));
+
+        if let Some((by, reverse)) = &self.sort_actions {
+            by.set_state(&sort.by.id().to_variant());
+            reverse.set_state(&sort.reversed.to_variant());
+        }
+    }
+}
+
+/// The radio list in the sort popover, for whatever section is showing.
+///
+/// Rebuilt on every section change rather than filtered from one fixed list,
+/// because the keys are not a subset of each other: a playlist has no artist,
+/// an album has a date added and a song does not. See `SortBy::for_view` for
+/// which are honest where — it is a measurement, not a preference.
+pub(super) fn sort_keys_menu(view: super::View) -> gtk::gio::Menu {
+    use gtk::prelude::ToVariant;
+    let keys = gtk::gio::Menu::new();
+    for option in super::SortBy::for_view(view) {
+        let item = gtk::gio::MenuItem::new(Some(option.label()), None);
+        item.set_action_and_target_value(Some("sort.by"), Some(&option.id().to_variant()));
+        keys.append_item(&item);
+    }
+    keys
+}
+
 // The primary menu's action group. GTK menu items invoke `GAction`s by name;
 // each of these bridges to an `AppMsg` so the reducer stays the only place
 // state changes.

@@ -30,16 +30,20 @@ src/components/now_playing.rs       1020  # one component, and the one whose see
                                           # 1240 -> 960: the bar's scale became a read-only line, so the
                                           # whole seek-hold apparatus went with it. Lowering a number as a
                                           # file shrinks is the ratchet working.
-src/music/client.rs                  940  # one endpoint per method against one API. Long because
+src/music/client.rs                  980  # one endpoint per method against one API. Long because
                                           # Apple is, and each method is short.
-src/music/types.rs                   815  # the JSON boundary (rule 9). Wire types and our types
+src/music/types.rs                   860  # the JSON boundary (rule 9). Wire types and our types
                                           # side by side is the point — they are read together.
 src/components/queue_view.rs         670  # the list, its rows, and now shuffle and repeat in the
                                           # header — they act on the queue, so this is where they
                                           # belong. Most of the growth is the comment explaining
                                           # why the shuffle button is not a `#[watch]`: that is the
                                           # bug that froze a desktop, and it is worth the lines.
-src/app/library.rs                   700  # four collections and the catalog search, all landing in
+src/app/view.rs                      680  # which section is showing, and how each one is sorted.
+                                          # The sort keys differ per section because the *data*
+                                          # does — measured, and the measurement is in the
+                                          # comments so nobody re-guesses it.
+src/app/library.rs                   760  # four collections and the catalog search, all landing in
                                           # the same list.
 src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
