@@ -392,6 +392,19 @@ pub enum AppMsg {
     /// Narrow the catalog search to one kind of result, or widen it again.
     SetCatalogFilter(CatalogFilter),
     ToggleSortDirection,
+    /// Take a song out of the library. Needs the **library** id; the catalog
+    /// id is only carried so the row can be updated locally.
+    RemoveFromLibrary {
+        library_id: String,
+        catalog_id: String,
+    },
+    /// Un-star a song, and nothing else. Deliberately does **not** also remove
+    /// it from the library: favouriting adds it, un-favouriting does not take
+    /// it back out, and that is what Apple's own client does. Chaining the two
+    /// would silently delete a song someone only meant to un-star.
+    Unfavorite {
+        catalog_id: String,
+    },
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
     /// Empty the queue and stop.
@@ -1913,6 +1926,29 @@ impl AppModel {
                 // the user was looking at no longer exists in that order.
                 self.rebuild_rows();
             }
+            AppMsg::RemoveFromLibrary {
+                library_id,
+                catalog_id,
+            } => {
+                tracing::info!(%library_id, "removing from library");
+                self.send(Command::RemoveFromLibrary { id: library_id });
+                // Mirrored locally for the same reason the star is: the menu
+                // reads this, and making someone reload to see their own click
+                // is absurd. `include=library` is cached for tens of seconds
+                // besides, so a read-back would disagree for a while (#34).
+                self.set_in_library(&catalog_id, false);
+                self.toast("Removing from your library…");
+            }
+            AppMsg::Unfavorite { catalog_id } => {
+                tracing::info!(%catalog_id, "removing favourite");
+                self.send(Command::Unfavorite {
+                    id: catalog_id.clone(),
+                });
+                // The star only. The song stays in the library — see the note
+                // on `AppMsg::Unfavorite`.
+                self.set_favorite(&catalog_id, false);
+                self.toast("Favourite removed");
+            }
             AppMsg::LibraryWrite { catalog_id, action } => {
                 let Some(client) = self.client() else {
                     self.toast("Not connected yet");
@@ -2310,12 +2346,26 @@ impl AppModel {
         // Library" for a track read *out of* the library, or "Favourite" for
         // one already starred, is a menu that lies about the state of things.
         let account = gtk::gio::Menu::new();
-        if !req.in_library {
+        if req.in_library {
+            // Only when we hold the library id — the catalog id will not do,
+            // and offering a removal we cannot perform is worse than not
+            // offering one.
+            if req.library_id.is_some() {
+                account.append(
+                    Some("_Remove from Library"),
+                    Some("row.remove-from-library"),
+                );
+            }
+        } else {
             account.append(Some("Add to _Library"), Some("row.add-to-library"));
         }
-        // No "remove" counterpart: Apple rejects the DELETE for this token with
-        // "Insufficient Permissions". See `Client` — favouriting is add-only.
-        if !req.favorite {
+        // Both directions now. The removals go out through the sidecar rather
+        // than `music/client.rs`: over REST this exact favourites path answers
+        // "400 Insufficient Permissions", and library removal has no documented
+        // endpoint at all. MusicKit's own client does both (#34).
+        if req.favorite {
+            account.append(Some("Remove _Favourite"), Some("row.unfavorite"));
+        } else {
             account.append(Some("_Favourite"), Some("row.favorite"));
         }
         if account.n_items() > 0 {
@@ -2339,6 +2389,36 @@ impl AppModel {
                 sender.input(AppMsg::Enqueue {
                     catalog_id: id.clone(),
                     next,
+                });
+            });
+            actions.add_action(&action);
+        }
+
+        // The two removals. Separate from the adds below because they take a
+        // different route entirely — the sidecar, not HTTP — and because
+        // removal needs the *library* id while un-favouriting needs the
+        // *catalog* one.
+        {
+            let action = gtk::gio::SimpleAction::new("remove-from-library", None);
+            let library_id = req.library_id.clone();
+            let catalog_id = req.catalog_id.clone();
+            let sender = self.menu_sender.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(library_id) = library_id.clone() {
+                    sender.input(AppMsg::RemoveFromLibrary {
+                        library_id,
+                        catalog_id: catalog_id.clone(),
+                    });
+                }
+            });
+            actions.add_action(&action);
+
+            let action = gtk::gio::SimpleAction::new("unfavorite", None);
+            let catalog_id = req.catalog_id.clone();
+            let sender = self.menu_sender.clone();
+            action.connect_activate(move |_, _| {
+                sender.input(AppMsg::Unfavorite {
+                    catalog_id: catalog_id.clone(),
                 });
             });
             actions.add_action(&action);
@@ -2375,6 +2455,31 @@ impl AppModel {
             gtk::glib::idle_add_local_once(move || p.unparent());
         });
         popover.popup();
+    }
+
+    /// Record library membership locally, so the row menu stops offering "Add
+    /// to Library" for something just saved — or starts offering it again for
+    /// something just removed.
+    ///
+    /// No repaint: membership has no mark of its own on a row, unlike the
+    /// favourite star. It is read at menu-build time, which is why updating the
+    /// model is enough.
+    fn set_in_library(&mut self, catalog_id: &str, in_library: bool) {
+        for track in &mut self.all_tracks {
+            if track.catalog_id.as_deref() == Some(catalog_id) {
+                track.in_library = in_library;
+            }
+        }
+        for entry in &mut self.catalog {
+            if let Entry::Song(track) = entry
+                && track.catalog_id.as_deref() == Some(catalog_id)
+            {
+                track.in_library = in_library;
+            }
+        }
+        for page in &mut self.pages {
+            page.set_in_library(catalog_id, in_library);
+        }
     }
 
     /// Record a favourite locally and repaint the row, without rebuilding the

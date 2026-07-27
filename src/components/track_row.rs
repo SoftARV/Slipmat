@@ -91,6 +91,10 @@ impl Entry {
 #[derive(Debug, Clone)]
 struct RowFacts {
     catalog_id: String,
+    /// The `i.…` id, present only for a track read out of the library. Removal
+    /// needs it and the catalog id will not do — the two id spaces are not
+    /// interchangeable.
+    library_id: Option<String>,
     in_library: bool,
     favorite: bool,
 }
@@ -99,6 +103,10 @@ struct RowFacts {
 #[derive(Debug)]
 pub struct RowMenuRequest {
     pub catalog_id: String,
+    /// The library id, when this track came from the library. `None` means
+    /// removal cannot be offered even if `in_library` is true, because we do
+    /// not know which row to delete.
+    pub library_id: Option<String>,
     /// Already saved, so "Add to Library" is not offered.
     pub in_library: bool,
     /// Already starred, so "Favourite" is not offered.
@@ -338,6 +346,7 @@ impl RelmListItem for LibraryItem {
                     .unwrap_or((0, 0));
                 request(RowMenuRequest {
                     catalog_id: shown.catalog_id,
+                    library_id: shown.library_id,
                     in_library: shown.in_library,
                     favorite: shown.favorite,
                     at,
@@ -356,6 +365,7 @@ impl RelmListItem for LibraryItem {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 request(RowMenuRequest {
                     catalog_id: shown.catalog_id,
+                    library_id: shown.library_id,
                     in_library: shown.in_library,
                     favorite: shown.favorite,
                     at: (x as i32, y as i32),
@@ -387,6 +397,9 @@ impl RelmListItem for LibraryItem {
             Entry::Song(track) if self.playable() => {
                 track.catalog_id.clone().map(|catalog_id| RowFacts {
                     catalog_id,
+                    // A library track's own id is the `i.…` one; a catalog
+                    // track's is not a library id at all, so it is not offered.
+                    library_id: track.in_library.then(|| track.id.0.clone()),
                     in_library: track.in_library,
                     favorite: track.favorite,
                 })
