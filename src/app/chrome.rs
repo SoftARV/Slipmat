@@ -417,7 +417,7 @@ impl AppModel {
             .build();
         let notify = adw::SwitchRow::builder()
             .title("Notify on track change")
-            .subtitle("Show a notification when a new song starts")
+            .subtitle("When a new song starts and Tonearm is not in focus")
             .active(self.settings.notify_track_change)
             .build();
         {
