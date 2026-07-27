@@ -55,8 +55,17 @@ pub fn restore_scroll_after_edit(
         return;
     }
 
+    // Assert it *now* as well as reactively. Setting the anchor before GTK
+    // reassigns the value sometimes prevents the collapse outright, and when it
+    // does the position never visibly moves — where undoing it afterwards is
+    // always a visible flicker to the top and back.
+    view.scroll_to(item, relm4::gtk::ListScrollFlags::NONE, None);
+
+    // Then keep watching. Measured (#6): a single reactive attempt is not
+    // enough — of three consecutive removals, two restored and one was left at
+    // zero, because the assignment can land again after `scroll_to`. So this
+    // re-asserts on every collapse rather than disconnecting after the first.
     let handler = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let slot = handler.clone();
     let view = view.clone();
     let id = adjustment.connect_value_changed(move |adj| {
         // Only the collapse, and only while it is unjustified.
@@ -64,16 +73,13 @@ pub fn restore_scroll_after_edit(
             return;
         }
         view.scroll_to(item, relm4::gtk::ListScrollFlags::NONE, None);
-        if let Some(id) = slot.borrow_mut().take() {
-            adj.disconnect(id);
-        }
     });
     *handler.borrow_mut() = Some(id);
 
+    // Bounded, so a genuine scroll to the top a moment later is never fought.
     let adj = adjustment.clone();
-    let slot = handler.clone();
     relm4::gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-        if let Some(id) = slot.borrow_mut().take() {
+        if let Some(id) = handler.borrow_mut().take() {
             adj.disconnect(id);
         }
     });
