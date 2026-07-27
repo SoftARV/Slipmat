@@ -256,6 +256,25 @@ pub enum Event {
     #[serde(rename = "window-hidden")]
     WindowHidden,
 
+    /// The outcome of one library write, **against the id it was for**.
+    ///
+    /// `cmd-done` carries only the command name, and the sidecar's dispatch is
+    /// async — so two removals can finish out of order and correlating by name
+    /// attributes one command's result to another's row. That is not
+    /// hypothetical: it dropped the wrong row from the list. This carries the
+    /// id so the match is exact.
+    ///
+    /// `id` is a **library** id for `remove` and a **catalog** id for
+    /// `unfavorite`, mirroring the commands.
+    #[serde(rename = "library-write")]
+    LibraryWrite {
+        kind: String,
+        id: String,
+        ok: bool,
+        #[serde(default)]
+        detail: String,
+    },
+
     /// Apple's session is gone: cookies and web storage cleared, page reloaded.
     ///
     /// Confirmation, not a request to do anything — the model already forgot
@@ -519,6 +538,34 @@ mod tests {
             panic!("expected PlaybackState");
         };
         assert_eq!(state, PlaybackState::Unknown);
+    }
+
+    #[test]
+    fn a_library_write_outcome_carries_the_id_it_was_for() {
+        // `cmd-done` names only the command, and the sidecar's dispatch is
+        // async — so two removals can finish out of order. Correlating by name
+        // attributed one completion to the other's row and took the wrong track
+        // off the list. The id is what makes the match exact.
+        let ok: Event = serde_json::from_str(
+            r#"{"event":"library-write","kind":"remove","id":"i.ABC","ok":true}"#,
+        )
+        .unwrap();
+        let Event::LibraryWrite { kind, id, ok, .. } = ok else {
+            panic!("expected LibraryWrite");
+        };
+        assert_eq!((kind.as_str(), id.as_str(), ok), ("remove", "i.ABC", true));
+
+        // And a failure must carry why, so the row is put back with a reason.
+        let bad: Event = serde_json::from_str(
+            r#"{"event":"library-write","kind":"unfavorite","id":"282559791",
+                "ok":false,"detail":"403 Forbidden"}"#,
+        )
+        .unwrap();
+        let Event::LibraryWrite { ok, detail, .. } = bad else {
+            panic!("expected LibraryWrite");
+        };
+        assert!(!ok);
+        assert_eq!(detail, "403 Forbidden");
     }
 
     #[test]

@@ -254,9 +254,33 @@ async function accepted(fn) {
   try {
     return await fn()
   } catch (err) {
-    const message = String((err && err.message) || err)
-    if (/end of JSON input|JSON input|Unexpected end/i.test(message)) return null
+    // A library write answers 202 with **no body**, and MusicKit's client parses
+    // every response as JSON — so success arrives as a SyntaxError.
+    //
+    // Matched on the error *type* plus an empty body, not on message text. The
+    // text alone would also swallow a genuine failure whose body happened to be
+    // truncated or malformed, and report it as an accepted write — which is the
+    // exact failure this whole path exists to stop being silent.
+    const empty = !err || err.body === undefined || err.body === null || err.body === ''
+    if (err instanceof SyntaxError && empty) return null
     throw err
+  }
+}
+
+/// Run a library write and report its outcome **against the id it was for**.
+///
+/// `cmd-done` carries only the command name, and this dispatch is async, so two
+/// removals can finish out of order — correlating by name lets one command's
+/// completion be attributed to another's row. These carry the id so Rust can
+/// match exactly.
+async function libraryWrite(kind, id, fn) {
+  try {
+    await accepted(fn)
+    emit('library-write', { kind, id, ok: true, detail: '' })
+  } catch (err) {
+    const detail = String((err && err.message) || err)
+    log('library write failed:', kind, id, detail)
+    emit('library-write', { kind, id, ok: false, detail })
   }
 }
 
@@ -373,9 +397,11 @@ const commands = {
   //     `/songs?ids=` gives 400. Favourites are the other way round — there it
   //     is the query form that works.
   removeFromLibrary: ({ id }) =>
-    accepted(() => music.api.delete('/v1/me/library/songs/' + encodeURIComponent(id))),
+    libraryWrite('remove', id, () =>
+      music.api.delete('/v1/me/library/songs/' + encodeURIComponent(id))),
   unfavorite: ({ id }) =>
-    accepted(() => music.api.delete('/v1/me/favorites?ids[songs]=' + encodeURIComponent(id))),
+    libraryWrite('unfavorite', id, () =>
+      music.api.delete('/v1/me/favorites?ids[songs]=' + encodeURIComponent(id))),
 
   authorize: () => music.authorize(),
   unauthorize: () => music.unauthorize(),
