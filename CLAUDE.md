@@ -81,6 +81,72 @@ redistribution is not the obstacle it looked like — a Flatpak or an AUR packag
 would carry Electron and nothing more, and the CDM download needs only network
 access and a writable, persistent config directory.
 
+**And that is now measured rather than reasoned.** Tonearm was run inside a real
+`org.gnome.Platform//49` sandbox with `--nofilesystem=home`, a private `HOME`
+carrying the Apple session but **no CDM**, and playback worked:
+
+```text
+widevine ready: {"status":"updated","version":"4.10.3050.0"}
+…/.config/Tonearm/WidevineCdm/4.10.3050.0/_platform_specific/linux_x64/libwidevinecdm.so
+```
+
+So the component updater reaches out over `--share=network`, writes into the
+app's own config directory, and the CDM decrypts — a track played. The original
+plan called a sandboxed CDM "genuinely hard" and deferred Flatpak on the
+strength of it; that was reasoning, and it was wrong. What is actually hard is
+the *build*, not the runtime.
+
+Three things that experiment settled, and that a manifest has to carry:
+
+- **`org.electronjs.Electron2.BaseApp`, for zypak.** Chromium's SUID sandbox
+  cannot work inside Flatpak's — without it the sidecar aborts on
+  `chrome-sandbox is owned by root and has mode 4755` and rule 6 restarts it
+  forever. `ELECTRON_DISABLE_SANDBOX=1` proves the rest works but is not the
+  answer to ship.
+- **`--device=dri`.** Without it GTK falls back to software rendering — `egl:
+  failed to create dri2 screen` — and the grids scroll badly enough to read as
+  an app problem rather than a packaging one.
+- **`--own-name=dev.miguelrincon.Tonearm`** and the MPRIS name. Flatpak's bus
+  proxy only lets an app own names matching its ID, and `GtkApplication` exits
+  0 without a window if it cannot register.
+
+One thing that experiment appeared to find was **not real**, and the way it
+resolved is the lesson. `gdk_pixbuf` decoding failed there while everything
+else worked — 650 covers fetched, **0** backdrops written, against 20 on the
+host, on the same files. Tile artwork and the blurred backdrop both vanished,
+and both call `Pixbuf::from_file_at_scale`; `Cover::set_file` kept working
+because `GtkImage` goes through `GdkTexture`. It looked like a portability
+finding worth designing around.
+
+It was an artefact of the rig. Running a *host-built* binary against a foreign
+runtime mixes two variables, and gdk-pixbuf is exactly the sort of thing that
+differs between them. Built properly inside the SDK, against the runtime's own
+libraries, every cover and every backdrop loads. **A host binary in a foreign
+runtime is not a fair test of anything subtle** — it answers "does the sandbox
+allow this" and nothing finer.
+
+## Building the Flatpak
+
+```bash
+make flatpak          # build and install it locally
+make flatpak-bundle   # a single .flatpak file to carry to another machine
+```
+
+Three things in the manifest are not obvious and were each found the hard way:
+
+- **zypak wraps `electron`, not the app.** It has to be the *direct* parent of
+  Chromium, and Chromium is the app's grandchild — the launcher starts Rust,
+  Rust spawns Electron. Wrapping the launcher leaves the sidecar aborting on
+  `chrome-sandbox … mode 4755` exactly as if zypak were absent. So a shim
+  stands where `electron_binary()` looks and wraps the real binary beside it.
+- **No npm tree.** The sidecar's only dependency is Electron itself, and the
+  app runs `node_modules/electron/dist/electron` directly — the other thirteen
+  packages exist only to *download* that binary. So the castLabs release is one
+  pinned archive rather than a generated node-sources list.
+- **The build is offline**, because `flatpak-builder` forbids network. Crates
+  come from `cargo-sources.json`; regenerate it with
+  `packaging/flatpak/generate-sources.sh` whenever `Cargo.lock` changes.
+
 Two Linux facts that follow, and that you must not design around:
 
 - **No VMP signing needed.** Linux Widevine reports `PLATFORM_UNVERIFIED`; the

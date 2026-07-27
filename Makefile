@@ -18,8 +18,7 @@ SIDECAR  = $(DATADIR)/tonearm/sidecar
 ICON_SIZES = 16 32 48 64 128 256 512
 
 .PHONY: all build run test check sizes sidecar sidecar-run gapless install install-sidecar \
-        dev-install uninstall clean
-
+        dev-install uninstall clean flatpak flatpak-bundle
 all: build
 
 build:
@@ -61,6 +60,14 @@ sidecar-run: sidecar
 # drove the transition, this says whether the decoder stopped.
 gapless:
 	./scripts/gapless-check.sh
+
+flatpak:
+	flatpak run org.flatpak.Builder --force-clean --user --install \
+		--repo=flatpak-repo build-dir packaging/flatpak/dev.miguelrincon.Tonearm.yml
+
+flatpak-bundle: flatpak
+	flatpak build-bundle flatpak-repo Tonearm.flatpak dev.miguelrincon.Tonearm master
+	@echo "Tonearm.flatpak — copy it anywhere and: flatpak install ./Tonearm.flatpak"
 
 install: build install-sidecar dev-install
 	install -Dm755 target/release/tonearm $(BINDIR)/tonearm

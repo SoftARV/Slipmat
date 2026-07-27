@@ -1,0 +1,111 @@
+# Tonearm as a Flatpak.
+#
+# Why this exists: the app needs libadwaita >= 1.8 and GTK >= 4.20 (relm4's
+# `gnome_49` feature), which almost nothing ships yet. A Flatpak carries the
+# GNOME 49 runtime with it, so the distro's own libadwaita stops mattering —
+# Ubuntu 24.04 and Fedora 42 can run this despite being unable to build it.
+#
+# **Not for Flathub.** Distributed as a bundle or from our own repo.
+app-id: dev.miguelrincon.Tonearm
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+
+# Chromium's own SUID sandbox cannot work inside Flatpak's. This base app
+# supplies zypak, which translates Chromium's sandbox calls into the ones
+# Flatpak allows. Measured without it: the sidecar aborts on
+# `chrome-sandbox is owned by root and has mode 4755` and rule 6 restarts it
+# for ever, which looks like a broken app rather than a packaging mistake.
+base: org.electronjs.Electron2.BaseApp
+base-version: '25.08'
+
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+
+command: tonearm
+
+finish-args:
+  # Always. Widevine has no persistent licences on Linux, so playback needs a
+  # connection every time — and the CDM itself is fetched on first run.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  # Without this GTK falls back to software rendering and the grids scroll
+  # badly enough to read as an app bug. Measured: `egl: failed to create dri2
+  # screen`.
+  - --device=dri
+  # Flatpak's bus proxy only lets an app own names matching its ID, and
+  # `GtkApplication` exits 0 with no window if it cannot register. MPRIS needs
+  # its own name on top of that — it is the headline feature.
+  - --own-name=org.mpris.MediaPlayer2.Tonearm
+  # Tonearm keeps nothing of the user's outside its own directories: settings,
+  # the artwork cache, the session, and the CDM all live under the app's
+  # config and cache. So no home access at all.
+
+modules:
+  - name: tonearm
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/tonearm/cargo
+    sources:
+      - type: dir
+        path: ../..
+        # Without these the build copies ~10GB of `target/` and the 313MB
+        # `node_modules` into the sandbox, neither of which it uses: the crates
+        # come from `cargo-sources.json` and Electron from the pinned archive.
+        skip:
+          - target
+          - sidecar/node_modules
+          - .git
+          - packaging/flatpak/.flatpak-builder
+          - build-dir
+          - flatpak-repo
+      # Crate tarballs with hashes, so the build needs no network.
+      # Regenerate with packaging/flatpak/generate-sources.sh
+      - cargo-sources.json
+
+      # castLabs Electron, pinned. Fetched here rather than by `npm install`
+      # for two reasons: `flatpak-builder` forbids network during a build, and
+      # nothing in the npm tree is needed at *runtime* — the app runs
+      # `node_modules/electron/dist/electron` directly, and the other thirteen
+      # packages exist only to download that binary.
+      - type: archive
+        url: https://github.com/castlabs/electron-releases/releases/download/v43.0.0%2Bwvcus/electron-v43.0.0+wvcus-linux-x64.zip
+        sha256: 53782f44b8a88703ed54da1602c54c0af998ce076839f719efe1c850b05baccf
+        strip-components: 0
+        dest: electron-dist
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --verbose
+      - install -Dm755 target/release/tonearm /app/bin/tonearm.real
+
+      # The sidecar, laid out exactly where `electron_binary()` looks:
+      # <sidecar>/node_modules/electron/dist/electron
+      - install -Dm644 sidecar/package.json /app/share/tonearm/sidecar/package.json
+      - install -Dm644 sidecar/main.js /app/share/tonearm/sidecar/main.js
+      - install -Dm644 sidecar/preload.js /app/share/tonearm/sidecar/preload.js
+      - mkdir -p /app/share/tonearm/sidecar/node_modules/electron/dist
+      - cp -a electron-dist/. /app/share/tonearm/sidecar/node_modules/electron/dist/
+      # zypak has to be the *direct* parent of Chromium, and Chromium is the
+      # app's grandchild — Rust spawns Electron. So the wrapper goes here,
+      # standing where `electron_binary()` looks, rather than around the app.
+      - mv /app/share/tonearm/sidecar/node_modules/electron/dist/electron
+          /app/share/tonearm/sidecar/node_modules/electron/dist/electron.bin
+      - chmod +x /app/share/tonearm/sidecar/node_modules/electron/dist/electron.bin
+      - install -Dm755 packaging/flatpak/electron-shim
+          /app/share/tonearm/sidecar/node_modules/electron/dist/electron
+
+      # zypak-wrapper is what makes Chromium's sandbox work in here. The
+      # launcher also points the app at the bundled sidecar, because
+      # `locate()` prefers $XDG_DATA_HOME and there is no install tree here.
+      - install -Dm755 tonearm-launcher /app/bin/tonearm
+
+      - install -Dm644 data/dev.miguelrincon.Tonearm.desktop /app/share/applications/dev.miguelrincon.Tonearm.desktop
+      - install -Dm644 data/icons/hicolor/scalable/apps/dev.miguelrincon.Tonearm.svg
+          /app/share/icons/hicolor/scalable/apps/dev.miguelrincon.Tonearm.svg
+      - install -Dm644 data/icons/hicolor/symbolic/apps/dev.miguelrincon.Tonearm-symbolic.svg
+          /app/share/icons/hicolor/symbolic/apps/dev.miguelrincon.Tonearm-symbolic.svg

@@ -114,30 +114,57 @@ strip DRM, does not use extracted CDMs, and does not download anything.
 ## Requirements
 
 - An **active Apple Music subscription**
-- GTK ≥ 4.20, libadwaita ≥ 1.8, Rust ≥ 1.93 (relm4 0.11's MSRV)
-- Node and npm — verified on Node 26; `make sidecar` handles the rest
 - x86_64 (Widevine on Linux is x86_64 only)
 - **A network connection, always** — see Limitations
 
+To *build* it you also need GTK ≥ 4.20, libadwaita ≥ 1.8 and Rust ≥ 1.93
+(relm4 0.11's MSRV), plus Node and npm — verified on Node 26. That floor is
+recent enough to rule out most distributions today: Debian stable, Ubuntu 24.04
+and Fedora ≤ 42 ship an older libadwaita and cannot build it.
+
+**The Flatpak carries its own runtime, so none of that applies to running it.**
+
 ```bash
-# CachyOS / Arch
+# CachyOS / Arch — for building from source
 sudo pacman -S --needed base-devel pkgconf rust gtk4 libadwaita librsvg nodejs npm
 ```
 
 ## Install
 
+### Flatpak — any distribution
+
+The Flatpak bundles the GNOME 49 runtime, so your system's libadwaita does not
+matter. This is the route for anything that cannot build Tonearm, which today is
+most things.
+
+```bash
+flatpak install ./Tonearm.flatpak
+flatpak run dev.miguelrincon.Tonearm
+```
+
+It is **not on Flathub** and is not intended to be. Build one yourself with
+`make flatpak-bundle`, which needs `org.flatpak.Builder` and takes a few
+minutes; see [`packaging/flatpak/README.md`](packaging/flatpak/README.md).
+
+### Arch and derivatives
+
+PKGBUILDs live in [`packaging/aur/`](packaging/aur/) — `tonearm` for the latest
+release, `tonearm-git` to track `main`.
+
+### From source
+
 ```bash
 make install     # build + install to ~/.local, no sudo
 ```
 
-The first build also fetches castLabs Electron — **about 200 MB of Chromium**,
-once. That is the Widevine boundary and there is no smaller version of it; see
-[Limitations](#limitations). `make sidecar` fetches it on its own if you want
-that step separately.
-
 Then launch **Tonearm** from the app grid, or run `tonearm`. If that command is
 not found, `~/.local/bin` is not on your `PATH` — most shells add it, some do
 not.
+
+Every route fetches castLabs Electron — **about 200 MB of Chromium**, once.
+That is the Widevine boundary and there is no smaller version of it; see
+[Limitations](#limitations). From source, `make sidecar` does that step on its
+own if you want it separately.
 
 On first run, Apple's sign-in window opens once; after you authenticate it hides
 for good. Notifications need the app to be installed, and the first time may
