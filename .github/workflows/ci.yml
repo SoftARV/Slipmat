@@ -7,6 +7,8 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  # So the packaging can be exercised on demand without waiting for a tag.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -49,14 +51,47 @@ jobs:
       - name: make check
         run: make check
 
+  packaging-changed:
+    name: Did the packaging move?
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      # Deliberately a plain `git diff` rather than an action: the question is
+      # small, and one fewer third-party step in the release path is worth more
+      # than the convenience.
+      - id: filter
+        run: |
+          if [ "${{ github.event_name }}" != "push" ] || [ -z "${{ github.event.before }}" ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" || echo ALL)
+          if echo "$changed" | grep -qE '^(packaging/|sidecar/|Cargo\.lock|Cargo\.toml|\.github/workflows/|tonearm-launcher)'; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "changed files:"; echo "$changed"
+
   flatpak:
     name: Flatpak bundle
     runs-on: ubuntu-latest
-    # Not on pull requests. The build fetches a ~1.5GB SDK and 120MB of
-    # Electron, and takes far longer than the checks — too slow to sit in front
-    # of every review. `check` is what guards a PR; this guards the packaging
-    # and produces the artifact a release needs.
-    if: github.event_name == 'push'
+    # Not on pull requests, and not on every merge either. The build fetches a
+    # ~1.5GB SDK and 120MB of Electron and takes far longer than the checks —
+    # too slow to sit in front of every review, and wasteful on a day when six
+    # PRs land and none of them touch packaging.
+    #
+    # So: always on a tag, on demand, and on a merge **only when something that
+    # could break the build moved**. `check` is what guards a PR; this guards
+    # the packaging.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'push' && needs.packaging-changed.outputs.changed == 'true')
+    needs: [packaging-changed]
     container:
       image: bilelmoussaoui/flatpak-github-actions:gnome-49
       options: --privileged
