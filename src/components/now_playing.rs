@@ -15,6 +15,7 @@ use std::time::Duration;
 use relm4::adw::prelude::*;
 use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
 
+use super::cover::SWAP_MS;
 use crate::music::types::format_duration;
 
 /// How often the slider redraws itself between snapshots.
@@ -234,22 +235,48 @@ impl SimpleComponent for NowPlaying {
             // most need it. Each control gates itself instead.
 
             // --- artwork + labels ------------------------------------------
-            #[name = "cover"]
-            gtk::Image {
-                // The *widget* stays 48px so the case does not change size;
-                // the icon inside it is drawn smaller so it sits within the
-                // sleeve rather than against its edges. Swapped for the full
-                // 48 in `post_view` when real artwork arrives, which fills the
-                // square by design.
-                set_pixel_size: EMPTY_COVER_PX,
-                set_size_request: (48, 48),
+            // Two pages, cross-faded, rather than one image whose contents
+            // are swapped underneath you. A cover arriving or going away is a
+            // change of state and now dissolves like one; `Cover` does the
+            // same thing in the drawer, and they share `SWAP_MS` so the two
+            // surfaces move together.
+            #[name = "cover_stack"]
+            gtk::Stack {
+                set_transition_type: gtk::StackTransitionType::Crossfade,
+                set_transition_duration: SWAP_MS,
+                set_valign: gtk::Align::Center,
+
+                #[name = "cover"]
+                add_named[Some("cover")] = &gtk::Image {
+                    set_pixel_size: 48,
+                    set_size_request: (48, 48),
+                    add_css_class: "np-cover",
+                },
+
                 // An empty sleeve rather than a floating icon: with nothing
                 // playing, the bar should still read as having a place where
-                // the artwork goes. `.np-cover-empty` draws the case; it is
-                // removed the moment a real cover arrives.
-                set_icon_name: Some("media-optical-symbolic"),
-                add_css_class: "np-cover",
-                add_css_class: "np-cover-empty",
+                // the artwork goes. The *widget* stays 48px so the case does
+                // not change size; the disc inside it is drawn smaller so it
+                // sits within the sleeve rather than against its edges.
+                add_named[Some("sleeve")] = &gtk::Image {
+                    set_pixel_size: EMPTY_COVER_PX,
+                    set_size_request: (48, 48),
+                    set_icon_name: Some("media-optical-symbolic"),
+                    add_css_class: "np-cover",
+                    add_css_class: "np-cover-empty",
+                },
+
+                // **After the children**, or naming one before it is added
+                // warns and does nothing.
+                //
+                // A `GtkStack` shows whichever child was added first, and that
+                // is the cover — an image with no file and no icon, which
+                // draws nothing at all. So the bar launched with a hole where
+                // the sleeve goes, and `post_view` could not correct it: it
+                // only switches pages when the artwork *changes*, and at
+                // startup there is nothing to change from. The empty state is
+                // the state the app opens in, so it is the one to open on.
+                set_visible_child_name: "sleeve",
             },
 
             // Deliberately **not** hexpand, and width-limited.
@@ -283,70 +310,90 @@ impl SimpleComponent for NowPlaying {
                 // which is what they were already set up to do.
                 set_width_request: -1,
                 set_spacing: 2,
-
-                // Two grey bars where the title and artist go.
+                // Crossfaded, not flipped.
                 //
-                // Deliberately **not** animated: a pulsing skeleton means
-                // "loading", and nothing is loading — nothing is playing. The
-                // static version says "this is where the track goes", which is
-                // both true and quieter than the words "Nothing playing"
-                // sitting in the bar all evening.
-                #[name = "skeleton"]
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
+                // A queue emptying used to cut: the title gone and the grey
+                // bars there in the same frame. A `GtkStack` dissolves between
+                // its pages instead, and the page is chosen in `post_view`
+                // rather than by a `#[watch]` — a transition is an animation,
+                // and animated properties are written on an edge.
+                #[name = "meta_stack"]
+                gtk::Stack {
+                    set_transition_type: gtk::StackTransitionType::Crossfade,
+                    set_transition_duration: SWAP_MS,
                     set_valign: gtk::Align::Center,
-                    set_spacing: 7,
-                    #[watch]
-                    set_visible: !model.snap.active,
 
-                    gtk::Box {
-                        set_size_request: (140, 11),
-                        add_css_class: "np-skeleton",
-                    },
-                    gtk::Box {
-                        set_size_request: (92, 9),
-                        add_css_class: "np-skeleton",
-                    },
-                },
+                    // Two grey bars where the title and artist go.
+                    //
+                    // Deliberately **not** animated: a pulsing skeleton means
+                    // "loading", and nothing is loading — nothing is playing.
+                    // The static version says "this is where the track goes",
+                    // which is both true and quieter than the words "Nothing
+                    // playing" sitting in the bar all evening.
+                    add_named[Some("empty")] = &gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_valign: gtk::Align::Center,
+                        set_spacing: 7,
 
-                gtk::Label {
-                    set_xalign: 0.0,
-                    set_ellipsize: gtk::pango::EllipsizeMode::End,
-                    // Natural width, not minimum. Roomier than it was, now
-                    // that the widest thing in the bar has gone and the text
-                    // is what the space is for.
-                    set_max_width_chars: 40,
-                    add_css_class: "heading",
-                    #[watch]
-                    set_visible: model.snap.active,
-                    // Track and album names are plain text, not markup. Without
-                    // this, a title containing `&` — "Blood, Sweat & 3 Years",
-                    // "Slade & Co" — fails to render and GTK warns on every
-                    // track change.
-                    set_use_markup: false,
-                    #[watch]
-                    set_label: &model.snap.title,
-                    #[watch]
-                    set_tooltip_text: (!model.snap.title.is_empty())
-                        .then_some(model.snap.title.as_str()),
-                },
-                gtk::Label {
-                    set_xalign: 0.0,
-                    set_ellipsize: gtk::pango::EllipsizeMode::End,
-                    set_max_width_chars: 48,
-                    add_css_class: "caption",
-                    add_css_class: "dim-label",
-                    set_use_markup: false,
-                    #[watch]
-                    set_label: &model.subtitle(),
-                    // The full text on hover, since the bar always truncates.
-                    #[watch]
-                    set_tooltip_text: Some(&model.subtitle()),
-                    #[watch]
-                    set_visible: model.snap.active,
+                        // `halign` on each bar, not only on the column. A
+                        // vertical `GtkBox` gives children `Align::Fill`
+                        // across and `set_size_request` is a *minimum*, so
+                        // both stretched to the column and drew the same
+                        // length whatever these numbers said. Once the
+                        // metadata column became the hexpanding child, that
+                        // width was most of the bar.
+                        gtk::Box {
+                            set_halign: gtk::Align::Start,
+                            set_size_request: (140, 11),
+                            add_css_class: "np-skeleton",
+                        },
+                        gtk::Box {
+                            set_halign: gtk::Align::Start,
+                            set_size_request: (92, 9),
+                            add_css_class: "np-skeleton",
+                        },
+                    },
+
+                    add_named[Some("track")] = &gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_valign: gtk::Align::Center,
+                        set_spacing: 2,
+
+                        gtk::Label {
+                            set_xalign: 0.0,
+                            set_ellipsize: gtk::pango::EllipsizeMode::End,
+                            // Natural width, not minimum. Roomier than it was,
+                            // now that the widest thing in the bar has gone and
+                            // the text is what the space is for.
+                            set_max_width_chars: 40,
+                            add_css_class: "heading",
+                            // Track and album names are plain text, not markup.
+                            // Without this, a title containing `&` fails to
+                            // render and GTK warns on every track change.
+                            set_use_markup: false,
+                            #[watch]
+                            set_label: &model.snap.title,
+                            #[watch]
+                            set_tooltip_text: (!model.snap.title.is_empty())
+                                .then_some(model.snap.title.as_str()),
+                        },
+                        gtk::Label {
+                            set_xalign: 0.0,
+                            set_ellipsize: gtk::pango::EllipsizeMode::End,
+                            set_max_width_chars: 48,
+                            add_css_class: "caption",
+                            add_css_class: "dim-label",
+                            set_use_markup: false,
+                            #[watch]
+                            set_label: &model.subtitle(),
+                            // The full text on hover, since the bar always
+                            // truncates.
+                            #[watch]
+                            set_tooltip_text: Some(&model.subtitle()),
+                        },
+                    },
                 },
             },
-
             // --- elapsed / total -------------------------------------------
             //
             // One label beside the track rather than two in the middle of the
@@ -617,17 +664,21 @@ impl SimpleComponent for NowPlaying {
         if *shown != self.artwork {
             match &self.artwork {
                 Some(path) => {
-                    widgets.cover.set_pixel_size(48);
                     widgets.cover.set_from_file(Some(path));
-                    widgets.cover.remove_css_class("np-cover-empty");
+                    widgets.cover_stack.set_visible_child_name("cover");
                 }
-                None => {
-                    widgets.cover.set_pixel_size(EMPTY_COVER_PX);
-                    widgets.cover.set_icon_name(Some("media-optical-symbolic"));
-                    widgets.cover.add_css_class("np-cover-empty");
-                }
+                None => widgets.cover_stack.set_visible_child_name("sleeve"),
             }
             shown.clone_from(&self.artwork);
+        }
+
+        // Guarded, and on an edge: a stack with a transition is an animation,
+        // so writing this is asking for a cross-fade. `post_view` runs after
+        // every message, and asking on every one is the level trigger that
+        // wedged the app elsewhere.
+        let want = if self.snap.active { "track" } else { "empty" };
+        if widgets.meta_stack.visible_child_name().as_deref() != Some(want) {
+            widgets.meta_stack.set_visible_child_name(want);
         }
     }
 }
