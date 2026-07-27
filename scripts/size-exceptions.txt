@@ -44,9 +44,8 @@ src/app/library.rs                   700  # four collections and the catalog sea
 src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
-src/components/player_view.rs        870  # the expanded player: one `view!` plus a transport built
-                                          # by hand because it *moves* between two layouts, and the
-                                          # refresh that `#[watch]` cannot do for widgets outside
-                                          # the macro's tree. Splitting the transport out would put
-                                          # its construction and its refresh in different files,
-                                          # which is the pair most likely to drift.
+src/components/player_view/mod.rs    700  # the model, `view!` and the reducer. The transport
+                                          # moved to a child module — see its header for why a
+                                          # child and not a sibling. 870 before the split; this
+                                          # number comes down as the ratchet intends, and is the
+                                          # first time it has.

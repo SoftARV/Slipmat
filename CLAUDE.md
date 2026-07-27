@@ -526,10 +526,17 @@ src/
   components/
     mod.rs
     now_playing.rs   # the persistent bottom bar
+    player_view/
+      mod.rs         # the bar opened out into a drawer: model, view!, reducer
+      transport.rs   # its scrubber and buttons, built by hand because they
+                     # *move* between layouts — a child module so construction
+                     # and refresh cannot land in different files
     track_row.rs     # FactoryComponent → adw::ActionRow
     queue_view.rs    # the queue, reorderable
     library.rs       # playlists / albums / songs
-    artwork.rs       # fetch + disk cache; MPRIS needs a file:// path
+    cover.rs         # square record or round portrait; one of the two shows
+    artwork.rs       # fetch + disk cache; MPRIS needs a file:// path, and
+                     # the player's backdrop needs a deliberately tiny one
 sidecar/
   package.json  main.js  preload.js    # ~200 lines of JS, total
 data/
