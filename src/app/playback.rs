@@ -16,6 +16,7 @@ use relm4::prelude::*;
 
 use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, TICK_MS, artwork, notify};
 use crate::components::now_playing::{NowPlayingInput, Repeat, Snapshot};
+use crate::components::player_view::PlayerViewInput;
 use crate::components::queue_view::{QueueEntry, QueueViewInput};
 use crate::mpris::MprisState;
 use crate::music::types::Artwork;
@@ -156,6 +157,11 @@ impl AppModel {
             // could not press play on it.
             active: item.is_some(),
         };
+        // Both shapes of the same player get the same snapshot. Deriving the
+        // drawer's state separately is how two views of one thing come to
+        // disagree.
+        self.player_view
+            .emit(PlayerViewInput::Sync(Box::new(snap.clone())));
         self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));
 
         // The queue dialog reads MusicKit's queue, not our library list. The
@@ -276,6 +282,7 @@ impl AppModel {
             None => {
                 self.art_path = None;
                 self.now_playing.emit(NowPlayingInput::ArtworkReady(None));
+                self.player_view.emit(PlayerViewInput::Artwork(None));
                 false
             }
         }

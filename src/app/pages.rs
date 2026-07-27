@@ -59,7 +59,7 @@ impl AppModel {
                 })
             },
         );
-        page.set_end_controls(!self.show_queue);
+        page.set_end_controls(true);
         self.nav.push(page.widget());
         self.pages.push(page);
 
@@ -143,7 +143,7 @@ impl AppModel {
     /// second close button in the middle of the window.
     pub(super) fn sync_page_controls(&self) {
         for page in &self.pages {
-            page.set_end_controls(!self.show_queue);
+            page.set_end_controls(true);
         }
     }
 

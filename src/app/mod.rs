@@ -50,6 +50,7 @@ use crate::components::grid_item::{
 use crate::components::now_playing::{
     NowPlaying, NowPlayingInput, NowPlayingOutput, Repeat, VOLUME_STEP,
 };
+use crate::components::player_view::{PlayerView, PlayerViewInput};
 use crate::components::queue_view::{QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::LibraryRowWidgets;
 use crate::components::track_row::{Entry, LibraryItem, RowMenuRequest};
@@ -178,6 +179,9 @@ pub struct AppModel {
     toaster: adw::ToastOverlay,
     now_playing: Controller<NowPlaying>,
     queue_view: Controller<QueueView>,
+    /// The drawer the bar opens into. Fed the same `Snapshot` as the bar, and
+    /// its transport emits the same outputs — one player, two shapes (#18).
+    player_view: Controller<PlayerView>,
     /// The rows on screen — the filtered view. A `ListView`, so its cost is
     /// the number of rows visible rather than the size of the library.
     library: TypedListView<LibraryItem, gtk::NoSelection>,
@@ -451,6 +455,9 @@ pub enum AppMsg {
     WindowCloseRequested,
     /// The window is on screen again, however that happened.
     WindowShown,
+    /// The drawer opened or closed by its own devices — dragged shut, or
+    /// clicked away from. The model follows it rather than fighting it.
+    PlayerDrawer(bool),
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
     /// Empty the queue and stop.
@@ -585,6 +592,21 @@ pub enum CommandMsg {
     },
 }
 
+/// The drawer emits the same outputs as the bar, so they map the same way.
+/// Two players disagreeing about one MusicKit is the thing this avoids.
+fn map_player_output(out: NowPlayingOutput) -> AppMsg {
+    match out {
+        NowPlayingOutput::PlayPause => AppMsg::PlayPause,
+        NowPlayingOutput::Next => AppMsg::Next,
+        NowPlayingOutput::Previous => AppMsg::Previous,
+        NowPlayingOutput::Seek(ms) => AppMsg::Seek(ms),
+        NowPlayingOutput::SetVolume(v) => AppMsg::SetVolume(v),
+        NowPlayingOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
+        NowPlayingOutput::SetRepeat(r) => AppMsg::SetRepeat(r),
+        NowPlayingOutput::ToggleQueue => AppMsg::ToggleQueue,
+    }
+}
+
 #[relm4::component(pub)]
 impl Component for AppModel {
     type Init = Settings;
@@ -617,26 +639,44 @@ impl Component for AppModel {
             #[local_ref]
             toaster -> adw::ToastOverlay {
                 adw::ToolbarView {
-                    // The queue slides in from the right and moves the main
-                    // view rather than covering it.
+                    // The bar is the handle of a drawer, not furniture bolted
+                    // to the bottom (#18). `AdwBottomSheet` is the widget for
+                    // exactly this: `bottom_bar` while closed, `sheet` when
+                    // open, and it owns the drag and the animation.
+                    //
+                    // The queue used to be an `OverlaySplitView` sidebar here,
+                    // taking width from the content. It now lives inside the
+                    // drawer, beside the thing it is a queue for.
                     #[wrap(Some)]
-                    set_content = &adw::OverlaySplitView {
-                        set_sidebar_position: gtk::PackType::End,
-                        // The split view owns the sidebar's width, not the
-                        // sidebar. Its child used to carry a 340px
-                        // width_request, which the collapse animation then had
-                        // to violate on every frame — hence GTK warning that a
-                        // GtkRevealer was being measured smaller than its
-                        // minimum every time the queue closed.
-                        set_min_sidebar_width: 300.0,
-                        set_max_sidebar_width: 380.0,
-                        set_sidebar_width_fraction: 0.28,
+                    #[name = "player_sheet"]
+                    set_content = &adw::BottomSheet {
+                        set_full_width: true,
+                        set_show_drag_handle: true,
+                        // Modal: with the drawer open there is nothing useful
+                        // to click behind it, and dismissing by clicking away
+                        // is what a drawer should do.
+                        set_modal: true,
                         #[watch]
-                        set_show_sidebar: model.show_queue,
+                        set_open: model.show_queue,
+                        // The bar is only meaningful once there is a player.
+                        #[watch]
+                        set_reveal_bottom_bar: matches!(model.stage, Stage::Ready),
+
+                        // Dragged shut, or clicked away from — the model has to
+                        // learn about it or the next toggle fights the widget.
+                        connect_open_notify[sender] => move |sheet| {
+                            sender.input(AppMsg::PlayerDrawer(sheet.is_open()));
+                        },
 
                         #[wrap(Some)]
                         #[local_ref]
-                        set_sidebar = queue_sidebar -> adw::ToolbarView {},
+                        set_bottom_bar = now_playing_bar -> gtk::Box {
+                            set_hexpand: true,
+                        },
+
+                        #[wrap(Some)]
+                        #[local_ref]
+                        set_sheet = player_sheet_content -> adw::BreakpointBin {},
 
                         // Navigation on the left, and an OverlaySplitView
                         // rather than a NavigationSplitView because it can be
@@ -989,8 +1029,7 @@ impl Component for AppModel {
                                         // this one. Without this they vanish:
                                         // the queue's header hides them and
                                         // this header is no longer at the edge.
-                                        #[watch]
-                                        set_show_end_title_buttons: !model.show_queue,
+                                        set_show_end_title_buttons: true,
 
                                         #[wrap(Some)]
                                         #[name = "search_entry"]
@@ -1226,18 +1265,6 @@ impl Component for AppModel {
                         },
                     },
 
-                    // The bar spans the full width under both panes — it is
-                    // the app. Wrapped in a Box so the visibility watch has
-                    // somewhere to live: the bar itself is a child component.
-                    add_bottom_bar = &gtk::Box {
-                        #[watch]
-                        set_visible: matches!(model.stage, Stage::Ready),
-
-                        #[local_ref]
-                        now_playing_bar -> gtk::Box {
-                            set_hexpand: true,
-                        },
-                    },
                 },
             },
         }
@@ -1284,6 +1311,15 @@ impl Component for AppModel {
                 QueueViewOutput::Clear => AppMsg::ClearQueue,
             });
 
+        // The queue **moves** into the expanded player rather than being
+        // rebuilt there (#18). It is handed over before the view is built,
+        // because relm4 constructs the widget tree before the model exists and
+        // there is no init payload that can carry a widget through.
+        crate::components::player_view::hand_over_queue(queue_view.widget().clone());
+        let player_view = PlayerView::builder()
+            .launch(())
+            .forward(sender.input_sender(), map_player_output);
+
         // Popping is the user's business (back button, swipe, Escape), so the
         // stack is told about it rather than driving it. Resolving by tag keeps
         // the id-not-index rule intact even here.
@@ -1325,6 +1361,7 @@ impl Component for AppModel {
         let model = AppModel {
             stage: Stage::Starting,
             queue_view,
+            player_view,
             library,
             show_queue: false,
             show_sidebar: settings.show_sidebar,
@@ -1430,7 +1467,7 @@ impl Component for AppModel {
         let album_grid = &model.album_grid.view;
         let artist_grid = &model.artist_grid.view;
         let playlist_grid = &model.playlist_grid.view;
-        let queue_sidebar = model.queue_view.widget();
+        let player_sheet_content = model.player_view.widget();
         let widgets = view_output!();
 
         // Sidebar rows, added imperatively so each section is its own ListBox
@@ -1994,6 +2031,14 @@ impl AppModel {
                 self.rebuild_rows();
             }
             AppMsg::WindowCloseRequested => self.close_window(root, &sender),
+            AppMsg::PlayerDrawer(open) => {
+                if self.show_queue != open {
+                    self.show_queue = open;
+                    // The bar's queue button is a watch on the snapshot, so it
+                    // has to be told the drawer moved without it.
+                    self.push_snapshot();
+                }
+            }
             AppMsg::WindowShown => {
                 // Dropping the guard is the whole of it: with a window on
                 // screen GTK keeps the app alive by itself, and `background`
@@ -2399,7 +2444,9 @@ impl AppModel {
                 // the GTK thread alongside the fetch, so this is only the CSS
                 // swap.
                 crate::style::set_bar_tint(tint);
-                self.now_playing.emit(NowPlayingInput::ArtworkReady(path));
+                self.now_playing
+                    .emit(NowPlayingInput::ArtworkReady(path.clone()));
+                self.player_view.emit(PlayerViewInput::Artwork(path));
 
                 // A notification was held back for this track so it would not
                 // go out carrying the previous album's cover. Guarded on the
