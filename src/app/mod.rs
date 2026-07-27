@@ -2082,6 +2082,13 @@ impl AppModel {
                 // The bar's toggle reads this from the snapshot, so push one.
                 self.push_snapshot();
                 if self.show_queue {
+                    // **Onto the queue, not merely onto the drawer.** This
+                    // button says "Queue" and used to open the expanded player
+                    // with the queue still tucked away behind its own toggle —
+                    // two clicks to reach the thing the icon names. Opening the
+                    // drawer is how the queue is reached, not what was asked
+                    // for.
+                    self.player_view.emit(PlayerViewInput::SetQueueShown(true));
                     self.queue_view.emit(QueueViewInput::ScrollToPlaying);
                 }
             }
