@@ -345,26 +345,34 @@ impl Component for QueueView {
                 // (An earlier version restored on every sync, including marker
                 // changes, and re-asserting an offset against an `upper` that
                 // was still settling is what made the list twitch.)
-                // Anchor on an ITEM, not on a pixel offset. The topmost
-                // visible row is a stable thing to hold on to, and `scroll_to`
-                // is ListView's own operation on it.
+                // Anchor from the **adjustment**, not from the registry.
                 //
-                // That much was always right. What was wrong was *when*: this
-                // deferred one idle tick, which measurement later showed is
-                // before GTK assigns the zero (#6). `restore_scroll_after_edit`
-                // waits for the assignment instead of racing it — the comment
-                // there has the numbers.
-                let anchor = self.topmost_visible();
+                // `topmost_visible` asks which id is first in queue order among
+                // those with a registry entry — and the registry holds recycled
+                // and off-screen rows, so it answers near position 0 almost
+                // always. Measured: scrolled 3553px down, it returned the row
+                // at position 0, and the re-anchor then scrolled dutifully to
+                // the top. **This list was jumping because of its own anchor**,
+                // not because of the GTK collapse the library hits (#6). Same
+                // symptom, different cause.
+                let adj = widgets.scroller.vadjustment();
+                let rows = self.shown.len().max(1) as f64;
+                let row_height = adj.upper() / rows;
+                let top_item = if row_height > 0.0 {
+                    (adj.value() / row_height).floor() as usize
+                } else {
+                    0
+                };
+
                 let structural = self.apply(entries, playing, sender.input_sender().clone());
 
-                if structural
-                    && let Some(anchor) = anchor
-                    && let Some(position) = self.shown.iter().position(|id| *id == anchor)
-                {
+                if structural && top_item > 0 {
+                    // A row removed above the anchor shifts everything up one.
+                    let target = top_item.min(self.shown.len().saturating_sub(1));
                     crate::components::restore_scroll_after_edit(
                         &widgets.queue_list,
-                        &widgets.scroller.vadjustment(),
-                        position as u32,
+                        &adj,
+                        target as u32,
                     );
                 }
             }
@@ -460,19 +468,6 @@ impl QueueView {
             self.playing = playing;
         }
         structural
-    }
-
-    /// The id of the topmost row currently on screen.
-    ///
-    /// The registry holds exactly the bound rows, so the smallest queue
-    /// position among them is the row at the top of the viewport. That is the
-    /// thing to keep still across an edit.
-    fn topmost_visible(&self) -> Option<String> {
-        let registry = self.registry.borrow();
-        self.shown
-            .iter()
-            .find(|id| registry.contains_key(*id))
-            .cloned()
     }
 
     /// Repaint one row's marker. Touches a widget, never the model.
