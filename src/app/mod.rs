@@ -2620,6 +2620,30 @@ impl AppModel {
         }
     }
 
+    /// Correct the copy of a track held **inside the list store**.
+    ///
+    /// `TypedListView` items own a clone of the entry, taken when the rows were
+    /// built, and `RelmListItem::bind` reads that clone every time a recycled
+    /// widget is reused. So a change applied only to `all_tracks` and to the
+    /// widget on screen is undone the moment the row scrolls out and back.
+    ///
+    /// Linear, because the store is not indexed by id and a library is a few
+    /// hundred rows — the scan costs less than keeping a second index honest.
+    fn patch_stored_row(&mut self, catalog_id: &str, patch: impl Fn(&mut Track)) {
+        for index in 0..self.library.len() {
+            let Some(item) = self.library.get(index) else {
+                continue;
+            };
+            let mut item = item.borrow_mut();
+            if let Entry::Song(track) = &mut item.entry
+                && track.catalog_id.as_deref() == Some(catalog_id)
+            {
+                patch(track);
+                break;
+            }
+        }
+    }
+
     /// Record library membership locally, so the row menu stops offering "Add
     /// to Library" for something just saved — or starts offering it again for
     /// something just removed.
@@ -2628,6 +2652,8 @@ impl AppModel {
     /// favourite star. It is read at menu-build time, which is why updating the
     /// model is enough.
     fn set_in_library(&mut self, catalog_id: &str, in_library: bool) {
+        // As in `set_favorite`: the stored clone is what a rebind reads.
+        self.patch_stored_row(catalog_id, |track| track.in_library = in_library);
         for track in &mut self.all_tracks {
             if track.catalog_id.as_deref() == Some(catalog_id) {
                 track.in_library = in_library;
@@ -2658,6 +2684,13 @@ impl AppModel {
     /// list — a rebuild would throw away the scroll position, and this is the
     /// same discipline as the play marker.
     fn set_favorite(&mut self, catalog_id: &str, on: bool) {
+        // The list store keeps its **own clone** of each entry, made when the
+        // rows were built. Updating `all_tracks` and the visible widget is not
+        // enough: scroll away and back and the row re-binds from that clone,
+        // and the star returns. Correcting the stored item is what makes the
+        // change survive recycling — and it is why this looked like the write
+        // had failed when it had not.
+        self.patch_stored_row(catalog_id, |track| track.favorite = on);
         for track in &mut self.all_tracks {
             if track.catalog_id.as_deref() == Some(catalog_id) {
                 track.favorite = on;

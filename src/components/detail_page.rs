@@ -291,11 +291,33 @@ impl DetailPage {
     /// Update a track's favourite flag in this page's own copy of the list, so
     /// a later rebind does not undo what the user just did.
     pub fn set_favorite(&mut self, catalog_id: &str, on: bool) {
+        self.patch(catalog_id, |track| track.favorite = on);
+    }
+
+    /// Apply a change to **both** copies of a track: the page's own list and
+    /// the clone inside the view's store.
+    ///
+    /// The store's copy is what `RelmListItem::bind` reads when a recycled row
+    /// comes back, so updating only `entries` means the change survives until
+    /// the row scrolls out of view and no further.
+    fn patch(&mut self, catalog_id: &str, patch: impl Fn(&mut crate::music::types::Track)) {
         for entry in &mut self.entries {
             if let Entry::Song(track) = entry
                 && track.catalog_id.as_deref() == Some(catalog_id)
             {
-                track.favorite = on;
+                patch(track);
+            }
+        }
+        for index in 0..self.list.len() {
+            let Some(item) = self.list.get(index) else {
+                continue;
+            };
+            let mut item = item.borrow_mut();
+            if let Entry::Song(track) = &mut item.entry
+                && track.catalog_id.as_deref() == Some(catalog_id)
+            {
+                patch(track);
+                break;
             }
         }
     }
@@ -303,13 +325,7 @@ impl DetailPage {
     /// As [`Self::set_favorite`], for library membership — which the row menu
     /// reads to decide whether "Add to Library" is worth offering.
     pub fn set_in_library(&mut self, catalog_id: &str, in_library: bool) {
-        for entry in &mut self.entries {
-            if let Entry::Song(track) = entry
-                && track.catalog_id.as_deref() == Some(catalog_id)
-            {
-                track.in_library = in_library;
-            }
-        }
+        self.patch(catalog_id, |track| track.in_library = in_library);
     }
 
     /// This page's own row widgets, so the play marker can find them.
