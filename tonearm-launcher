@@ -1,0 +1,15 @@
+#!/bin/sh
+# Tonearm inside Flatpak.
+#
+# This only points the app at the bundled sidecar: `locate()` prefers
+# $XDG_DATA_HOME/tonearm/sidecar, which does not exist in here, and getting it
+# wrong fails in the documented, nasty way — fresh Rust against stale
+# JavaScript, silently.
+#
+# **zypak is not applied here.** It has to be the direct parent of the Chromium
+# process, and Chromium is our *grandchild*: this launches the Rust app, which
+# spawns Electron. Wrapping this process leaves the sidecar aborting on
+# `chrome-sandbox is owned by root and has mode 4755`. The wrapping happens in
+# the `electron` shim instead — see the manifest.
+export TONEARM_SIDECAR="${TONEARM_SIDECAR:-/app/share/tonearm/sidecar}"
+exec /app/bin/tonearm.real "$@"

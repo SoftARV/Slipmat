@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stands where `electron_binary()` expects the real thing, so that zypak ends up
+# the *direct* parent of Chromium — which is what it needs to be to translate
+# the sandbox calls Flatpak refuses.
+#
+# The Rust side deliberately spawns `node_modules/electron/dist/electron`
+# rather than `.bin/electron`; this keeps that true while inserting the wrapper.
+exec zypak-wrapper "$(dirname "$0")/electron.bin" "$@"

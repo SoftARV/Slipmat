@@ -11,3 +11,8 @@
 # The bare clone a -git PKGBUILD's source=('git+…') leaves behind. Named after
 # the package rather than living under src/, so the rules above miss it.
 /packaging/aur/*/tonearm/
+
+# Flatpak build output
+build-dir/
+flatpak-repo/
+.flatpak-builder/

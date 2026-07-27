@@ -110,17 +110,42 @@ Three things that experiment settled, and that a manifest has to carry:
   proxy only lets an app own names matching its ID, and `GtkApplication` exits
   0 without a window if it cannot register.
 
-One thing it did **not** settle, and which the real build must re-check:
-`gdk_pixbuf` decoding failed there while everything else worked. Measured on
-the same covers: 650 fetched, **0** backdrops written, against 20 on the host.
-`Cover::set_file` renders fine because `GtkImage` goes through `GdkTexture`;
-`artwork::decode` and `artwork::backdrop` both call
-`Pixbuf::from_file_at_scale` and both came back empty, which is exactly the two
-features that vanished. It may be an artefact of running a *host-built* binary
-against a foreign runtime — the honest answer is that mixing those two is not a
-fair test, and the question should be asked again once the app is built inside
-the SDK. If it persists, moving those two calls to `gdk::Texture` is the fix,
-since that path already works.
+One thing that experiment appeared to find was **not real**, and the way it
+resolved is the lesson. `gdk_pixbuf` decoding failed there while everything
+else worked — 650 covers fetched, **0** backdrops written, against 20 on the
+host, on the same files. Tile artwork and the blurred backdrop both vanished,
+and both call `Pixbuf::from_file_at_scale`; `Cover::set_file` kept working
+because `GtkImage` goes through `GdkTexture`. It looked like a portability
+finding worth designing around.
+
+It was an artefact of the rig. Running a *host-built* binary against a foreign
+runtime mixes two variables, and gdk-pixbuf is exactly the sort of thing that
+differs between them. Built properly inside the SDK, against the runtime's own
+libraries, every cover and every backdrop loads. **A host binary in a foreign
+runtime is not a fair test of anything subtle** — it answers "does the sandbox
+allow this" and nothing finer.
+
+## Building the Flatpak
+
+```bash
+make flatpak          # build and install it locally
+make flatpak-bundle   # a single .flatpak file to carry to another machine
+```
+
+Three things in the manifest are not obvious and were each found the hard way:
+
+- **zypak wraps `electron`, not the app.** It has to be the *direct* parent of
+  Chromium, and Chromium is the app's grandchild — the launcher starts Rust,
+  Rust spawns Electron. Wrapping the launcher leaves the sidecar aborting on
+  `chrome-sandbox … mode 4755` exactly as if zypak were absent. So a shim
+  stands where `electron_binary()` looks and wraps the real binary beside it.
+- **No npm tree.** The sidecar's only dependency is Electron itself, and the
+  app runs `node_modules/electron/dist/electron` directly — the other thirteen
+  packages exist only to *download* that binary. So the castLabs release is one
+  pinned archive rather than a generated node-sources list.
+- **The build is offline**, because `flatpak-builder` forbids network. Crates
+  come from `cargo-sources.json`; regenerate it with
+  `packaging/flatpak/generate-sources.sh` whenever `Cargo.lock` changes.
 
 Two Linux facts that follow, and that you must not design around:
 
