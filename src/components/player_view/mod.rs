@@ -318,10 +318,42 @@ impl SimpleComponent for PlayerView {
                                     gtk::Align::Start
                                 },
 
+                                // Two grey bars where the title and artist go,
+                                // the same idea as the bar's and for the same
+                                // reason: **deliberately not animated.** A
+                                // pulsing skeleton means "loading", and nothing
+                                // is loading — nothing is playing. Wider than
+                                // the bar's because this is a page, not a strip.
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_spacing: 10,
+                                    set_margin_top: 4,
+                                    set_margin_bottom: 4,
+                                    #[watch]
+                                    set_halign: if model.centred_text() {
+                                        gtk::Align::Center
+                                    } else {
+                                        gtk::Align::Start
+                                    },
+                                    #[watch]
+                                    set_visible: !model.snap.active,
+
+                                    gtk::Box {
+                                        set_size_request: (220, 16),
+                                        add_css_class: "np-skeleton",
+                                    },
+                                    gtk::Box {
+                                        set_size_request: (150, 12),
+                                        add_css_class: "np-skeleton",
+                                    },
+                                },
+
                                 gtk::Label {
                                     add_css_class: "title-1",
                                     set_ellipsize: gtk::pango::EllipsizeMode::End,
                                     set_max_width_chars: 28,
+                                    #[watch]
+                                    set_visible: model.snap.active,
                                     set_use_markup: false,
                                     #[watch]
                                     set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
@@ -333,6 +365,8 @@ impl SimpleComponent for PlayerView {
                                     add_css_class: "dim-label",
                                     set_ellipsize: gtk::pango::EllipsizeMode::End,
                                     set_max_width_chars: 34,
+                                    #[watch]
+                                    set_visible: model.snap.active,
                                     set_use_markup: false,
                                     #[watch]
                                     set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
@@ -438,7 +472,7 @@ impl SimpleComponent for PlayerView {
         });
         let widgets = view_output!();
         model.cover.attach_first(&widgets.art_slot);
-        model.cover.square("audio-x-generic-symbolic");
+        model.cover.empty_sleeve(ART_LARGE);
 
         model.bits = Some(build_transport(&model.transport, &sender));
 
@@ -507,7 +541,10 @@ impl SimpleComponent for PlayerView {
             }
             PlayerViewInput::Artwork(path) => match path {
                 Some(path) => self.cover.set_file(&path),
-                None => self.cover.square("audio-x-generic-symbolic"),
+                // The same empty case the bar draws, at the drawer's size —
+                // a place the artwork goes, rather than a bare glyph adrift in
+                // a 260px square.
+                None => self.cover.empty_sleeve(self.art_px.get()),
             },
             PlayerViewInput::Scrub(v) => {
                 self.scrubbing = true;

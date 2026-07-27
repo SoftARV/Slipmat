@@ -20,10 +20,23 @@ use std::rc::Rc;
 use relm4::gtk::prelude::*;
 use relm4::{adw, gtk};
 
+/// How much of an empty sleeve the disc inside it takes up.
+///
+/// The bar draws a 22px disc in a 48px case and that proportion is what makes
+/// it read as a sleeve rather than as a large icon, so the drawer scales the
+/// same ratio up rather than picking a second number.
+fn disc_px(size: i32) -> i32 {
+    (size * 22 / 48).max(1)
+}
+
 #[derive(Clone)]
 pub struct Cover {
     image: gtk::Image,
     avatar: adw::Avatar,
+    /// Whether the picture is currently an **empty sleeve** rather than a
+    /// cover. Behind the same `Rc` as `round`, and for the same reason: a
+    /// clone in a registry has to agree about what it is drawing.
+    empty: Rc<Cell<bool>>,
     /// Which of the two is currently showing. Held in a `Cell` behind the `Rc`
     /// that `Clone` shares, so the copy sitting in a registry — waiting for a
     /// download to land — still knows which widget to paint.
@@ -56,6 +69,7 @@ impl Cover {
             image,
             avatar,
             round: Rc::new(Cell::new(false)),
+            empty: Rc::new(Cell::new(false)),
         }
     }
 
@@ -66,7 +80,13 @@ impl Cover {
     /// picture inside it, so setting only one leaves the cover floating in a
     /// slab of `card` background.
     pub fn resize(&self, size: i32) {
-        self.image.set_pixel_size(size);
+        // An empty sleeve draws its disc *inside* the case, so the icon is
+        // smaller than the widget. Everything else fills its square by design.
+        self.image.set_pixel_size(if self.empty.get() {
+            disc_px(size)
+        } else {
+            size
+        });
         self.image.set_width_request(size);
         self.image.set_height_request(size);
         self.avatar.set_size(size);
@@ -80,9 +100,31 @@ impl Cover {
         parent.prepend(&self.image);
     }
 
+    /// An empty sleeve: the case, with a disc sitting inside it.
+    ///
+    /// Not the same as [`Cover::square`] with a disc icon. That draws a
+    /// floating glyph; this draws a *place the artwork goes*, which is what
+    /// the Now Playing bar has always done and what the drawer was missing —
+    /// with nothing playing it showed a bare generic icon in the middle of a
+    /// 260px square, which reads as a failure rather than as an empty player.
+    ///
+    /// `.np-cover-empty` is the same rule the bar uses, so the two states
+    /// cannot drift apart.
+    pub fn empty_sleeve(&self, size: i32) {
+        self.round.set(false);
+        self.empty.set(true);
+        self.avatar.set_visible(false);
+        self.image.set_visible(true);
+        self.image.set_from_file(None::<&Path>);
+        self.image.set_icon_name(Some("media-optical-symbolic"));
+        self.image.add_css_class("np-cover-empty");
+        self.resize(size);
+    }
+
     /// A record: square, with `icon` until the cover arrives.
     pub fn square(&self, icon: &str) {
         self.round.set(false);
+        self.leave_empty();
         self.avatar.set_visible(false);
         self.image.set_visible(true);
         self.image.set_from_file(None::<&Path>);
@@ -92,6 +134,7 @@ impl Cover {
     /// A person: round, with their initials until the portrait arrives.
     pub fn round(&self, name: &str) {
         self.round.set(true);
+        self.leave_empty();
         self.image.set_visible(false);
         self.avatar.set_visible(true);
         // Cleared explicitly — this widget was very likely showing somebody
@@ -112,8 +155,19 @@ impl Cover {
                 Err(err) => tracing::debug!(?err, "decoding portrait"),
             }
         } else {
+            self.leave_empty();
             self.image.set_from_file(Some(path));
         }
+    }
+
+    /// Stop drawing a case. Restores the full pixel size, which the sleeve
+    /// shrank to leave a margin inside itself.
+    fn leave_empty(&self) {
+        if !self.empty.replace(false) {
+            return;
+        }
+        self.image.remove_css_class("np-cover-empty");
+        self.resize(self.image.width_request());
     }
 
     /// Widget identity, for a registry deciding whether an entry is still its
