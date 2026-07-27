@@ -346,10 +346,22 @@ impl SimpleComponent for PlayerView {
                                     // things. Making the second thinner as
                                     // well made it read as a caption.
                                     gtk::Box {
+                                        #[watch]
+                                        set_halign: if model.centred_text() {
+                                            gtk::Align::Center
+                                        } else {
+                                            gtk::Align::Start
+                                        },
                                         set_size_request: (240, 16),
                                         add_css_class: "np-skeleton",
                                     },
                                     gtk::Box {
+                                        #[watch]
+                                        set_halign: if model.centred_text() {
+                                            gtk::Align::Center
+                                        } else {
+                                            gtk::Align::Start
+                                        },
                                         set_size_request: (120, 16),
                                         add_css_class: "np-skeleton",
                                     },

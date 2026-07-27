@@ -44,7 +44,7 @@ src/app/library.rs                   700  # four collections and the catalog sea
 src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
-src/components/player_view/mod.rs    740  # the model, `view!` and the reducer. The transport
+src/components/player_view/mod.rs    760  # the model, `view!` and the reducer. The transport
                                           # moved to a child module — see its header for why a
                                           # child and not a sibling. 870 before the split; this
                                           # number comes down as the ratchet intends, and is the

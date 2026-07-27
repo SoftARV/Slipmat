@@ -300,10 +300,18 @@ impl SimpleComponent for NowPlaying {
                     set_visible: !model.snap.active,
 
                     gtk::Box {
+                        // `halign` on each bar, not only on the column. A vertical
+                        // `GtkBox` gives children `Align::Fill` across, and
+                        // `set_size_request` is a *minimum* — so both stretched to the
+                        // column and drew the same length whatever these numbers said.
+                        // Once the metadata column became the hexpanding child, that
+                        // width was most of the bar.
+                        set_halign: gtk::Align::Start,
                         set_size_request: (140, 11),
                         add_css_class: "np-skeleton",
                     },
                     gtk::Box {
+                        set_halign: gtk::Align::Start,
                         set_size_request: (92, 9),
                         add_css_class: "np-skeleton",
                     },
