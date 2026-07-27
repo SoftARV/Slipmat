@@ -345,31 +345,36 @@ impl Component for QueueView {
                 // (An earlier version restored on every sync, including marker
                 // changes, and re-asserting an offset against an `upper` that
                 // was still settling is what made the list twitch.)
-                // Anchor on an ITEM, not on a pixel offset.
+                // **Nothing is restored here, deliberately.**
                 //
-                // Restoring the adjustment's value keeps losing: on a model
-                // change `ListView` briefly reports a much smaller content
-                // height and clamps `value` to near zero, and whatever we set
-                // afterwards is clamped again. Two attempts at timing that were
-                // both wrong.
+                // Measured across a removal (#6): after the edit `value` stayed
+                // exactly where it was and `upper` shrank by one row, as it
+                // should. The list only ever jumped because of what this code
+                // did next — `topmost_visible` named the row at position 0
+                // while the user was 3553px down, and the re-anchor obeyed.
                 //
-                // The topmost visible row is a stable thing to hold on to, and
-                // `scroll_to` is ListView's own operation on it — no
-                // adjustment arithmetic, no race with measurement.
-                let anchor = self.topmost_visible();
-                let structural = self.apply(entries, playing, sender.input_sender().clone());
-
-                if structural
-                    && let Some(anchor) = anchor
-                    && let Some(position) = self.shown.iter().position(|id| *id == anchor)
-                {
-                    let list = widgets.queue_list.clone();
-                    // Deferred one tick: the store has changed, but the view
-                    // has not been through a layout pass yet.
-                    gtk::glib::idle_add_local_once(move || {
-                        list.scroll_to(position as u32, gtk::ListScrollFlags::NONE, None);
-                    });
-                }
+                // So the queue's half of #6 was self-inflicted, and the fix is
+                // a deletion. The library's half is a different bug: there GTK
+                // really does assign `value = 0.0` after the edit, and
+                // `restore_scroll_after_edit` handles it. One symptom, two
+                // causes — which is what made porting the library's fix here
+                // both unnecessary and harmful.
+                // **The queue does not restore its scroll. See #6.**
+                //
+                // It has the same underlying fault as the library — measured,
+                // `value` holds for a millisecond and is 0.0 by 30ms while
+                // `upper` is healthy — but every attempt to correct it here was
+                // worse than the jump. Re-anchoring after the fact is a visible
+                // trip to the top and back; asserting it up front left the list
+                // rendering a single row until a hover; and neither landed on
+                // exactly the old position, because the anchor is derived from
+                // a pixel offset over a mean row height.
+                //
+                // The library keeps its restore because there it is invisible
+                // and exact. Here it is neither, so the honest thing is to let
+                // the list jump rather than perform a worse animation on the
+                // way. Removing a track is rare; that scroll is not worth this.
+                self.apply(entries, playing, sender.input_sender().clone());
             }
             QueueViewInput::ScrollToPlaying => {
                 if let Some(index) = self.playing_index() {
@@ -404,6 +409,13 @@ impl QueueView {
     ///
     /// Only a structural change can move the scroll: the marker is applied to
     /// widgets, never to the model.
+    /// Returns whether the change was **structural** — a removal or a rebuild,
+    /// as opposed to just the marker moving.
+    ///
+    /// Nothing consumes it now that the scroll is left alone (#6), but it is
+    /// the honest description of what happened and the natural hook if this
+    /// list ever does need to react to its own edits again.
+    #[allow(clippy::needless_return)]
     fn apply(
         &mut self,
         entries: Vec<QueueEntry>,
@@ -463,19 +475,6 @@ impl QueueView {
             self.playing = playing;
         }
         structural
-    }
-
-    /// The id of the topmost row currently on screen.
-    ///
-    /// The registry holds exactly the bound rows, so the smallest queue
-    /// position among them is the row at the top of the viewport. That is the
-    /// thing to keep still across an edit.
-    fn topmost_visible(&self) -> Option<String> {
-        let registry = self.registry.borrow();
-        self.shown
-            .iter()
-            .find(|id| registry.contains_key(*id))
-            .cloned()
     }
 
     /// Repaint one row's marker. Touches a widget, never the model.

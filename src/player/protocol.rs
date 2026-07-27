@@ -102,6 +102,26 @@ pub enum Command {
     Hide,
     #[serde(rename = "authorize")]
     Authorize,
+    /// Take a song out of the library. Carries the **library** id (`i.…`), not
+    /// the catalog one — the two id spaces are not interchangeable and this
+    /// endpoint only knows the first.
+    ///
+    /// Routed through the sidecar rather than `music/client.rs` because only
+    /// MusicKit's own client can do it; Apple documents no REST endpoint. See
+    /// issue #34.
+    #[serde(rename = "removeFromLibrary")]
+    RemoveFromLibrary { id: String },
+    /// Un-star a song. Carries the **catalog** id, unlike the removal above.
+    ///
+    /// Also sidecar-only: the identical path over REST with our token answers
+    /// `400 Insufficient Permissions`.
+    ///
+    /// Removes the star and **nothing else** — a song stays in the library
+    /// after being un-favourited, which is what Apple's own client does. The
+    /// asymmetry is real: favouriting *adds* to the library, un-favouriting
+    /// does not take it back out.
+    #[serde(rename = "unfavorite")]
+    Unfavorite { id: String },
     /// End the session — **not** `unauthorize`.
     ///
     /// `MusicKit.unauthorize()` drops the Music User Token and nothing else.
@@ -140,6 +160,8 @@ impl Command {
             Self::RefreshTokens => "refreshTokens",
             Self::ShowLogin => "showLogin",
             Self::Authorize => "authorize",
+            Self::RemoveFromLibrary { .. } => "removeFromLibrary",
+            Self::Unfavorite { .. } => "unfavorite",
             Self::SignOut => "signOut",
             Self::Quit => "quit",
             Self::Hide => "hide",
@@ -497,6 +519,42 @@ mod tests {
             panic!("expected PlaybackState");
         };
         assert_eq!(state, PlaybackState::Unknown);
+    }
+
+    #[test]
+    fn the_removals_carry_the_right_id_space() {
+        // Both are `{"cmd": …, "id": …}` on the wire, which is exactly why the
+        // *kind* of id matters and cannot be checked by the compiler: removal
+        // takes the library id, un-favouriting the catalog id, and swapping
+        // them yields a well-formed command that quietly does nothing.
+        let remove = serde_json::to_value(Command::RemoveFromLibrary {
+            id: "i.RBrxxaLS1BA3Jv5".into(),
+        })
+        .unwrap();
+        assert_eq!(remove["cmd"], "removeFromLibrary");
+        assert!(
+            remove["id"].as_str().unwrap().starts_with("i."),
+            "removal must carry a library id, got {remove:?}"
+        );
+
+        let unfav = serde_json::to_value(Command::Unfavorite {
+            id: "282559791".into(),
+        })
+        .unwrap();
+        assert_eq!(unfav["cmd"], "unfavorite");
+        assert!(
+            unfav["id"].as_str().unwrap().parse::<u64>().is_ok(),
+            "un-favourite must carry a numeric catalog id, got {unfav:?}"
+        );
+
+        assert_eq!(
+            Command::RemoveFromLibrary { id: String::new() }.name(),
+            "removeFromLibrary"
+        );
+        assert_eq!(
+            Command::Unfavorite { id: String::new() }.name(),
+            "unfavorite"
+        );
     }
 
     #[test]

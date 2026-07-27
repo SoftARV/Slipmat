@@ -300,6 +300,18 @@ impl DetailPage {
         }
     }
 
+    /// As [`Self::set_favorite`], for library membership — which the row menu
+    /// reads to decide whether "Add to Library" is worth offering.
+    pub fn set_in_library(&mut self, catalog_id: &str, in_library: bool) {
+        for entry in &mut self.entries {
+            if let Entry::Song(track) = entry
+                && track.catalog_id.as_deref() == Some(catalog_id)
+            {
+                track.in_library = in_library;
+            }
+        }
+    }
+
     /// This page's own row widgets, so the play marker can find them.
     pub fn registry(&self) -> &RowRegistry<LibraryRowWidgets> {
         &self.registry

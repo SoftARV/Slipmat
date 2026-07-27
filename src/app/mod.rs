@@ -282,6 +282,8 @@ pub struct AppModel {
     /// Which kinds the catalog search asks for. Not persisted: a filter belongs
     /// to the search you are running, not to how you like the app.
     catalog_filter: CatalogFilter,
+    /// A removal sent to the sidecar, still unconfirmed. See [`PendingWrite`].
+    pending_write: Option<PendingWrite>,
     searching_catalog: bool,
     /// How many catalog results we already hold, and whether Apple has run out.
     /// Together these decide whether scrolling to the end fetches more.
@@ -341,6 +343,27 @@ impl Drop for Timed {
 /// completed" — so neither can be treated as done, only as sent. That is why
 /// nothing here toggles a checkbox: showing state would mean reading it back,
 /// and a star that lies is worse than no star.
+/// A library write sent to the sidecar and not yet confirmed.
+///
+/// The row is updated the moment the command goes out, because a menu that
+/// waits on a round trip reads as broken. But an optimistic update that is
+/// never taken back is how a UI comes to lie — which it did: a removal against
+/// a stale sidecar answered `unknown-command`, and the row went on showing the
+/// change that never happened.
+#[derive(Debug, Clone)]
+struct PendingWrite {
+    /// The wire name, matched against the `detail` of a sidecar error.
+    cmd: &'static str,
+    catalog_id: String,
+    undo: WriteUndo,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WriteUndo {
+    InLibrary(bool),
+    Favorite(bool),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryAction {
     AddToLibrary,
@@ -392,6 +415,19 @@ pub enum AppMsg {
     /// Narrow the catalog search to one kind of result, or widen it again.
     SetCatalogFilter(CatalogFilter),
     ToggleSortDirection,
+    /// Take a song out of the library. Needs the **library** id; the catalog
+    /// id is only carried so the row can be updated locally.
+    RemoveFromLibrary {
+        library_id: String,
+        catalog_id: String,
+    },
+    /// Un-star a song, and nothing else. Deliberately does **not** also remove
+    /// it from the library: favouriting adds it, un-favouriting does not take
+    /// it back out, and that is what Apple's own client does. Chaining the two
+    /// would silently delete a song someone only meant to un-star.
+    Unfavorite {
+        catalog_id: String,
+    },
     /// A row was right-clicked; show its menu there.
     ShowRowMenu(RowMenuRequest),
     /// Empty the queue and stop.
@@ -1288,6 +1324,7 @@ impl Component for AppModel {
             catalog: Vec::new(),
             catalog_paged: 0,
             catalog_filter: CatalogFilter::default(),
+            pending_write: None,
             pages: Vec::new(),
             next_page_id: 1,
             nav,
@@ -1913,6 +1950,41 @@ impl AppModel {
                 // the user was looking at no longer exists in that order.
                 self.rebuild_rows();
             }
+            AppMsg::RemoveFromLibrary {
+                library_id,
+                catalog_id,
+            } => {
+                tracing::info!(%library_id, "removing from library");
+                self.send(Command::RemoveFromLibrary { id: library_id });
+                self.pending_write = Some(PendingWrite {
+                    cmd: "removeFromLibrary",
+                    catalog_id: catalog_id.clone(),
+                    undo: WriteUndo::InLibrary(true),
+                });
+                // Mirrored locally for the same reason the star is: the menu
+                // reads this, and making someone reload to see their own click
+                // is absurd. `include=library` is cached for tens of seconds
+                // besides, so a read-back would disagree for a while (#34).
+                self.set_in_library(&catalog_id, false);
+                self.toast("Removing from your library…");
+            }
+            AppMsg::Unfavorite { catalog_id } => {
+                tracing::info!(%catalog_id, "removing favourite");
+                self.send(Command::Unfavorite {
+                    id: catalog_id.clone(),
+                });
+                self.pending_write = Some(PendingWrite {
+                    cmd: "unfavorite",
+                    catalog_id: catalog_id.clone(),
+                    undo: WriteUndo::Favorite(true),
+                });
+                // The star only. The song stays in the library — see the note
+                // on `AppMsg::Unfavorite`.
+                self.set_favorite(&catalog_id, false);
+                // Present continuous, not a claim: nothing has been confirmed
+                // yet, and `undo_pending_write` is what happens if it is not.
+                self.toast("Removing favourite…");
+            }
             AppMsg::LibraryWrite { catalog_id, action } => {
                 let Some(client) = self.client() else {
                     self.toast("Not connected yet");
@@ -2117,8 +2189,20 @@ impl AppModel {
                     // see their own click is absurd — so mirror it locally and
                     // repaint just that row.
                     match action {
-                        LibraryAction::Favorite => self.set_favorite(&catalog_id, true),
-                        LibraryAction::AddToLibrary => {}
+                        LibraryAction::Favorite => {
+                            self.set_favorite(&catalog_id, true);
+                            // Favouriting *adds to the library* — Apple's
+                            // behaviour, measured (#34). So the menu must stop
+                            // offering "Add to Library" for it too.
+                            self.set_in_library(&catalog_id, true);
+                        }
+                        // Mirrored so the menu stops offering an add that has
+                        // already happened. No library id yet — the 202 carries
+                        // no body and Apple assigns one asynchronously — so
+                        // "Remove from Library" stays hidden until a reload
+                        // learns it. Offering a removal we cannot address would
+                        // be a menu item that quietly does nothing.
+                        LibraryAction::AddToLibrary => self.set_in_library(&catalog_id, true),
                     }
                 }
                 Err(err) => {
@@ -2310,12 +2394,26 @@ impl AppModel {
         // Library" for a track read *out of* the library, or "Favourite" for
         // one already starred, is a menu that lies about the state of things.
         let account = gtk::gio::Menu::new();
-        if !req.in_library {
+        if req.in_library {
+            // Only when we hold the library id — the catalog id will not do,
+            // and offering a removal we cannot perform is worse than not
+            // offering one.
+            if req.library_id.is_some() {
+                account.append(
+                    Some("_Remove from Library"),
+                    Some("row.remove-from-library"),
+                );
+            }
+        } else {
             account.append(Some("Add to _Library"), Some("row.add-to-library"));
         }
-        // No "remove" counterpart: Apple rejects the DELETE for this token with
-        // "Insufficient Permissions". See `Client` — favouriting is add-only.
-        if !req.favorite {
+        // Both directions now. The removals go out through the sidecar rather
+        // than `music/client.rs`: over REST this exact favourites path answers
+        // "400 Insufficient Permissions", and library removal has no documented
+        // endpoint at all. MusicKit's own client does both (#34).
+        if req.favorite {
+            account.append(Some("Remove _Favourite"), Some("row.unfavorite"));
+        } else {
             account.append(Some("_Favourite"), Some("row.favorite"));
         }
         if account.n_items() > 0 {
@@ -2339,6 +2437,36 @@ impl AppModel {
                 sender.input(AppMsg::Enqueue {
                     catalog_id: id.clone(),
                     next,
+                });
+            });
+            actions.add_action(&action);
+        }
+
+        // The two removals. Separate from the adds below because they take a
+        // different route entirely — the sidecar, not HTTP — and because
+        // removal needs the *library* id while un-favouriting needs the
+        // *catalog* one.
+        {
+            let action = gtk::gio::SimpleAction::new("remove-from-library", None);
+            let library_id = req.library_id.clone();
+            let catalog_id = req.catalog_id.clone();
+            let sender = self.menu_sender.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(library_id) = library_id.clone() {
+                    sender.input(AppMsg::RemoveFromLibrary {
+                        library_id,
+                        catalog_id: catalog_id.clone(),
+                    });
+                }
+            });
+            actions.add_action(&action);
+
+            let action = gtk::gio::SimpleAction::new("unfavorite", None);
+            let catalog_id = req.catalog_id.clone();
+            let sender = self.menu_sender.clone();
+            action.connect_activate(move |_, _| {
+                sender.input(AppMsg::Unfavorite {
+                    catalog_id: catalog_id.clone(),
                 });
             });
             actions.add_action(&action);
@@ -2377,6 +2505,139 @@ impl AppModel {
         popover.popup();
     }
 
+    /// Drop a track the library no longer holds, without rebuilding the list.
+    ///
+    /// Called only once the sidecar confirms, so a refused removal never takes
+    /// a row off screen. `TypedListView::remove` keeps the scroll position —
+    /// a rebuild here would throw the reader back to the top, which is the same
+    /// complaint pagination had.
+    pub(super) fn drop_removed_track(&mut self, catalog_id: &str) {
+        // **Index first.** `visible_entries` is derived from `all_tracks`, so
+        // asking it where the row is *after* the retain always answers `None`
+        // — the model has already forgotten it. That left the row on screen
+        // until a manual refresh, which is exactly what this function exists to
+        // avoid.
+        //
+        // Only the Songs list mirrors `all_tracks`; a catalog search showing
+        // the same song is still a valid result and keeps its row, so it is
+        // only asked in library scope.
+        let row = (self.scope() == SearchScope::Library)
+            .then(|| {
+                self.visible_entries()
+                    .iter()
+                    .position(|e| e.catalog_id() == Some(catalog_id))
+            })
+            .flatten();
+
+        let before = self.all_tracks.len();
+        self.all_tracks
+            .retain(|t| t.catalog_id.as_deref() != Some(catalog_id));
+        if self.all_tracks.len() == before {
+            return; // not a library track — nothing to take off the list
+        }
+
+        // The scrolled window behind the list, so the position can be put back
+        // when GTK discards it. See the note further down.
+        let probe = self
+            .library
+            .view
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
+            .map(|sw| sw.vadjustment());
+        if let Some(index) = row {
+            self.library.remove(index as u32);
+            // The widgets it owned are gone with it.
+            self.library_icons.borrow_mut().remove(catalog_id);
+
+            // The same restore the queue uses — see `restore_scroll_after_edit`
+            // for the measurements behind it (#6). Anchored on the row that was
+            // at the top, derived from the pixel offset over the mean row
+            // height; the rows here are uniform, so that lands exactly.
+            if let Some(adj) = probe {
+                let rows = self.library.len().max(1) as f64;
+                let row_height = adj.upper() / rows;
+                if row_height > 0.0 {
+                    let top_item = (adj.value() / row_height).floor() as u32;
+                    crate::components::restore_scroll_after_edit(
+                        &self.library.view,
+                        &adj,
+                        top_item,
+                    );
+                }
+            }
+        }
+        tracing::info!(
+            catalog_id,
+            removed_row = row.is_some(),
+            "track left the library"
+        );
+    }
+
+    /// Put back a removal the sidecar refused, and say so in words a person can
+    /// act on.
+    ///
+    /// Without this the row keeps the change that never happened. It is not
+    /// hypothetical: pointed at a sidecar too old to know the command, every
+    /// removal answered `unknown-command`, the toast said it was happening, and
+    /// the row agreed — while the library on the user's phone did not move.
+    pub(super) fn undo_pending_write(&mut self, detail: &str) -> bool {
+        let Some(pending) = self.pending_write.clone() else {
+            return false;
+        };
+        // Both failure shapes name the command: `unknown-command` sends it
+        // bare, `command-failed` prefixes it to the message.
+        if !detail.starts_with(pending.cmd) {
+            return false;
+        }
+        self.pending_write = None;
+        match pending.undo {
+            WriteUndo::InLibrary(was) => {
+                self.set_in_library(&pending.catalog_id, was);
+                self.toast("Couldn't remove it from your library");
+            }
+            WriteUndo::Favorite(was) => {
+                self.set_favorite(&pending.catalog_id, was);
+                self.toast("Couldn't remove that favourite");
+            }
+        }
+        tracing::warn!(cmd = pending.cmd, %detail, "library write refused; row put back");
+        true
+    }
+
+    /// Record library membership locally, so the row menu stops offering "Add
+    /// to Library" for something just saved — or starts offering it again for
+    /// something just removed.
+    ///
+    /// No repaint: membership has no mark of its own on a row, unlike the
+    /// favourite star. It is read at menu-build time, which is why updating the
+    /// model is enough.
+    fn set_in_library(&mut self, catalog_id: &str, in_library: bool) {
+        for track in &mut self.all_tracks {
+            if track.catalog_id.as_deref() == Some(catalog_id) {
+                track.in_library = in_library;
+            }
+        }
+        for entry in &mut self.catalog {
+            if let Entry::Song(track) = entry
+                && track.catalog_id.as_deref() == Some(catalog_id)
+            {
+                track.in_library = in_library;
+            }
+        }
+        for page in &mut self.pages {
+            page.set_in_library(catalog_id, in_library);
+        }
+        // And the live rows, so the menu stops offering a removal that has
+        // already happened.
+        let lists =
+            std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
+        for registry in lists {
+            if let Some(w) = registry.borrow().get(catalog_id) {
+                w.set_in_library(in_library, None);
+            }
+        }
+    }
+
     /// Record a favourite locally and repaint the row, without rebuilding the
     /// list — a rebuild would throw away the scroll position, and this is the
     /// same discipline as the play marker.
@@ -2395,7 +2656,9 @@ impl AppModel {
             std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
         for registry in lists {
             if let Some(w) = registry.borrow().get(catalog_id) {
-                w.star.set_visible(on);
+                // Star *and* facts: the menu reads the facts, so repainting
+                // alone left a just-un-starred row still offering to un-star it.
+                w.set_favorite(on);
             }
         }
     }
@@ -2508,6 +2771,7 @@ mod tests {
             title: title.into(),
             favorite: false,
             in_library: false,
+            library_id: None,
             date_added: String::new(),
             year: String::new(),
             artist: "Aitana".into(),

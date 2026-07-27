@@ -541,6 +541,7 @@ mod tests {
             title: title.into(),
             favorite: false,
             in_library: false,
+            library_id: None,
             date_added: String::new(),
             year: String::new(),
             artist: "Aitana".into(),

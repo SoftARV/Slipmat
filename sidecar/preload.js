@@ -241,6 +241,25 @@ async function enqueue(method, songs) {
   }
 }
 
+/// Run a library write and treat an empty response body as success.
+///
+/// These endpoints answer `202 Accepted` with **no content**, and MusicKit's
+/// client parses every response as JSON — so success arrives as
+/// `SyntaxError: Unexpected end of JSON input`. Rethrowing that would report a
+/// write that actually happened as a failure, which is how the first working
+/// call looked broken.
+///
+/// Anything else is a real error and still throws, so `dispatch` reports it.
+async function accepted(fn) {
+  try {
+    return await fn()
+  } catch (err) {
+    const message = String((err && err.message) || err)
+    if (/end of JSON input|JSON input|Unexpected end/i.test(message)) return null
+    throw err
+  }
+}
+
 const commands = {
   async setQueue({ songs, startPosition = 0, startPlaying = true, startTimeMs = 0 }) {
     // BOTH keys, deliberately. MusicKit v3's setQueue forwards only
@@ -334,6 +353,30 @@ const commands = {
     music.repeatMode = mode === 'one' ? 1 : mode === 'all' ? 2 : 0
     emitModes()
   },
+  // Removing things. **Only MusicKit can do these**, which is why they are here
+  // and not in music/client.rs with their add counterparts.
+  //
+  // Verified against a real account: over REST with our harvested token,
+  // `DELETE /v1/me/favorites?ids[songs]=…` answers `400 Insufficient
+  // Permissions` and library removal has no documented endpoint at all. Issued
+  // through MusicKit's own client, from the page and its session, both are
+  // accepted. See issue #34 for the measurements.
+  //
+  // Two traps live in these four lines:
+  //
+  //   * `music.api.music(path, {}, {fetchOptions: {method: 'DELETE'}})`
+  //     **silently performs a GET.** The verb helpers are the only way to send
+  //     one, and a probe that uses the wrong one reports "Resource Not Found"
+  //     for a route that exists.
+  //   * Only the *per-resource* path works for the library. The collection
+  //     forms fail the same way they do over REST: `?ids[songs]=` gives 405 and
+  //     `/songs?ids=` gives 400. Favourites are the other way round — there it
+  //     is the query form that works.
+  removeFromLibrary: ({ id }) =>
+    accepted(() => music.api.delete('/v1/me/library/songs/' + encodeURIComponent(id))),
+  unfavorite: ({ id }) =>
+    accepted(() => music.api.delete('/v1/me/favorites?ids[songs]=' + encodeURIComponent(id))),
+
   authorize: () => music.authorize(),
   unauthorize: () => music.unauthorize(),
   refreshTokens: () => pushTokens(),

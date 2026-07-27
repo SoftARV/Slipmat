@@ -89,16 +89,24 @@ impl Entry {
 /// What the recycled widget is currently showing, for the context-menu gesture
 /// — which is older than any particular track and must not capture one.
 #[derive(Debug, Clone)]
-struct RowFacts {
-    catalog_id: String,
-    in_library: bool,
-    favorite: bool,
+pub struct RowFacts {
+    pub catalog_id: String,
+    /// The `i.…` id, present only for a track read out of the library. Removal
+    /// needs it and the catalog id will not do — the two id spaces are not
+    /// interchangeable.
+    pub library_id: Option<String>,
+    pub in_library: bool,
+    pub favorite: bool,
 }
 
 /// What a right-click on a row is asking for: a menu, for this track, here.
 #[derive(Debug)]
 pub struct RowMenuRequest {
     pub catalog_id: String,
+    /// The library id, when this track came from the library. `None` means
+    /// removal cannot be offered even if `in_library` is true, because we do
+    /// not know which row to delete.
+    pub library_id: Option<String>,
     /// Already saved, so "Add to Library" is not offered.
     pub in_library: bool,
     /// Already starred, so "Favourite" is not offered.
@@ -149,6 +157,32 @@ pub struct LibraryRowWidgets {
     pub star: gtk::Image,
     pub icon: gtk::Image,
     pub root: gtk::Box,
+    /// What the row menu will read if it opens next.
+    ///
+    /// Published because repainting the star is not enough: the menu decides
+    /// what to offer from these facts, captured at bind time. Updating the
+    /// model and the star but not this is why a just-un-starred row still
+    /// offered "Remove Favourite".
+    pub facts: std::rc::Rc<std::cell::RefCell<Option<RowFacts>>>,
+}
+
+impl LibraryRowWidgets {
+    /// Correct what the menu will see, without rebinding the row.
+    pub fn set_favorite(&self, on: bool) {
+        if let Some(facts) = self.facts.borrow_mut().as_mut() {
+            facts.favorite = on;
+        }
+        self.star.set_visible(on);
+    }
+
+    /// As above for library membership, which has no mark of its own — so this
+    /// only has to correct the facts.
+    pub fn set_in_library(&self, in_library: bool, library_id: Option<String>) {
+        if let Some(facts) = self.facts.borrow_mut().as_mut() {
+            facts.in_library = in_library;
+            facts.library_id = library_id;
+        }
+    }
 }
 
 impl LibraryItem {
@@ -338,6 +372,7 @@ impl RelmListItem for LibraryItem {
                     .unwrap_or((0, 0));
                 request(RowMenuRequest {
                     catalog_id: shown.catalog_id,
+                    library_id: shown.library_id,
                     in_library: shown.in_library,
                     favorite: shown.favorite,
                     at,
@@ -356,6 +391,7 @@ impl RelmListItem for LibraryItem {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 request(RowMenuRequest {
                     catalog_id: shown.catalog_id,
+                    library_id: shown.library_id,
                     in_library: shown.in_library,
                     favorite: shown.favorite,
                     at: (x as i32, y as i32),
@@ -387,6 +423,11 @@ impl RelmListItem for LibraryItem {
             Entry::Song(track) if self.playable() => {
                 track.catalog_id.clone().map(|catalog_id| RowFacts {
                     catalog_id,
+                    // Never inferred from `id`: a catalog row can be in the
+                    // library too, and there `id` is the catalog id — handing
+                    // that to the removal endpoint is a well-formed request
+                    // that deletes nothing.
+                    library_id: track.library_id.clone(),
                     in_library: track.in_library,
                     favorite: track.favorite,
                 })
@@ -432,6 +473,7 @@ impl RelmListItem for LibraryItem {
                             star: widgets.star.clone(),
                             icon: widgets.icon.clone(),
                             root: root.clone(),
+                            facts: widgets.showing.clone(),
                         },
                     );
                 }
@@ -466,6 +508,7 @@ mod tests {
             catalog_id: Some("1".into()),
             favorite: false,
             in_library: false,
+            library_id: None,
             date_added: String::new(),
             year: String::new(),
             title: "Title".into(),
