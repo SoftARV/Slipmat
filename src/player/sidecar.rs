@@ -44,20 +44,102 @@ pub enum Incoming {
     Died(String),
 }
 
+/// The most commands of one kind Tonearm will send in a second.
+///
+/// A ceiling, not a budget, and deliberately generous.
+///
+/// The number has to sit above anything a person can produce and far below what
+/// hurts. The upper bound on human input is the pointer's event rate: GTK emits
+/// `value-changed` per motion event, so dragging a slider on a 165Hz display
+/// can plausibly reach a couple of hundred a second. A ceiling that clipped a
+/// real drag would be worse than the bug it guards against — so this is set
+/// clear of that, not snug against it.
+///
+/// The failure it catches is nothing like a drag: a runaway `update()` managed
+/// **5,721 dispatches** before the desktop stopped responding (#37), and reached
+/// this ceiling in the first fraction of a second.
+const MAX_PER_SECOND: u32 = 250;
+
 /// A cheap, cloneable handle for sending commands to the sidecar.
 #[derive(Debug, Clone)]
 pub struct Handle {
     tx: mpsc::UnboundedSender<Command>,
+    /// Per-command-kind rate window, shared by every clone of this handle.
+    ///
+    /// `Arc<Mutex<_>>` rather than `Rc<RefCell<_>>`: the handle is delivered to
+    /// the model through `CommandMsg::Spawned`, which crosses a thread, so it
+    /// has to be `Send`. Sends themselves all happen on the GTK thread, so the
+    /// lock is uncontended in practice.
+    rate: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<&'static str, Window>>>,
+}
+
+#[derive(Debug)]
+struct Window {
+    started: std::time::Instant,
+    sent: u32,
+    /// So a storm says so once rather than once per dropped command — the
+    /// logging *is* the amplifier this exists to stop.
+    warned: bool,
 }
 
 impl Handle {
-    /// Fire-and-forget. A closed channel means the child already died; the
-    /// `Died` message is already on its way, so dropping here is correct
-    /// rather than an error the UI has to handle twice.
+    /// Fire-and-forget, up to a ceiling.
+    ///
+    /// A closed channel means the child already died; the `Died` message is
+    /// already on its way, so dropping there is correct rather than an error the
+    /// UI has to handle twice.
+    ///
+    /// The ceiling is the other half. Rule 6 says a dead sidecar must not
+    /// present as a healthy player; this is the same argument pointed the other
+    /// way — **a runaway client must not be able to take the session with it.**
+    /// A two-way binding on the volume button once cycled at a few thousand
+    /// commands, each one an NDJSON write, a journald record and a D-Bus
+    /// property change, and the machine had to be power-cycled. Nothing between
+    /// `update()` and the desktop pushed back.
     pub fn send(&self, cmd: Command) {
+        if !self.allow(cmd.name()) {
+            return;
+        }
         if self.tx.send(cmd).is_err() {
             tracing::debug!("sidecar command dropped: channel closed (child is gone)");
         }
+    }
+
+    /// Whether this command is within the ceiling for its kind.
+    fn allow(&self, name: &'static str) -> bool {
+        let now = std::time::Instant::now();
+        // A poisoned lock would mean a panic while holding it — nothing here
+        // panics, and refusing to send commands because of it would be worse
+        // than the storm.
+        let Ok(mut rate) = self.rate.lock() else {
+            return true;
+        };
+        let window = rate.entry(name).or_insert(Window {
+            started: now,
+            sent: 0,
+            warned: false,
+        });
+
+        if now.duration_since(window.started) >= std::time::Duration::from_secs(1) {
+            window.started = now;
+            window.sent = 0;
+            window.warned = false;
+        }
+
+        window.sent += 1;
+        if window.sent <= MAX_PER_SECOND {
+            return true;
+        }
+
+        if !window.warned {
+            window.warned = true;
+            tracing::error!(
+                cmd = name,
+                ceiling = MAX_PER_SECOND,
+                "command storm: dropping the rest of this second — something is looping"
+            );
+        }
+        false
     }
 }
 
@@ -238,7 +320,13 @@ pub fn spawn() -> Result<(Handle, mpsc::UnboundedReceiver<Incoming>)> {
         let _ = died_tx.send(Incoming::Died(reason));
     });
 
-    Ok((Handle { tx: cmd_tx }, evt_rx))
+    Ok((
+        Handle {
+            tx: cmd_tx,
+            rate: Default::default(),
+        },
+        evt_rx,
+    ))
 }
 
 /// Backoff for supervised restarts (rule 6): 1s, 2s, 4s, 8s, capped at 30s.
@@ -252,6 +340,73 @@ pub fn restart_delay(attempt: u32) -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A handle with no child on the other end. The channel is what `send`
+    /// writes to; for the ceiling only the counting matters.
+    fn handle() -> (Handle, mpsc::UnboundedReceiver<Command>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (
+            Handle {
+                tx,
+                rate: Default::default(),
+            },
+            rx,
+        )
+    }
+
+    #[test]
+    fn a_command_storm_is_cut_off_at_the_ceiling() {
+        // The failure this exists to stop: a loop in `update()` emitted 5,721
+        // commands, each an NDJSON write, a journald record and a D-Bus
+        // property change, and the desktop stopped responding (#37).
+        let (h, mut rx) = handle();
+        for _ in 0..5_000 {
+            h.send(Command::SetVolume { volume: 0.5 });
+        }
+        let mut delivered = 0;
+        while rx.try_recv().is_ok() {
+            delivered += 1;
+        }
+        assert_eq!(
+            delivered, MAX_PER_SECOND as usize,
+            "the ceiling should have cut this off"
+        );
+    }
+
+    #[test]
+    fn the_ceiling_is_per_command_kind() {
+        // One runaway command must not silence the rest. A volume loop that
+        // also blocked `pause` would leave the user unable to stop the noise.
+        let (h, mut rx) = handle();
+        for _ in 0..5_000 {
+            h.send(Command::SetVolume { volume: 0.5 });
+        }
+        h.send(Command::Pause);
+        let mut pauses = 0;
+        while let Ok(cmd) = rx.try_recv() {
+            if matches!(cmd, Command::Pause) {
+                pauses += 1;
+            }
+        }
+        assert_eq!(pauses, 1, "pause was collateral damage");
+    }
+
+    #[test]
+    fn ordinary_use_never_reaches_it() {
+        // The ceiling must sit above the fastest thing a person can do, which
+        // is a pointer drag at the display's refresh rate. Clipping that would
+        // be worse than the bug it guards against.
+        let (h, mut rx) = handle();
+        // 200 in a second is already beyond a 165Hz pointer dragging flat out.
+        for _ in 0..200 {
+            h.send(Command::SetVolume { volume: 0.5 });
+        }
+        let mut delivered = 0;
+        while rx.try_recv().is_ok() {
+            delivered += 1;
+        }
+        assert_eq!(delivered, 200, "a real drag must not be clipped");
+    }
 
     #[test]
     fn backoff_grows_then_caps() {
