@@ -17,7 +17,7 @@ use relm4::prelude::*;
 use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
-use crate::components::{CurrentTrack, DeadTracks, RowRegistry};
+use crate::components::{CurrentTrack, DeadTracks, RowRegistry, TrackOverrides, overridden};
 use crate::music::types::{Album, Artist, Playlist, Track, format_duration};
 
 /// What a row stands for. Songs play; everything else opens a page.
@@ -147,6 +147,9 @@ pub struct LibraryItem {
     /// Ids MusicKit has refused. Consulted at bind, so a track discovered to be
     /// dead mid-session dims without the list being rebuilt.
     pub dead: DeadTracks,
+    /// Favourite and library membership as they are *now*, which is not always
+    /// what `entry` was fetched with. Same discipline as the two above.
+    pub overrides: TrackOverrides,
     pub registry: RowRegistry<LibraryRowWidgets>,
 }
 
@@ -167,21 +170,18 @@ pub struct LibraryRowWidgets {
 }
 
 impl LibraryRowWidgets {
-    /// Correct what the menu will see, without rebinding the row.
-    pub fn set_favorite(&self, on: bool) {
+    /// Bring a row already on screen up to date, without rebinding it.
+    ///
+    /// Both flags together on purpose. They were separate setters and a repaint
+    /// called only one, so a row could show a cleared star while its menu still
+    /// believed the song was in the library. Off-screen rows need none of this
+    /// — they read the shared cell when they next bind.
+    pub fn refresh(&self, favorite: bool, in_library: bool) {
         if let Some(facts) = self.facts.borrow_mut().as_mut() {
-            facts.favorite = on;
-        }
-        self.star.set_visible(on);
-    }
-
-    /// As above for library membership, which has no mark of its own — so this
-    /// only has to correct the facts.
-    pub fn set_in_library(&self, in_library: bool, library_id: Option<String>) {
-        if let Some(facts) = self.facts.borrow_mut().as_mut() {
+            facts.favorite = favorite;
             facts.in_library = in_library;
-            facts.library_id = library_id;
         }
+        self.star.set_visible(favorite);
     }
 }
 
@@ -191,12 +191,14 @@ impl LibraryItem {
         registry: RowRegistry<LibraryRowWidgets>,
         current: CurrentTrack,
         dead: DeadTracks,
+        overrides: TrackOverrides,
     ) -> Self {
         Self {
             entry,
             registry,
             current,
             dead,
+            overrides,
         }
     }
 
@@ -419,6 +421,18 @@ impl RelmListItem for LibraryItem {
     fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
         // Before anything else: tell the context-menu gesture what it is
         // pointing at now. `None` for a row with nothing to enqueue.
+        // One read, used for both the facts the menu will consult and the star
+        // below — so the two cannot disagree about the same track.
+        let (favorite, in_library) = match &self.entry {
+            Entry::Song(track) => overridden(
+                &self.overrides,
+                track.catalog_id.as_deref(),
+                track.favorite,
+                track.in_library,
+            ),
+            _ => (false, false),
+        };
+
         *widgets.showing.borrow_mut() = match &self.entry {
             Entry::Song(track) if self.playable() => {
                 track.catalog_id.clone().map(|catalog_id| RowFacts {
@@ -428,8 +442,8 @@ impl RelmListItem for LibraryItem {
                     // that to the removal endpoint is a well-formed request
                     // that deletes nothing.
                     library_id: track.library_id.clone(),
-                    in_library: track.in_library,
-                    favorite: track.favorite,
+                    in_library,
+                    favorite,
                 })
             }
             _ => None,
@@ -449,11 +463,10 @@ impl RelmListItem for LibraryItem {
             .menu_button
             .set_visible(widgets.showing.borrow().is_some());
 
-        // A star left over from the previous track is a lie about this one.
-        widgets.star.set_visible(match &self.entry {
-            Entry::Song(track) => track.favorite,
-            _ => false,
-        });
+        // A star left over from the previous track is a lie about this one —
+        // and so is one baked in when the row was built, if it has been
+        // un-starred since. Hence the shared cell rather than `track.favorite`.
+        widgets.star.set_visible(favorite);
 
         match &self.entry {
             Entry::Song(track) => {

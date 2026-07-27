@@ -198,11 +198,17 @@ impl AppModel {
         // as the ones above them did.
         let current = self.current_track.clone();
         let dead = self.dead_rows.clone();
-        self.library.extend_from_iter(
-            new.iter().cloned().map(|entry| {
-                LibraryItem::new(entry, registry.clone(), current.clone(), dead.clone())
-            }),
-        );
+        let overrides = self.row_overrides.clone();
+        self.library
+            .extend_from_iter(new.iter().cloned().map(|entry| {
+                LibraryItem::new(
+                    entry,
+                    registry.clone(),
+                    current.clone(),
+                    dead.clone(),
+                    overrides.clone(),
+                )
+            }));
     }
 
     /// Rebuild the visible rows from `all_tracks` + query.
@@ -247,12 +253,18 @@ impl AppModel {
         let current = self.current_track.clone();
         *current.borrow_mut() = playing.clone();
         let dead = self.dead_rows.clone();
+        let overrides = self.row_overrides.clone();
         self.library.clear();
-        self.library.extend_from_iter(
-            visible.into_iter().map(|track| {
-                LibraryItem::new(track, registry.clone(), current.clone(), dead.clone())
-            }),
-        );
+        self.library
+            .extend_from_iter(visible.into_iter().map(|track| {
+                LibraryItem::new(
+                    track,
+                    registry.clone(),
+                    current.clone(),
+                    dead.clone(),
+                    overrides.clone(),
+                )
+            }));
     }
 
     /// Move the play marker in the library list.
@@ -508,6 +520,10 @@ impl AppModel {
             return;
         }
         self.tried_library = true;
+        // Whatever was recorded about a track is superseded by what Apple is
+        // about to say. Keeping it would let a stale override outlive the fact
+        // it was correcting.
+        self.row_overrides.borrow_mut().clear();
         // Built per request rather than cached: the developer token is
         // re-harvested and can be replaced mid-session (rule 7), and a stale
         // client 401s in a way that looks like a sign-in problem.

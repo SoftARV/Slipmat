@@ -17,8 +17,8 @@
 use relm4::gtk;
 use relm4::gtk::prelude::*;
 
-use super::{AppModel, Entry, SearchScope, WriteUndo};
-use crate::music::types::Track;
+use super::{AppModel, SearchScope, WriteUndo};
+use crate::components::TrackOverride;
 
 impl AppModel {
     /// Drop a track the library no longer holds, without rebuilding the list.
@@ -125,94 +125,64 @@ impl AppModel {
         }
     }
 
-    /// Correct the copy of a track held **inside the list store**.
+    /// Record what has happened to a track, once.
     ///
-    /// `TypedListView` items own a clone of the entry, taken when the rows were
-    /// built, and `RelmListItem::bind` reads that clone every time a recycled
-    /// widget is reused. So a change applied only to `all_tracks` and to the
-    /// widget on screen is undone the moment the row scrolls out and back.
-    ///
-    /// Linear, because the store is not indexed by id and a library is a few
-    /// hundred rows — the scan costs less than keeping a second index honest.
-    pub(super) fn patch_stored_row(&mut self, catalog_id: &str, patch: impl Fn(&mut Track)) {
-        for index in 0..self.library.len() {
-            let Some(item) = self.library.get(index) else {
-                continue;
-            };
-            let mut item = item.borrow_mut();
-            if let Entry::Song(track) = &mut item.entry
-                && track.catalog_id.as_deref() == Some(catalog_id)
-            {
-                patch(track);
-                break;
-            }
-        }
+    /// This used to be four assignments — `all_tracks`, the list store's clone,
+    /// the row's `RowFacts`, and the star widget — and every bug in this area
+    /// was one of them left behind. Now there is a single shared cell that rows
+    /// consult at bind, so the only other thing to do is repaint what is
+    /// already on screen; a row that is off screen will read the truth when it
+    /// comes back.
+    fn record(&mut self, catalog_id: &str, apply: impl Fn(&mut TrackOverride)) {
+        apply(
+            self.row_overrides
+                .borrow_mut()
+                .entry(catalog_id.to_owned())
+                .or_default(),
+        );
     }
 
-    /// Record library membership locally, so the row menu stops offering "Add
-    /// to Library" for something just saved — or starts offering it again for
+    /// Record library membership, so the row menu stops offering "Add to
+    /// Library" for something already saved — or starts offering it again for
     /// something just removed.
     ///
-    /// No repaint: membership has no mark of its own on a row, unlike the
-    /// favourite star. It is read at menu-build time, which is why updating the
-    /// model is enough.
+    /// No repaint: membership has no mark of its own on a row, unlike the star.
+    /// It is read when the menu is built, and the menu is built from the facts
+    /// a row published at bind — which now come from the shared cell.
     pub(super) fn set_in_library(&mut self, catalog_id: &str, in_library: bool) {
-        // As in `set_favorite`: the stored clone is what a rebind reads.
-        self.patch_stored_row(catalog_id, |track| track.in_library = in_library);
-        for track in &mut self.all_tracks {
-            if track.catalog_id.as_deref() == Some(catalog_id) {
-                track.in_library = in_library;
-            }
-        }
-        for entry in &mut self.catalog {
-            if let Entry::Song(track) = entry
-                && track.catalog_id.as_deref() == Some(catalog_id)
-            {
-                track.in_library = in_library;
-            }
-        }
-        for page in &mut self.pages {
-            page.set_in_library(catalog_id, in_library);
-        }
-        // And the live rows, so the menu stops offering a removal that has
-        // already happened.
-        let lists =
-            std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
-        for registry in lists {
-            if let Some(w) = registry.borrow().get(catalog_id) {
-                w.set_in_library(in_library, None);
-            }
-        }
+        self.record(catalog_id, |over| over.in_library = Some(in_library));
+        self.repaint_row(catalog_id);
     }
 
-    /// Record a favourite locally and repaint the row, without rebuilding the
-    /// list — a rebuild would throw away the scroll position, and this is the
-    /// same discipline as the play marker.
+    /// Record a favourite and repaint the star.
     pub(super) fn set_favorite(&mut self, catalog_id: &str, on: bool) {
-        // The list store keeps its **own clone** of each entry, made when the
-        // rows were built. Updating `all_tracks` and the visible widget is not
-        // enough: scroll away and back and the row re-binds from that clone,
-        // and the star returns. Correcting the stored item is what makes the
-        // change survive recycling — and it is why this looked like the write
-        // had failed when it had not.
-        self.patch_stored_row(catalog_id, |track| track.favorite = on);
-        for track in &mut self.all_tracks {
-            if track.catalog_id.as_deref() == Some(catalog_id) {
-                track.favorite = on;
-            }
-        }
-        for page in &mut self.pages {
-            page.set_favorite(catalog_id, on);
-        }
-        // Every list, for the same reason `set_row_playing` asks every list:
-        // the track may be on a page and in the results behind it.
+        self.record(catalog_id, |over| over.favorite = Some(on));
+        self.repaint_row(catalog_id);
+    }
+
+    /// Bring the rows currently on screen up to date.
+    ///
+    /// Only the visible ones, and only their widgets — everything else reads
+    /// the shared cell when it next binds. Every list is asked, because the same
+    /// song can be on a page and in the results behind it.
+    fn repaint_row(&self, catalog_id: &str) {
+        // The fetched values are only a fallback for fields nothing has been
+        // recorded against, and the row's own copy is the best one to hand.
+        let fetched = self
+            .all_tracks
+            .iter()
+            .find(|t| t.catalog_id.as_deref() == Some(catalog_id));
+        let (favorite, in_library) = crate::components::overridden(
+            &self.row_overrides,
+            Some(catalog_id),
+            fetched.is_some_and(|t| t.favorite),
+            fetched.is_some_and(|t| t.in_library),
+        );
         let lists =
             std::iter::once(&self.library_icons).chain(self.pages.iter().map(|p| p.registry()));
         for registry in lists {
             if let Some(w) = registry.borrow().get(catalog_id) {
-                // Star *and* facts: the menu reads the facts, so repainting
-                // alone left a just-un-starred row still offering to un-star it.
-                w.set_favorite(on);
+                w.refresh(favorite, in_library);
             }
         }
     }

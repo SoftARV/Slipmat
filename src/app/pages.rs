@@ -41,6 +41,7 @@ impl AppModel {
             id,
             kind.heading(),
             RowState {
+                overrides: self.row_overrides.clone(),
                 current: self.current_track.clone(),
                 dead: self.dead_rows.clone(),
             },
