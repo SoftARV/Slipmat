@@ -456,6 +456,43 @@ the specific traps; do not re-introduce them.
   No `cmd-recv` → renderer never ran it. `cmd-recv` but no `cmd-done` → the
   command is hanging. `cmd-done` with a full queue but a non-playing state →
   playback is blocked, not failing.
+- **`unknown-command` means you are running the *installed* sidecar, not the
+  repo's.** `locate()` prefers `$XDG_DATA_HOME` over the build tree, so once
+  anything has been installed to `~/.local/share/tonearm/sidecar`, a debug build
+  runs **fresh Rust against stale JavaScript** — and says nothing about it.
+
+  It fails in the most misleading way available: the command goes out, the
+  optimistic UI updates, a toast says it worked, and only the account it was
+  supposed to change disagrees. An afternoon went into "the removal does not
+  work" before the log line `code=unknown-command detail=removeFromLibrary`
+  was read for what it was.
+
+  Any change under `sidecar/` needs one of:
+
+  ```bash
+  TONEARM_SIDECAR=$PWD/sidecar cargo run   # what the repo has, always
+  make install-sidecar                     # or refresh the installed copy
+  ```
+
+  The first is the better habit while developing. Check it in one line:
+  `grep -c yourNewCommand ~/.local/share/tonearm/sidecar/preload.js`.
+- **A second instance never announces itself — it just wins.** relm4 apps are
+  unique by default, so launching while one is already up hands off to the
+  primary and exits **0 with no output**: no window, no log, nothing to
+  suggest what happened. Every later run then exercises the *old* binary.
+
+  Scanning `/proc` for the executable is not reliable — an instance started as
+  `./target/debug/tonearm` whose binary has since been replaced by a rebuild no
+  longer matches. Ask the bus, which is never wrong about who holds the name:
+
+  ```bash
+  busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus GetConnectionUnixProcessID s dev.miguelrincon.Tonearm
+  ```
+
+  Both of these are the same trap wearing two costumes: **old code quietly in
+  charge while you test new code.** When a change appears to have no effect,
+  rule this out before doubting the change.
 
 ```
 src/
@@ -889,8 +926,14 @@ the clock, a boundary leaves almost none.
 
 Debugging, in order — always isolate the layer first:
 
+0. **Is the code you changed the code that is running?** Two ways it is not,
+   both silent, both in the sidecar rules above: an *installed* sidecar
+   shadowing the repo's, and a *second instance* handing off to one already
+   running. Rule these out before doubting the change — they cost more time
+   than anything else on this list.
 1. `make sidecar-run` — if a track won't play with the window visible, it's DRM
-   or Apple, not Rust.
+   or Apple, not Rust. (Uses `TONEARM_SHOW_SIDECAR=1`; `--debug` never reached
+   the app, Electron eats it as Node's deprecated flag.)
 2. `RUST_LOG=tonearm=debug cargo run` — watch the NDJSON both ways.
 3. `playerctl -p Tonearm metadata` / `busctl --user introspect
    org.mpris.MediaPlayer2.Tonearm /org/mpris/MediaPlayer2` — the MPRIS surface.
