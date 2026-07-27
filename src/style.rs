@@ -157,9 +157,29 @@ pub fn set_accent(accent: Accent) {
         "{accent_rules}
          .favorite-star {{ color: #f5c211; }}
 
-         /* Padding rather than a margin on the widget: the backdrop is a
-            background, and a margin would leave an untinted frame around it. */
-         .np-bar {{ padding: 10px; }}
+         /* Padding rather than a margin: the backdrop is a background, and a
+            margin would leave an untinted frame around it.
+
+            On the *row*, not on `.np-bar` itself, so the progress line above
+            it can reach both edges. */
+         .np-row {{ padding: 10px; }}
+
+         /* The bar's progress line. Thin, square, and edge to edge — it reads
+            as the bar filling up rather than as a widget sitting on it, which
+            is the whole reason it stopped being a scale.
+
+            GTK draws a progressbar as trough > progress, and Adwaita gives
+            both a radius and the trough a margin that would inset the line
+            from the ends. Every one of these is undoing that. */
+         .np-progress,
+         .np-progress > trough,
+         .np-progress > trough > progress {{
+             min-height: 3px;
+             border-radius: 0;
+             margin: 0;
+             padding: 0;
+         }}
+         .np-progress > trough {{ background-color: alpha(currentColor, 0.13); }}
 
          /* How the cover is laid out on each surface. Static, so it lives here
             rather than in the provider that is replaced per track.
