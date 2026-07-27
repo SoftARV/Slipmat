@@ -1,0 +1,116 @@
+name: CI
+
+# Every push and every pull request. The Flatpak job is deliberately not on
+# pull requests — see the comment on it.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  # So the packaging can be exercised on demand without waiting for a tag.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt · clippy · tests · sizes
+    runs-on: ubuntu-latest
+    # **In a container, because the runner cannot build this.** Tonearm needs
+    # libadwaita >= 1.8 and GTK >= 4.20 (relm4's `gnome_49`), and
+    # `ubuntu-latest` ships neither. Arch is what the app is developed against
+    # and tracks both closely.
+    container: archlinux:base-devel
+    steps:
+      # Verified by running this exact list in a clean `archlinux:base-devel`
+      # container: rustc 1.97.1, GTK 4.22.4, libadwaita 1.9.2, `make check`
+      # green from scratch. No openssl — reqwest is built on rustls.
+      - name: Install the build floor
+        run: |
+          pacman -Syu --needed --noconfirm \
+            git pkgconf rust gtk4 libadwaita librsvg
+          rustc --version
+
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # `make check` is the project's own bar: the size ratchet, then fmt,
+      # clippy as an error, and the tests. Running the same target rather than
+      # its parts means CI cannot drift from what a developer runs.
+      - name: make check
+        run: make check
+
+  packaging-changed:
+    name: Did the packaging move?
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      # Deliberately a plain `git diff` rather than an action: the question is
+      # small, and one fewer third-party step in the release path is worth more
+      # than the convenience.
+      - id: filter
+        run: |
+          if [ "${{ github.event_name }}" != "push" ] || [ -z "${{ github.event.before }}" ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" || echo ALL)
+          if echo "$changed" | grep -qE '^(packaging/|sidecar/|Cargo\.lock|Cargo\.toml|\.github/workflows/|tonearm-launcher)'; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "changed files:"; echo "$changed"
+
+  flatpak:
+    name: Flatpak bundle
+    runs-on: ubuntu-latest
+    # Not on pull requests, and not on every merge either. The build fetches a
+    # ~1.5GB SDK and 120MB of Electron and takes far longer than the checks —
+    # too slow to sit in front of every review, and wasteful on a day when six
+    # PRs land and none of them touch packaging.
+    #
+    # So: always on a tag, on demand, and on a merge **only when something that
+    # could break the build moved**. `check` is what guards a PR; this guards
+    # the packaging.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'push' && needs.packaging-changed.outputs.changed == 'true')
+    needs: [packaging-changed]
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:gnome-49
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: Tonearm.flatpak
+          manifest-path: packaging/flatpak/dev.miguelrincon.Tonearm.yml
+          cache-key: flatpak-${{ hashFiles('packaging/flatpak/cargo-sources.json') }}
+
+      # Attached to the release on a tag, so `v0.2.0` carries something
+      # installable rather than only source that most distributions cannot
+      # build.
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Tonearm.flatpak
+          fail_on_unmatched_files: true
