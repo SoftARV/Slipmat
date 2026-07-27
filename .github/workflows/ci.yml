@@ -92,18 +92,39 @@ jobs:
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'push' && needs.packaging-changed.outputs.changed == 'true')
     needs: [packaging-changed]
-    container:
-      image: bilelmoussaoui/flatpak-github-actions:gnome-49
-      options: --privileged
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and bundle
-        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+      # **No prebuilt Flatpak image.** The usual one
+      # (`bilelmoussaoui/flatpak-github-actions`) stops at `gnome-47`, and this
+      # app needs the GNOME 49 runtime — that is the whole reason the Flatpak
+      # exists. Rather than wait on someone else's image to catch up, CI does
+      # exactly what `make flatpak-bundle` does on a developer's machine:
+      # install `org.flatpak.Builder` from Flathub and run it. One fewer thing
+      # that can drift from what is tested locally.
+      - name: Install flatpak and the toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install -y --user --noninteractive flathub \
+            org.flatpak.Builder \
+            org.gnome.Platform//49 \
+            org.gnome.Sdk//49 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08 \
+            org.electronjs.Electron2.BaseApp//25.08
+
+      # The same target a developer runs, so CI cannot quietly diverge from it.
+      - name: make flatpak-bundle
+        run: make flatpak-bundle
+
+      - name: Keep the bundle for a while
+        uses: actions/upload-artifact@v4
         with:
-          bundle: Tonearm.flatpak
-          manifest-path: packaging/flatpak/dev.miguelrincon.Tonearm.yml
-          cache-key: flatpak-${{ hashFiles('packaging/flatpak/cargo-sources.json') }}
+          name: Tonearm.flatpak
+          path: Tonearm.flatpak
+          retention-days: 14
 
       # Attached to the release on a tag, so `v0.2.0` carries something
       # installable rather than only source that most distributions cannot
