@@ -21,6 +21,7 @@ use relm4::prelude::*;
 use relm4::typed_view::list::{RelmListItem, TypedListView};
 use relm4::{Component, ComponentParts, ComponentSender, adw, gtk, view};
 
+use crate::components::now_playing::{Repeat, mode_opacity};
 use crate::components::{CurrentTrack, RowRegistry, current_track, row_registry};
 use crate::music::types::format_duration;
 
@@ -201,6 +202,11 @@ fn apply_playing(icon: &gtk::Image, remove: &gtk::Button, playing: bool) {
 
 pub struct QueueView {
     list: TypedListView<QueueItem, gtk::NoSelection>,
+    /// Mirrored from the player, never authored here (rule 3). Both buttons
+    /// are plain, so these only ever *display*: nothing here can report a
+    /// change back and there is no binding to break.
+    shuffle: bool,
+    repeat: Repeat,
     count: usize,
     shown: Vec<String>,
     playing: Option<String>,
@@ -221,6 +227,17 @@ pub enum QueueViewInput {
     /// resolved to an id immediately.
     Activated(u32),
     Remove(String),
+    /// Shuffle and repeat as the player currently has them.
+    SetModes {
+        shuffle: bool,
+        repeat: Repeat,
+    },
+    /// The shuffle button was clicked. No payload — the value is derived from
+    /// the mirrored one, so this view never invents one (rule 3).
+    ShuffleClicked,
+    /// The repeat button was clicked. No payload — the next mode is derived
+    /// from the mirrored one, so this view never invents a value (rule 3).
+    RepeatClicked,
 }
 
 #[derive(Debug)]
@@ -231,6 +248,15 @@ pub enum QueueViewOutput {
     Remove(String),
     /// Empty the queue and stop.
     Clear,
+    /// Shuffle and repeat live here because they are properties of the queue,
+    /// not of the transport. The player still owns the values (rule 3); these
+    /// are requests.
+    SetShuffle(bool),
+    SetRepeat(Repeat),
+    /// Close the queue pane. The player view owns whether it is showing, so
+    /// this is a request rather than a fact — the same shape as every other
+    /// output here.
+    Hide,
 }
 
 #[relm4::component(pub)]
@@ -244,10 +270,11 @@ impl Component for QueueView {
         adw::ToolbarView {
 
             add_top_bar = &adw::HeaderBar {
-                // The queue is the rightmost pane while it is open, so the
-                // window controls live here. The content header hides its own
-                // when this is showing, so they never appear twice.
-                set_show_end_title_buttons: true,
+                // No window controls. This was true when the queue was the
+                // window's rightmost pane and the content header stood down
+                // for it; inside the drawer it is a second close button laid
+                // over the real one, which is the redundancy you see.
+                set_show_end_title_buttons: false,
 
                 #[wrap(Some)]
                 set_title_widget = &adw::WindowTitle {
@@ -272,6 +299,56 @@ impl Component for QueueView {
                         let _ = sender.output(QueueViewOutput::Clear);
                     },
                 },
+
+                // Packed end-first, so left to right these read
+                // shuffle, repeat, hide.
+                //
+                // Both plain buttons, weighted by `mode_opacity` rather than
+                // filled — the same reading as the bar and the drawer.
+                //
+                // That is not only a look. A `GtkToggleButton` here would be a
+                // control that both reports *and* displays state in a
+                // component that does not own the value, which is the shape
+                // that froze a desktop: relm4 re-runs the view after every
+                // message and GTK reports a programmatic `set_active`
+                // identically to a click. A button only ever reports clicks,
+                // so there is nothing to echo and no guard to get wrong.
+                pack_end = &gtk::Button {
+                    set_icon_name: "media-playlist-shuffle-symbolic",
+                    set_tooltip_text: Some("Shuffle"),
+                    add_css_class: "flat",
+                    #[watch]
+                    set_opacity: mode_opacity(model.shuffle),
+                    connect_clicked[sender] => move |_| {
+                        sender.input(QueueViewInput::ShuffleClicked);
+                    },
+                },
+
+                pack_end = &gtk::Button {
+                    add_css_class: "flat",
+                    set_tooltip_text: Some("Repeat"),
+                    #[watch]
+                    set_icon_name: match model.repeat {
+                        Repeat::One => "media-playlist-repeat-song-symbolic",
+                        _ => "media-playlist-repeat-symbolic",
+                    },
+                    #[watch]
+                    set_opacity: mode_opacity(!matches!(model.repeat, Repeat::Off)),
+                    connect_clicked[sender] => move |_| {
+                        sender.input(QueueViewInput::RepeatClicked);
+                    },
+                },
+
+                // Closing the queue belongs to the queue, not to a button
+                // hovering above it. The transport carries the way back in.
+                pack_end = &gtk::Button {
+                    set_icon_name: "view-list-symbolic",
+                    set_tooltip_text: Some("Hide the queue"),
+                    add_css_class: "flat",
+                    connect_clicked[sender] => move |_| {
+                        let _ = sender.output(QueueViewOutput::Hide);
+                    },
+                },
             },
 
             #[wrap(Some)]
@@ -284,7 +361,6 @@ impl Component for QueueView {
                     set_description: Some("Play something and it will show up here."),
                 },
 
-                #[name = "scroller"]
                 add_named[Some("queue")] = &gtk::ScrolledWindow {
                     set_vexpand: true,
 
@@ -317,6 +393,8 @@ impl Component for QueueView {
 
         let model = QueueView {
             list,
+            shuffle: false,
+            repeat: Repeat::default(),
             count: 0,
             shown: Vec::new(),
             playing: None,
@@ -336,6 +414,20 @@ impl Component for QueueView {
         _root: &Self::Root,
     ) {
         match msg {
+            QueueViewInput::SetModes { shuffle, repeat } => {
+                self.shuffle = shuffle;
+                self.repeat = repeat;
+                self.update_view(widgets, sender);
+                return;
+            }
+            QueueViewInput::RepeatClicked => {
+                let _ = sender.output(QueueViewOutput::SetRepeat(self.repeat.next()));
+                return;
+            }
+            QueueViewInput::ShuffleClicked => {
+                let _ = sender.output(QueueViewOutput::SetShuffle(!self.shuffle));
+                return;
+            }
             QueueViewInput::Sync { entries, playing } => {
                 // Moving the marker no longer touches the model, so the only
                 // thing left that can disturb the scroll is a real structural

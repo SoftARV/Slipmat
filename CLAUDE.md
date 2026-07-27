@@ -511,7 +511,7 @@ src/
     writes.rs        # library writes: the optimistic row change, and taking it back
   settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
   session.rs         # what was playing, → $XDG_STATE_HOME/tonearm/session.json
-  style.rs           # accent colour + the Now Playing tint. The only CSS.
+  style.rs           # accent colour + the cover behind the player. The only CSS.
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)
   player/
@@ -526,10 +526,17 @@ src/
   components/
     mod.rs
     now_playing.rs   # the persistent bottom bar
+    player_view/
+      mod.rs         # the bar opened out into a drawer: model, view!, reducer
+      transport.rs   # its scrubber and buttons, built by hand because they
+                     # *move* between layouts — a child module so construction
+                     # and refresh cannot land in different files
     track_row.rs     # FactoryComponent → adw::ActionRow
     queue_view.rs    # the queue, reorderable
     library.rs       # playlists / albums / songs
-    artwork.rs       # fetch + disk cache; MPRIS needs a file:// path
+    cover.rs         # square record or round portrait; one of the two shows
+    artwork.rs       # fetch + disk cache; MPRIS needs a file:// path, and
+                     # the player's backdrop needs a deliberately tiny one
 sidecar/
   package.json  main.js  preload.js    # ~200 lines of JS, total
 data/
@@ -596,8 +603,12 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
 
 - `adw::ApplicationWindow` > `adw::ToolbarView` > `adw::HeaderBar`, with a
   **persistent bottom bar** (`add_bottom_bar`) that is the Now Playing strip:
-  artwork, title + artist, prev / play-pause / next, a seek `gtk::Scale` with a
-  live position label, and volume. It is visible on every page — it is the app.
+  artwork, title + artist, a clock, prev / play-pause / next, and volume, with
+  the track's progress as a thin line across the top of the bar. That line is
+  **information, not a control** — a scale needs a grabbable handle and room to
+  aim in, and the bar is what runs out of room first when the window is tiled
+  narrow. Scrubbing lives in the drawer, which has the width for it. The bar is
+  visible on every page — it is the app.
 - Main content: `adw::NavigationView` over an `adw::ViewStack` (clamped) —
   **Library** (playlists / albums / songs) and **Search**. The queue is an
   `adw::Dialog` or a sidebar sheet from the bottom bar, not a page.
@@ -647,25 +658,78 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   One command per change, then silence. Anything that keeps climbing is this
   bug. Log to a **file, not the journal** while testing, or a regression takes
   journald down with it.
+- **A property that drives an `AdwAnimation` is written on an edge, never on a
+  level.** This is the trap next door to the one above, and the one above is
+  what makes it easy to get wrong: that rule is about a *feedback loop*, and
+  this has no loop at all.
+
+  `#[watch]` re-asserts its value after **every** message, and during playback
+  those never stop — a `refreshTokens` a second, a position tick twice a
+  second. Free for a label. For an animated property it is a request to
+  start-or-re-aim an animation, forever, at whatever rate messages happen to
+  arrive. It wedged the app at 100% CPU inside
+  `adw_spring_animation_set_value_to`, reached from `update_view` while
+  handling a routine token refresh.
+
+  Three properties are governed by this, and all three are written only from
+  `sync_animated`: the sidebar's `show-sidebar`, the drawer's `open`, the bar's
+  `reveal-bottom-bar`. Two details make it actually hold:
+
+  - Compared against **what was last written**, not against the widget. A
+    widget and a model that disagree persistently disagree on every message
+    too, so asking the widget is the level trigger again wearing a guard's
+    clothes.
+  - Synced on **both** update paths. Sidecar events arrive through
+    `update_cmd_with_view`, not `update_with_view`, and one of them is what
+    moves `stage` to `Ready` and reveals the Now Playing bar. Syncing on one
+    path left the bar hidden for a whole session.
+
+  **Diagnosing a wedge, and the one measurement that splits it:** a GTK layout
+  loop logs *nothing*, because no message is being processed. A runaway reducer
+  (#37) logs a dispatch per lap. One symptom, opposite causes, and the log
+  tells them apart before you touch anything else.
+
+  `ptrace_scope` is 1 on this machine, so a debugger cannot attach to a process
+  it did not start. Make the kernel write the core instead:
+
+  ```bash
+  kill -ABRT $(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus GetConnectionUnixProcessID s dev.miguelrincon.Tonearm \
+    | awk '{print $2}')
+  coredumpctl debug --debugger=gdb --debugger-arguments="-batch -ex 'bt 30'"
+  ```
+
+  Both diagnoses of this bug came from that, and neither from reasoning.
 - **The app stylesheet is `style.rs`, and it is the sanctioned CSS.** An accent
   colour is not a widget: libadwaita 1.6 exposes it only as CSS variables
   (`--accent-bg-color` and friends), so a `CssProvider` is the only route.
   Two providers, kept apart — a **base** one replaced when the accent
-  preference changes, and a **tint** one for the Now Playing bar replaced on
-  every track — so recolouring the bar does not reparse the accent rules.
-  Anything else wanting CSS still has to argue for itself first.
-- **The bar's tint is a tonal scrim, not a repaint.** One flat, heavily
-  desaturated wash of the sleeve's colour across the whole bar — what Apple
-  Music and the better third-party players do. It reads as *the surface being
-  tinted* rather than as a decoration laid over it, which a left-to-right
-  gradient did.
+  preference changes, and a **backdrop** one carrying the cover behind the
+  player, replaced on every track — so a new cover does not reparse the accent
+  rules. Anything else wanting CSS still has to argue for itself first.
+- **The player's backdrop is the cover, and the blur is the upscale.**
+  `artwork::backdrop` writes a 48px copy beside the cover and CSS stretches it
+  across the surface. GTK interpolates when it scales a texture, so it arrives
+  soft on its own: no blur pass, no shader, nothing per-frame. A real Gaussian
+  would be a CPU convolution per track change for a result nobody could tell
+  apart once it is behind a scrim.
 
-  Still a wash over the normal background, never a fill: every label, icon and
-  slider in that bar already has a colour chosen for contrast against the theme,
-  and repainting the background with a colour from artwork nobody has seen would
-  mean recolouring all of them and guessing at contrast. Muting the colour first
-  is what keeps that true — the vivid colour `artwork::dominant` returns answers
-  "what colour is this record", and a surface has the opposite job.
+  The scrim is `@window_bg_color`, **not black**. Every label and icon on both
+  surfaces has a colour chosen for contrast against the theme, so a photograph
+  behind them would be guessing — and a dark veil would only guess right in one
+  theme. The bar and the drawer share one rule and differ by two numbers: the
+  bar's veil is lighter, because a thin strip shows less of the record, and its
+  image is sized `cover` rather than 150%, because a square already overflows a
+  wide strip's height and the drift has room without asking for more.
+
+  Cross-faded between tracks with CSS `cross-fade()`, rewritten per frame — a
+  provider that is *replaced* is not a state change GTK will transition
+  between, so the interpolation has to be ours. Same clock as everything else
+  that changes with the cover; two readings of one sleeve must not finish apart.
+
+  This replaced a **tonal scrim**, a flat wash of the sleeve's dominant colour.
+  The colour analysis went with it — `artwork::tint`, `dominant`, `hsl`, `rgb`
+  — and is in the history if the neutral scrim ever wants tinting.
 - **Use libadwaita widgets, not raw GTK.** `adw::ActionRow`,
   `adw::PreferencesGroup`, `adw::AboutDialog`, `adw::StatusPage`,
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS

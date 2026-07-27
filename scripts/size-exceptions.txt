@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      2590  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      2830  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole. Split once at 3085 and grew back;
                                           # ~200 lines of `init` wiring and session helpers could
@@ -15,15 +15,37 @@ src/app/mod.rs                      2590  # the model, the messages, `view!` and
                                           # messages, two reducer arms and the portal result. All
                                           # of them are the kinds of thing that belong here; the
                                           # handler they call lives in `background.rs`.
-src/components/now_playing.rs       1220  # one component, and the one whose seek arithmetic took
+                                          # 2580 -> 2650 for #18: the bottom sheet replacing the
+                                          # queue sidebar in `view!`. The expanded player itself is
+                                          # a component in `components/player_view.rs`.
+                                          # 2650 -> 2680: the window breakpoint that lets the
+                                          # navigation sidebar collapse, without which the app
+                                          # cannot be tiled to half a screen.
+src/components/now_playing.rs        980  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
+                                          # 1220 -> 1240: `mode_opacity`, shared with the drawer
+                                          # and the queue header so one control cannot read two
+                                          # ways in one app.
+                                          # 1240 -> 960: the bar's scale became a read-only line, so the
+                                          # whole seek-hold apparatus went with it. Lowering a number as a
+                                          # file shrinks is the ratchet working.
 src/music/client.rs                  940  # one endpoint per method against one API. Long because
                                           # Apple is, and each method is short.
 src/music/types.rs                   815  # the JSON boundary (rule 9). Wire types and our types
                                           # side by side is the point — they are read together.
+src/components/queue_view.rs         670  # the list, its rows, and now shuffle and repeat in the
+                                          # header — they act on the queue, so this is where they
+                                          # belong. Most of the growth is the comment explaining
+                                          # why the shuffle button is not a `#[watch]`: that is the
+                                          # bug that froze a desktop, and it is worth the lines.
 src/app/library.rs                   700  # four collections and the catalog search, all landing in
                                           # the same list.
 src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
+src/components/player_view/mod.rs    700  # the model, `view!` and the reducer. The transport
+                                          # moved to a child module — see its header for why a
+                                          # child and not a sibling. 870 before the split; this
+                                          # number comes down as the ratchet intends, and is the
+                                          # first time it has.

@@ -9,6 +9,7 @@ pub mod cover;
 pub mod detail_page;
 pub mod grid_item;
 pub mod now_playing;
+pub mod player_view;
 pub mod queue_view;
 pub mod track_row;
 

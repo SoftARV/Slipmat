@@ -11,11 +11,11 @@
 //! Two providers, deliberately:
 //!
 //! - a **base** one, replaced only when the accent preference changes;
-//! - a **tint** one for the Now Playing bar, replaced on every track.
+//! - a **backdrop** one carrying the cover behind the player, replaced on
+//!   every track.
 //!
-//! Keeping them apart means recolouring the bar for a new cover does not
-//! reparse the accent rules, and a bad tint can be dropped without taking the
-//! accent with it.
+//! Keeping them apart means a new cover does not reparse the accent rules, and
+//! a bad backdrop can be dropped without taking the accent with it.
 
 use relm4::gtk::{self, gdk};
 
@@ -106,7 +106,10 @@ impl Accent {
 
 thread_local! {
     static BASE: gtk::CssProvider = gtk::CssProvider::new();
-    static TINT: gtk::CssProvider = gtk::CssProvider::new();
+    /// The cover behind the bar and the drawer. Separate from `BASE` for the
+    /// reason the module opens with: this one is replaced on every track, and
+    /// recolouring the player should not reparse the accent rules.
+    static BACKDROP: gtk::CssProvider = gtk::CssProvider::new();
 }
 
 /// Install the providers. Called once, before the window is shown.
@@ -122,9 +125,9 @@ pub fn init(accent: Accent) {
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
     });
-    TINT.with(|p| {
-        // Above the base: the bar's tint must win over the accent rules, and
-        // it is the more specific of the two.
+    BACKDROP.with(|p| {
+        // Above the base: the cover must win over the accent rules, and it is
+        // the more specific of the two.
         gtk::style_context_add_provider_for_display(
             &display,
             p,
@@ -154,9 +157,40 @@ pub fn set_accent(accent: Accent) {
         "{accent_rules}
          .favorite-star {{ color: #f5c211; }}
 
-         /* Padding rather than a margin on the widget: the tint is a
-            background, and a margin would leave an untinted frame around it. */
-         .np-bar {{ padding: 10px; }}
+         /* Padding rather than a margin: the backdrop is a background, and a
+            margin would leave an untinted frame around it.
+
+            On the *row*, not on `.np-bar` itself, so the progress line above
+            it can reach both edges. */
+         .np-row {{ padding: 10px; }}
+
+         /* The bar's progress line. Thin, square, and edge to edge — it reads
+            as the bar filling up rather than as a widget sitting on it, which
+            is the whole reason it stopped being a scale.
+
+            GTK draws a progressbar as trough > progress, and Adwaita gives
+            both a radius and the trough a margin that would inset the line
+            from the ends. Every one of these is undoing that. */
+         .np-progress,
+         .np-progress > trough,
+         .np-progress > trough > progress {{
+             min-height: 3px;
+             border-radius: 0;
+             margin: 0;
+             padding: 0;
+         }}
+         .np-progress > trough {{ background-color: alpha(currentColor, 0.13); }}
+
+         /* How the cover is laid out on each surface. Static, so it lives here
+            rather than in the provider that is replaced per track.
+
+            The bar takes `cover` and the drawer takes 150%. Both are square
+            images, but the bar is a wide strip — scaled to its width, a square
+            already overflows its height many times over, so there is room to
+            drift without asking for more. The drawer is closer to square and
+            would have none. */
+         .np-bar {{ background-size: cover, cover; }}
+         .np-sheet {{ background-size: cover, 150%; }}
 
          /* Same reason. A GridView draws its own background, so insetting it
             with a margin shows a band of the window around every grid. */
@@ -196,6 +230,22 @@ pub fn set_accent(accent: Accent) {
              color: alpha(currentColor, 0.45);
          }}
 
+         /* The backdrop drifts, slowly enough that you never catch
+            it moving — you only notice that it is not a still image. Kept
+            here, in the provider parsed once, rather than beside the `url()`
+            that changes per track: a restarted animation on every track
+            change would be a jump, which is the opposite of the point.
+
+            Only the second layer moves. The first is the scrim, and a scrim
+            that slid would stop being one. */
+         @keyframes np-drift {{
+             from {{ background-position: center, 34% 38%; }}
+             to   {{ background-position: center, 66% 62%; }}
+         }}
+         .np-bar, .np-sheet {{
+             animation: np-drift 54s ease-in-out infinite alternate;
+         }}
+
          /* Two grey bars where the title and artist go. Static, not pulsing:
             a pulsing skeleton would say something is loading, and nothing is. */
          .np-skeleton {{
@@ -207,79 +257,132 @@ pub fn set_accent(accent: Accent) {
     BASE.with(|p| p.load_from_string(&css));
 }
 
-/// How long a tint takes to cross-fade to the next track's, and how often it
+thread_local! {
+    /// The cover currently behind the player, so the next one has something to
+    /// fade *from*.
+    static SHOWN_ART: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    /// The fade in flight, if any.
+    static ART_FADE: std::cell::RefCell<Option<gtk::glib::SourceId>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// How long a cover takes to cross-fade to the next track's, and how often it
 /// repaints while doing so. 60fps for a third of a second — long enough to read
 /// as a change of mood, short enough not to lag behind the track.
 const FADE_MS: u64 = 340;
 const FRAME_MS: u64 = 16;
 
-thread_local! {
-    /// The colour currently painted, so the next track has something to fade
-    /// *from*.
-    static SHOWN: std::cell::Cell<Option<(u8, u8, u8)>> = const { std::cell::Cell::new(None) };
-    /// The fade in flight, if any.
-    static FADE: std::cell::RefCell<Option<gtk::glib::SourceId>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Tint the Now Playing bar with a colour taken from the cover.
+/// Put a cover behind the player — the bar and the drawer both — or take it
+/// away.
 ///
-/// A **tonal scrim**: one flat, heavily desaturated wash of the sleeve's colour
-/// across the whole bar, rather than a gradient fading out to one side. It is
-/// what Apple Music and the better third-party players do, and it reads as *the
-/// surface being tinted* rather than as a decoration laid on top of it.
+/// Two layers, and the order matters: the artwork underneath, a scrim of the
+/// window's own background over it. The scrim is why this is legible — every
+/// label and icon on both surfaces has a colour chosen for contrast against
+/// the theme, and a photograph behind them would be guessing. Taking the scrim
+/// from `@window_bg_color` rather than from black is what makes the light
+/// theme work too.
 ///
-/// Still a wash over the normal background rather than a repaint: every label,
-/// icon and slider in that bar already has a colour chosen for contrast against
-/// the theme, and filling the background with a colour taken from artwork
-/// nobody has seen would mean recolouring all of them and guessing at contrast.
-/// Muting the colour first is what keeps this true — a vivid fill at this
-/// coverage would not be legible.
-///
-/// Cross-faded here rather than with a CSS `transition`. The rule lives in a
-/// provider that is *replaced* on every track, and reloading a stylesheet is
-/// not a state change GTK will animate between — the declaration was there and
-/// did nothing. Interpolating the colour ourselves and repainting is a few
-/// dozen reparses of one small rule, and it actually moves.
-pub fn set_bar_tint(rgb: Option<(u8, u8, u8)>) {
-    let target = rgb.map(muted);
-
-    // Whatever was in flight is now aimed at the wrong colour.
-    FADE.with(|f| {
+/// This replaced a **tonal scrim**: one flat, heavily desaturated wash of the
+/// sleeve's dominant colour. That existed because a bar cannot show a cover
+/// legibly — except it can, once the cover is forty-eight pixels stretched
+/// wide and put behind a scrim, which is the same trick that made the drawer
+/// work. One surface treatment for both is worth more than the colour was.
+pub fn set_backdrop(path: Option<&std::path::Path>) {
+    // Whatever was in flight is now heading for the wrong cover.
+    ART_FADE.with(|f| {
         if let Some(id) = f.borrow_mut().take() {
             id.remove();
         }
     });
 
-    let from = SHOWN.with(|c| c.get());
-    let (Some(from), Some(to)) = (from, target) else {
-        // Nothing to fade between — the first track of a session, or playback
-        // stopping. Snap.
-        SHOWN.with(|c| c.set(target));
-        paint(target);
+    let from = SHOWN_ART.with(|c| c.borrow().clone());
+    let to = path.map(std::path::Path::to_path_buf);
+    SHOWN_ART.with(|c| *c.borrow_mut() = to.clone());
+
+    let (Some(from), Some(to)) = (from, to) else {
+        // Nothing to fade between — the first cover of a session, or playback
+        // stopping. Snap, exactly as the colour does.
+        paint_backdrop(path.map(image_of));
         return;
     };
     if from == to {
         return;
     }
 
+    // Same clock as the colour, deliberately. They are two readings of one
+    // cover, and finishing apart would be more noticeable than either alone.
     let start = std::time::Instant::now();
     let id = gtk::glib::timeout_add_local(std::time::Duration::from_millis(FRAME_MS), move || {
         let t = (start.elapsed().as_millis() as f32 / FADE_MS as f32).min(1.0);
-        let now = lerp(from, to, ease(t));
-        SHOWN.with(|c| c.set(Some(now)));
-        paint(Some(now));
-
         if t >= 1.0 {
-            // Cleared here, not by the canceller: removing a source that has
-            // already finished logs a GLib critical.
-            FADE.with(|f| *f.borrow_mut() = None);
-            gtk::glib::ControlFlow::Break
-        } else {
-            gtk::glib::ControlFlow::Continue
+            // Painted plainly at the end rather than as a 100% cross-fade, so
+            // the settled state is one image and one url — and so a wrong guess
+            // about which way `cross-fade` reads its percentage could only ever
+            // be a fade in the wrong direction, never a wrong final frame.
+            paint_backdrop(Some(image_of(&to)));
+            // Cleared here, not by the canceller: removing an already-finished
+            // source logs a GLib critical.
+            ART_FADE.with(|f| *f.borrow_mut() = None);
+            return gtk::glib::ControlFlow::Break;
         }
+        let pct = (ease(t) * 100.0).round();
+        paint_backdrop(Some(format!(
+            "cross-fade({pct}% {}, {})",
+            image_of(&to),
+            image_of(&from)
+        )));
+        gtk::glib::ControlFlow::Continue
     });
-    FADE.with(|f| *f.borrow_mut() = Some(id));
+    ART_FADE.with(|f| *f.borrow_mut() = Some(id));
+}
+
+/// One cover as a CSS image.
+fn image_of(path: &std::path::Path) -> String {
+    format!("url(\"file://{}\")", path.display())
+}
+
+/// The backdrop rule. A CSS *image* in, CSS out — so the caller can hand over
+/// one cover or a cross-fade of two and this does not care which.
+///
+/// Both surfaces, in one rule each, because the two scrims are **not** the
+/// same number. The drawer is a large surface with big type on it and can take
+/// a heavy veil; the bar is a thin strip whose type is small, and at the
+/// drawer's weight the cover behind it was invisible — a flat grey, which is
+/// exactly what the tonal scrim it replaced would never have been. The bar's
+/// veil is set to leave about as much of the record showing as that wash did.
+///
+/// Pure, and separate from the provider it is loaded into, so a test can read
+/// what this actually emits. The first attempt at this feature changed the
+/// doc comment and the base rules and left the selector here saying `.np-sheet`
+/// alone — a mistake nothing could catch, because the CSS was valid and the
+/// drawer went on working.
+fn backdrop_css(image: Option<&str>) -> String {
+    let Some(image) = image else {
+        return ".np-bar, .np-sheet { background-image: none; }".into();
+    };
+    let layers = |top: f32, bottom: f32| {
+        format!(
+            "background-image:
+                 linear-gradient(
+                     alpha(@window_bg_color, {top}),
+                     alpha(@window_bg_color, {bottom})
+                 ),
+                 {image};
+             background-repeat: no-repeat, no-repeat;"
+        )
+    };
+    format!(
+        ".np-bar {{ {} }}
+         .np-sheet {{ {} }}",
+        layers(0.78, 0.72),
+        layers(0.86, 0.78)
+    )
+}
+
+fn paint_backdrop(image: Option<String>) {
+    let css = backdrop_css(image.as_deref());
+    BACKDROP.with(|p| p.load_from_string(&css));
 }
 
 /// Ease in and out, so the fade does not start and stop abruptly.
@@ -288,84 +391,53 @@ fn ease(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn lerp(from: (u8, u8, u8), to: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
-    (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
-}
-
-/// Write the rule. Already-muted colour in, CSS out.
-fn paint(rgb: Option<(u8, u8, u8)>) {
-    let css = match rgb {
-        Some((r, g, b)) => format!(
-            ".np-bar {{
-                 /* Two stops a hair apart, not one flat colour: it is still
-                    read as a single tone, but the surface has some depth to it
-                    rather than looking like a painted rectangle. */
-                 background-image: linear-gradient(
-                     to bottom,
-                     rgba({r}, {g}, {b}, 0.30),
-                     rgba({r}, {g}, {b}, 0.22)
-                 );
-             }}"
-        ),
-        // Nothing playing, or a cover we could not read: back to the plain bar.
-        None => ".np-bar { background-image: none; }".into(),
-    };
-    TINT.with(|p| p.load_from_string(&css));
-}
-
-/// Pull a sleeve's colour towards something that can be a *surface*.
-///
-/// The colour `artwork::dominant` returns is deliberately vivid — it answers
-/// "what colour is this record". A background has the opposite job: it has to
-/// stay behind text. So saturation comes right down and lightness lands in a
-/// narrow band, which also stops a very dark or very bright sleeve from
-/// producing a bar that is nearly black or nearly white.
-fn muted((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
-    let (hue, sat, light) = crate::components::artwork::hsl(r, g, b);
-    crate::components::artwork::rgb(hue, (sat * 0.5).min(0.38), light.clamp(0.52, 0.66))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_fade_starts_where_it_was_and_ends_where_it_is_going() {
-        let from = (200, 40, 60);
-        let to = (40, 80, 200);
-        assert_eq!(lerp(from, to, 0.0), from);
-        assert_eq!(lerp(from, to, 1.0), to);
-    }
-
-    #[test]
-    fn the_middle_of_a_fade_is_between_the_two() {
-        let mid = lerp((0, 0, 0), (100, 200, 40), 0.5);
-        assert_eq!(mid, (50, 100, 20));
-    }
-
-    #[test]
     fn easing_is_pinned_at_both_ends() {
         assert_eq!(ease(0.0), 0.0);
         assert_eq!(ease(1.0), 1.0);
-        // Out of range cannot overshoot: a late frame must not produce a
-        // colour outside the two it is fading between.
+        // Out of range cannot overshoot: a late frame must not ask for a
+        // cross-fade percentage outside the two covers it is between.
         assert_eq!(ease(-0.5), 0.0);
         assert_eq!(ease(2.0), 1.0);
     }
 
     #[test]
-    fn muting_lands_a_sleeve_colour_in_the_surface_band() {
-        // Both a near-black and a near-white sleeve have to come out as
-        // something that can sit behind text.
-        for vivid in [(10, 0, 0), (255, 250, 250), (250, 20, 140)] {
-            let (r, g, b) = muted(vivid);
-            let (_, sat, light) = crate::components::artwork::hsl(r, g, b);
-            assert!(
-                (0.50..=0.68).contains(&light),
-                "lightness {light} for {vivid:?}"
-            );
-            assert!(sat <= 0.40, "saturation {sat} for {vivid:?}");
-        }
+    fn both_surfaces_get_the_cover() {
+        let css = backdrop_css(Some("url(\"file:///tmp/x.png\")"));
+        assert!(css.contains(".np-bar"), "the bar was left out: {css}");
+        assert!(css.contains(".np-sheet"), "the drawer was left out: {css}");
+        assert_eq!(
+            css.matches("url(\"file:///tmp/x.png\")").count(),
+            2,
+            "each surface needs its own copy of the image"
+        );
+        // Clearing has to reach both too, or a stopped player keeps the last
+        // cover on whichever one was forgotten.
+        let cleared = backdrop_css(None);
+        assert!(cleared.contains(".np-bar") && cleared.contains(".np-sheet"));
+    }
+
+    #[test]
+    fn the_bar_shows_more_of_the_record_than_the_drawer() {
+        // Small type on a thin strip is the harder read, but a veil heavy
+        // enough for the drawer left the bar a flat grey — which is the bug
+        // this pair of numbers exists to prevent regressing.
+        let css = backdrop_css(Some("url(\"a\")"));
+        let bar = &css[css.find(".np-bar").unwrap()..css.find(".np-sheet").unwrap()];
+        assert!(bar.contains("0.78"), "bar scrim changed: {bar}");
+        assert!(
+            !bar.contains("0.86"),
+            "bar is using the drawer's veil: {bar}"
+        );
+    }
+
+    #[test]
+    fn a_cover_is_a_file_url() {
+        let css = image_of(std::path::Path::new("/tmp/a-b.backdrop.png"));
+        assert_eq!(css, "url(\"file:///tmp/a-b.backdrop.png\")");
     }
 }

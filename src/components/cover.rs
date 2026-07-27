@@ -59,6 +59,19 @@ impl Cover {
         }
     }
 
+    /// Change how big the cover is drawn.
+    ///
+    /// All three of `pixel_size`, `width_request` and `height_request`, for the
+    /// reason `new` gives: `GtkImage` fills its allocation and centres the
+    /// picture inside it, so setting only one leaves the cover floating in a
+    /// slab of `card` background.
+    pub fn resize(&self, size: i32) {
+        self.image.set_pixel_size(size);
+        self.image.set_width_request(size);
+        self.image.set_height_request(size);
+        self.avatar.set_size(size);
+    }
+
     /// Put both widgets at the **start** of a container. Only one is ever
     /// visible. Prepended in reverse so the picture lands above whatever the
     /// `view!` macro already built below it.
