@@ -102,8 +102,15 @@ pub enum Command {
     Hide,
     #[serde(rename = "authorize")]
     Authorize,
-    #[serde(rename = "unauthorize")]
-    Unauthorize,
+    /// End the session — **not** `unauthorize`.
+    ///
+    /// `MusicKit.unauthorize()` drops the Music User Token and nothing else.
+    /// The login is an ordinary browser session in the sidecar's partition, so
+    /// it outlived a sign-out and the next sign-in silently reused the same
+    /// Apple identity. This command is handled in the sidecar's *main* process,
+    /// which is the only place that can clear those cookies.
+    #[serde(rename = "signOut")]
+    SignOut,
     #[serde(rename = "refreshTokens")]
     RefreshTokens,
     #[serde(rename = "quit")]
@@ -133,7 +140,7 @@ impl Command {
             Self::RefreshTokens => "refreshTokens",
             Self::ShowLogin => "showLogin",
             Self::Authorize => "authorize",
-            Self::Unauthorize => "unauthorize",
+            Self::SignOut => "signOut",
             Self::Quit => "quit",
             Self::Hide => "hide",
         }
@@ -226,6 +233,16 @@ pub enum Event {
 
     #[serde(rename = "window-hidden")]
     WindowHidden,
+
+    /// Apple's session is gone: cookies and web storage cleared, page reloaded.
+    ///
+    /// Confirmation, not a request to do anything — the model already forgot
+    /// its half when it sent `signOut`. Worth having as a real variant rather
+    /// than letting it fall through to `Unparsed`, because a sign-out that
+    /// silently failed is the exact bug this pair was written to fix, and a
+    /// `warn!("unparsed sidecar line")` on every sign-out would bury it.
+    #[serde(rename = "signed-out")]
+    SignedOut,
 
     #[serde(rename = "ack")]
     Ack { id: u64 },
@@ -480,6 +497,25 @@ mod tests {
             panic!("expected PlaybackState");
         };
         assert_eq!(state, PlaybackState::Unknown);
+    }
+
+    #[test]
+    fn the_sign_out_pair_matches_the_sidecar() {
+        // Both halves of one contract, and both were wrong before: the command
+        // used to be `unauthorize`, which only ever dropped MusicKit's token
+        // and left Apple's cookies in place.
+        assert_eq!(Command::SignOut.name(), "signOut");
+        assert_eq!(
+            serde_json::to_value(Command::SignOut).unwrap()["cmd"],
+            "signOut"
+        );
+        // And the confirmation must parse. If it does not it falls through to
+        // `Unparsed` and warns "unparsed sidecar line" on every sign-out —
+        // noise sitting exactly where a real sign-out failure would appear.
+        assert!(matches!(
+            serde_json::from_str::<Event>(r#"{"event":"signed-out"}"#).unwrap(),
+            Event::SignedOut
+        ));
     }
 
     #[test]

@@ -383,6 +383,23 @@ impl AppModel {
             self.toast("Not connected yet");
             return;
         };
+        // Songs never got the `tried` guard the three grids have, and the
+        // consequence is the same one their comment describes: a load that
+        // *failed* leaves `all_tracks` empty, so the auto-load fires again on
+        // the very next sidecar event. With a token flapping once a second that
+        // is a 403 per second against Apple, forever. Cleared by the section's
+        // reload button, which is how a failure is meant to be retried.
+        if self.tried_library {
+            return;
+        }
+        // A library request without a user token cannot succeed — `/me/library`
+        // answers 403 "Authentication required". Better to skip it than to
+        // spend a round trip proving what the token already says.
+        if tokens.music_user_token.is_none() {
+            tracing::debug!("skipping library load: no user token yet");
+            return;
+        }
+        self.tried_library = true;
         // Built per request rather than cached: the developer token is
         // re-harvested and can be replaced mid-session (rule 7), and a stale
         // client 401s in a way that looks like a sign-in problem.
