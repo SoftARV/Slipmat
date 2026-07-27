@@ -21,7 +21,7 @@ use relm4::gtk::{gdk, glib};
 use relm4::prelude::*;
 
 use self::transport::{Bits, build_transport};
-use super::cover::Cover;
+use super::cover::{Cover, SWAP_MS};
 use super::now_playing::{NowPlayingOutput, Snapshot};
 
 mod transport;
@@ -318,79 +318,85 @@ impl SimpleComponent for PlayerView {
                                     gtk::Align::Start
                                 },
 
-                                // Two grey bars where the title and artist go,
-                                // the same idea as the bar's and for the same
-                                // reason: **deliberately not animated.** A
-                                // pulsing skeleton means "loading", and nothing
-                                // is loading — nothing is playing. Wider than
-                                // the bar's because this is a page, not a strip.
-                                gtk::Box {
-                                    set_orientation: gtk::Orientation::Vertical,
-                                    set_spacing: 10,
-                                    set_margin_top: 4,
-                                    set_margin_bottom: 4,
-                                    #[watch]
-                                    set_halign: if model.centred_text() {
-                                        gtk::Align::Center
-                                    } else {
-                                        gtk::Align::Start
-                                    },
-                                    #[watch]
-                                    set_visible: !model.snap.active,
+                                // Crossfaded, not flipped.
+                                //
+                                // These are two readings of one state, and a
+                                // queue emptying used to cut between them: the
+                                // title vanishing and the grey bars appearing
+                                // in the same frame. A `GtkStack` dissolves
+                                // between its pages instead, and the page is
+                                // chosen in `post_view` rather than by a
+                                // `#[watch]`, because a transition is an
+                                // animation and animated properties are
+                                // written on an edge.
+                                #[name = "meta_stack"]
+                                gtk::Stack {
+                                    set_transition_type: gtk::StackTransitionType::Crossfade,
+                                    set_transition_duration: SWAP_MS,
 
-                                    // They differ in **length**, not in
-                                    // weight: a title runs long and an artist
-                                    // is usually a name, so two bars of the
-                                    // same thickness at clearly different
-                                    // lengths is what reads as those two
-                                    // things. Making the second thinner as
-                                    // well made it read as a caption.
-                                    gtk::Box {
-                                        #[watch]
-                                        set_halign: if model.centred_text() {
-                                            gtk::Align::Center
-                                        } else {
-                                            gtk::Align::Start
-                                        },
-                                        set_size_request: (240, 16),
-                                        add_css_class: "np-skeleton",
-                                    },
-                                    gtk::Box {
-                                        #[watch]
-                                        set_halign: if model.centred_text() {
-                                            gtk::Align::Center
-                                        } else {
-                                            gtk::Align::Start
-                                        },
-                                        set_size_request: (120, 16),
-                                        add_css_class: "np-skeleton",
-                                    },
-                                },
+                                    // They differ in **length**, not in weight:
+                                    // a title runs long and an artist is
+                                    // usually a name. Each carries its own
+                                    // `halign` because a vertical `GtkBox`
+                                    // fills its children across and
+                                    // `set_size_request` is only a minimum, so
+                                    // without it both drew the same length.
+                                    add_named[Some("empty")] = &gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 10,
+                                        set_margin_top: 4,
+                                        set_margin_bottom: 4,
+                                        set_valign: gtk::Align::Center,
 
-                                gtk::Label {
-                                    add_css_class: "title-1",
-                                    set_ellipsize: gtk::pango::EllipsizeMode::End,
-                                    set_max_width_chars: 28,
-                                    #[watch]
-                                    set_visible: model.snap.active,
-                                    set_use_markup: false,
-                                    #[watch]
-                                    set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
-                                    #[watch]
-                                    set_label: &model.snap.title,
-                                },
-                                gtk::Label {
-                                    add_css_class: "title-4",
-                                    add_css_class: "dim-label",
-                                    set_ellipsize: gtk::pango::EllipsizeMode::End,
-                                    set_max_width_chars: 34,
-                                    #[watch]
-                                    set_visible: model.snap.active,
-                                    set_use_markup: false,
-                                    #[watch]
-                                    set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
-                                    #[watch]
-                                    set_label: &model.subtitle(),
+                                        gtk::Box {
+                                            #[watch]
+                                            set_halign: if model.centred_text() {
+                                                gtk::Align::Center
+                                            } else {
+                                                gtk::Align::Start
+                                            },
+                                            set_size_request: (240, 16),
+                                            add_css_class: "np-skeleton",
+                                        },
+                                        gtk::Box {
+                                            #[watch]
+                                            set_halign: if model.centred_text() {
+                                                gtk::Align::Center
+                                            } else {
+                                                gtk::Align::Start
+                                            },
+                                            set_size_request: (120, 16),
+                                            add_css_class: "np-skeleton",
+                                        },
+                                    },
+
+                                    add_named[Some("track")] = &gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 2,
+                                        set_valign: gtk::Align::Center,
+
+                                        gtk::Label {
+                                            add_css_class: "title-1",
+                                            set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                            set_max_width_chars: 28,
+                                            set_use_markup: false,
+                                            #[watch]
+                                            set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
+                                            #[watch]
+                                            set_label: &model.snap.title,
+                                        },
+                                        gtk::Label {
+                                            add_css_class: "title-4",
+                                            add_css_class: "dim-label",
+                                            set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                            set_max_width_chars: 34,
+                                            set_use_markup: false,
+                                            #[watch]
+                                            set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
+                                            #[watch]
+                                            set_label: &model.subtitle(),
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -543,6 +549,19 @@ impl SimpleComponent for PlayerView {
         }
 
         ComponentParts { model, widgets }
+    }
+
+    /// Which face the metadata shows.
+    ///
+    /// Here rather than as a `#[watch] set_visible_child_name`, and guarded,
+    /// because a stack with a transition is an animation: writing it is asking
+    /// for a cross-fade, and a `#[watch]` would ask on every message. Same
+    /// rule as the app's animated properties, for the same reason.
+    fn post_view(&self, widgets: &mut Self::Widgets) {
+        let want = if self.snap.active { "track" } else { "empty" };
+        if widgets.meta_stack.visible_child_name().as_deref() != Some(want) {
+            widgets.meta_stack.set_visible_child_name(want);
+        }
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {

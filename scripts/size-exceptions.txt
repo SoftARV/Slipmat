@@ -21,7 +21,7 @@ src/app/mod.rs                      2830  # the model, the messages, `view!` and
                                           # 2650 -> 2680: the window breakpoint that lets the
                                           # navigation sidebar collapse, without which the app
                                           # cannot be tiled to half a screen.
-src/components/now_playing.rs        980  # one component, and the one whose seek arithmetic took
+src/components/now_playing.rs       1020  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
                                           # 1220 -> 1240: `mode_opacity`, shared with the drawer
@@ -44,7 +44,7 @@ src/app/library.rs                   700  # four collections and the catalog sea
 src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
-src/components/player_view/mod.rs    760  # the model, `view!` and the reducer. The transport
+src/components/player_view/mod.rs    790  # the model, `view!` and the reducer. The transport
                                           # moved to a child module — see its header for why a
                                           # child and not a sibling. 870 before the split; this
                                           # number comes down as the ratchet intends, and is the

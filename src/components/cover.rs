@@ -29,10 +29,27 @@ fn disc_px(size: i32) -> i32 {
     (size * 22 / 48).max(1)
 }
 
+/// How long a cover takes to fade into what replaces it.
+///
+/// `pub` so the bar and the drawer fade their words over the same span. Two
+/// halves of one state change finishing apart is more noticeable than either
+/// being slightly wrong on its own — the same argument the artwork's colour
+/// and its backdrop already settled.
+pub const SWAP_MS: u32 = 220;
+
 #[derive(Clone)]
 pub struct Cover {
+    /// The three faces, one showing. A `GtkStack` rather than a `GtkBox` with
+    /// visibility flipped: a stack cross-fades between its pages, so a record
+    /// becoming an empty sleeve — or a sleeve becoming a record — is a
+    /// dissolve rather than a cut. Nothing else changes; only one page is ever
+    /// visible either way.
+    stack: gtk::Stack,
     image: gtk::Image,
     avatar: adw::Avatar,
+    /// The empty sleeve, kept as a page of its own so it can fade rather than
+    /// being the same widget with its icon swapped underneath you.
+    sleeve: gtk::Image,
     /// Whether the picture is currently an **empty sleeve** rather than a
     /// cover. Behind the same `Rc` as `round`, and for the same reason: a
     /// clone in a registry has to agree about what it is drawing.
@@ -62,12 +79,32 @@ impl Cover {
             .size(size)
             .show_initials(true)
             .halign(gtk::Align::Center)
-            .visible(false)
             .build();
 
+        let sleeve = gtk::Image::builder()
+            .icon_name("media-optical-symbolic")
+            .pixel_size(disc_px(size))
+            .width_request(size)
+            .height_request(size)
+            .halign(gtk::Align::Center)
+            .css_classes(["card", "np-cover-empty"])
+            .build();
+
+        let stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .transition_duration(SWAP_MS)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        stack.add_named(&image, Some("image"));
+        stack.add_named(&avatar, Some("avatar"));
+        stack.add_named(&sleeve, Some("sleeve"));
+
         Self {
+            stack,
             image,
             avatar,
+            sleeve,
             round: Rc::new(Cell::new(false)),
             empty: Rc::new(Cell::new(false)),
         }
@@ -80,15 +117,14 @@ impl Cover {
     /// picture inside it, so setting only one leaves the cover floating in a
     /// slab of `card` background.
     pub fn resize(&self, size: i32) {
-        // An empty sleeve draws its disc *inside* the case, so the icon is
-        // smaller than the widget. Everything else fills its square by design.
-        self.image.set_pixel_size(if self.empty.get() {
-            disc_px(size)
-        } else {
-            size
-        });
+        self.image.set_pixel_size(size);
         self.image.set_width_request(size);
         self.image.set_height_request(size);
+        // The sleeve draws its disc *inside* the case, so its icon stays
+        // proportionally smaller than the widget while the case matches.
+        self.sleeve.set_pixel_size(disc_px(size));
+        self.sleeve.set_width_request(size);
+        self.sleeve.set_height_request(size);
         self.avatar.set_size(size);
     }
 
@@ -96,8 +132,7 @@ impl Cover {
     /// visible. Prepended in reverse so the picture lands above whatever the
     /// `view!` macro already built below it.
     pub fn attach_first(&self, parent: &gtk::Box) {
-        parent.prepend(&self.avatar);
-        parent.prepend(&self.image);
+        parent.prepend(&self.stack);
     }
 
     /// An empty sleeve: the case, with a disc sitting inside it.
@@ -113,30 +148,24 @@ impl Cover {
     pub fn empty_sleeve(&self, size: i32) {
         self.round.set(false);
         self.empty.set(true);
-        self.avatar.set_visible(false);
-        self.image.set_visible(true);
-        self.image.set_from_file(None::<&Path>);
-        self.image.set_icon_name(Some("media-optical-symbolic"));
-        self.image.add_css_class("np-cover-empty");
         self.resize(size);
+        self.stack.set_visible_child_name("sleeve");
     }
 
     /// A record: square, with `icon` until the cover arrives.
     pub fn square(&self, icon: &str) {
         self.round.set(false);
-        self.leave_empty();
-        self.avatar.set_visible(false);
-        self.image.set_visible(true);
+        self.empty.set(false);
         self.image.set_from_file(None::<&Path>);
         self.image.set_icon_name(Some(icon));
+        self.stack.set_visible_child_name("image");
     }
 
     /// A person: round, with their initials until the portrait arrives.
     pub fn round(&self, name: &str) {
         self.round.set(true);
-        self.leave_empty();
-        self.image.set_visible(false);
-        self.avatar.set_visible(true);
+        self.empty.set(false);
+        self.stack.set_visible_child_name("avatar");
         // Cleared explicitly — this widget was very likely showing somebody
         // else a moment ago, and a stale portrait under a new name is worse
         // than no portrait.
@@ -155,19 +184,10 @@ impl Cover {
                 Err(err) => tracing::debug!(?err, "decoding portrait"),
             }
         } else {
-            self.leave_empty();
+            self.empty.set(false);
             self.image.set_from_file(Some(path));
+            self.stack.set_visible_child_name("image");
         }
-    }
-
-    /// Stop drawing a case. Restores the full pixel size, which the sleeve
-    /// shrank to leave a margin inside itself.
-    fn leave_empty(&self) {
-        if !self.empty.replace(false) {
-            return;
-        }
-        self.image.remove_css_class("np-cover-empty");
-        self.resize(self.image.width_request());
     }
 
     /// Widget identity, for a registry deciding whether an entry is still its
