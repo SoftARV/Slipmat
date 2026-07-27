@@ -535,6 +535,7 @@ mod tests {
 
     fn album(artist: &str, year: &str) -> Entry {
         Entry::Album(Album {
+            date_added: String::new(),
             id: "1".into(),
             name: "Fragile".into(),
             artist: artist.into(),

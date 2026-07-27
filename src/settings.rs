@@ -104,6 +104,15 @@ pub struct Settings {
     pub sort: String,
     /// Whether the user flipped the sort's natural direction.
     pub sort_reversed: bool,
+    /// The grids sort separately, because their keys differ from the songs
+    /// list's — an album has a date added, a playlist has no artist, an artist
+    /// has only a name.
+    pub album_sort: String,
+    pub album_sort_reversed: bool,
+    pub artist_sort: String,
+    pub artist_sort_reversed: bool,
+    pub playlist_sort: String,
+    pub playlist_sort_reversed: bool,
     pub section: Section,
     pub show_sidebar: bool,
     /// Notify when the track changes. Off by default (`bool`'s default): a
@@ -121,6 +130,12 @@ impl Default for Settings {
             // Apple's own order.
             sort: "title".into(),
             sort_reversed: false,
+            album_sort: "title".into(),
+            album_sort_reversed: false,
+            artist_sort: "title".into(),
+            artist_sort_reversed: false,
+            playlist_sort: "title".into(),
+            playlist_sort_reversed: false,
             section: Section::default(),
             // Visible on a first run: a sidebar nobody has hidden yet should
             // be there to be found.
@@ -171,6 +186,27 @@ impl Settings {
         if let Ok(rev) = file.boolean(GROUP, "sort-reversed") {
             settings.sort_reversed = rev;
         }
+        for (key, into) in [
+            ("album-sort", &mut settings.album_sort),
+            ("artist-sort", &mut settings.artist_sort),
+            ("playlist-sort", &mut settings.playlist_sort),
+        ] {
+            if let Ok(value) = file.string(GROUP, key) {
+                *into = value.into();
+            }
+        }
+        for (key, into) in [
+            ("album-sort-reversed", &mut settings.album_sort_reversed),
+            ("artist-sort-reversed", &mut settings.artist_sort_reversed),
+            (
+                "playlist-sort-reversed",
+                &mut settings.playlist_sort_reversed,
+            ),
+        ] {
+            if let Ok(value) = file.boolean(GROUP, key) {
+                *into = value;
+            }
+        }
         tracing::debug!(?settings, "loaded settings");
         settings
     }
@@ -193,6 +229,12 @@ impl Settings {
         file.set_string(GROUP, "accent", &self.accent);
         file.set_string(GROUP, "sort", &self.sort);
         file.set_boolean(GROUP, "sort-reversed", self.sort_reversed);
+        file.set_string(GROUP, "album-sort", &self.album_sort);
+        file.set_boolean(GROUP, "album-sort-reversed", self.album_sort_reversed);
+        file.set_string(GROUP, "artist-sort", &self.artist_sort);
+        file.set_boolean(GROUP, "artist-sort-reversed", self.artist_sort_reversed);
+        file.set_string(GROUP, "playlist-sort", &self.playlist_sort);
+        file.set_boolean(GROUP, "playlist-sort-reversed", self.playlist_sort_reversed);
 
         if let Err(err) = std::fs::create_dir_all(dir) {
             tracing::warn!(?err, "could not create config directory");

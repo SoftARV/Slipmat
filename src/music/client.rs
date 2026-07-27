@@ -241,6 +241,18 @@ impl Client {
         for album in &mut albums {
             album.library = true;
         }
+        // The same counter that settled `dateAdded` for songs, asking it of
+        // albums. Documented on `LibraryAlbums.Attributes` — and so was the
+        // songs one, which arrived 0 times out of 541. A "Recently Added" sort
+        // that silently orders by nothing is worse than not offering one.
+        let dated = albums.iter().filter(|a| !a.date_added.is_empty()).count();
+        let with_year = albums.iter().filter(|a| !a.year.is_empty()).count();
+        tracing::info!(
+            total = albums.len(),
+            dated,
+            with_year,
+            "library album attributes present"
+        );
         Ok(albums)
     }
 
@@ -318,6 +330,20 @@ impl Client {
         for playlist in &mut playlists {
             playlist.library = true;
         }
+        let dated = playlists
+            .iter()
+            .filter(|p| !p.date_added.is_empty())
+            .count();
+        let modified = playlists
+            .iter()
+            .filter(|p| !p.last_modified.is_empty())
+            .count();
+        tracing::info!(
+            total = playlists.len(),
+            dated,
+            modified,
+            "library playlist attributes present"
+        );
         Ok(playlists)
     }
 
