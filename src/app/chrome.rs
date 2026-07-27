@@ -288,6 +288,40 @@ impl AppModel {
             // reaching until there is a session.
             .can_close(false)
             .build();
+
+        // Ctrl+Q, again, because the gate swallows the application one.
+        //
+        // Moving the action from `win.quit` to `app.quit` was not enough:
+        // tested by hand with the gate up, the Quit button works — so
+        // `main_application().quit()` is fine — while the accelerator never
+        // arrives. A modal `adw::Dialog` holds the focus, and the application
+        // shortcut does not survive that, whatever the scope of the action
+        // behind it.
+        //
+        // So the dialog carries its own, local to it and its children, which is
+        // exactly where the key is going. A `CallbackAction` rather than a
+        // `NamedAction`: nothing to resolve by name, so there is no second
+        // lookup that can fail the same quiet way the first one did.
+        // **Capture, not bubble.** A bubbling controller runs on the way back
+        // up, which is after anything nearer the focus has had its chance to
+        // stop the event — and something is stopping it, or the application
+        // accelerator would have worked. Capture runs on the way *down* from
+        // the dialog, before its own children see the key, so nothing gets to
+        // swallow it first. Safe here only because the gate holds no text
+        // input: on a dialog with an entry, capturing Ctrl+Q would take it away
+        // from the entry, which is why this is not the default anywhere else.
+        let shortcuts = gtk::ShortcutController::new();
+        shortcuts.set_scope(gtk::ShortcutScope::Local);
+        shortcuts.set_propagation_phase(gtk::PropagationPhase::Capture);
+        shortcuts.add_shortcut(gtk::Shortcut::new(
+            gtk::ShortcutTrigger::parse_string("<Control>q"),
+            Some(gtk::CallbackAction::new(|_, _| {
+                relm4::main_application().quit();
+                gtk::glib::Propagation::Stop
+            })),
+        ));
+        dialog.add_controller(shortcuts);
+
         dialog.present(Some(parent));
         dialog
     }
