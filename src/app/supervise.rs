@@ -147,13 +147,10 @@ impl AppModel {
                 queue_len,
             } => {
                 tracing::debug!(%cmd, state, queue_len, "sidecar finished command");
-                // Confirmed, so there is nothing left to put back — and a
-                // confirmed library removal is the moment the row may go.
-                if let Some(pending) = self.pending_write.take_if(|p| p.cmd == cmd)
-                    && pending.cmd == "removeFromLibrary"
-                {
-                    self.drop_removed_track(&pending.catalog_id);
-                }
+                // Deliberately does **not** settle library writes: `cmd-done`
+                // carries only the command name, and this dispatch is async, so
+                // two removals can finish out of order. `Event::LibraryWrite`
+                // carries the id and is what settles them.
             }
             Event::Tokens(tokens) => {
                 // `has_user_token` is the one that matters after sign-in: a
@@ -208,9 +205,7 @@ impl AppModel {
                 // A refused library write has to put the row back before
                 // anything else looks at it, and it words its own toast — the
                 // raw detail is a command name, which means nothing to anyone.
-                let handled =
-                    self.undo_pending_write(detail) || self.retry_without_dead_tracks(detail);
-                if !handled {
+                if !self.retry_without_dead_tracks(detail) {
                     self.toast(detail);
                 }
             }
@@ -219,6 +214,12 @@ impl AppModel {
             // Apple's cookies too, which is the half that used to be skipped
             // silently — so it is worth being able to see in a log.
             Event::SignedOut => tracing::info!("apple session cleared"),
+            Event::LibraryWrite {
+                kind,
+                id,
+                ok,
+                detail,
+            } => self.settle_library_write(kind, id, *ok, detail),
             _ => {}
         }
         // Captured before the mirror moves on, so a transition can be reported

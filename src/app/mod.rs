@@ -282,8 +282,9 @@ pub struct AppModel {
     /// Which kinds the catalog search asks for. Not persisted: a filter belongs
     /// to the search you are running, not to how you like the app.
     catalog_filter: CatalogFilter,
-    /// A removal sent to the sidecar, still unconfirmed. See [`PendingWrite`].
-    pending_write: Option<PendingWrite>,
+    /// Removals sent to the sidecar and not yet confirmed, by the id each
+    /// command carried. See [`PendingWrite`].
+    pending_writes: std::collections::HashMap<String, PendingWrite>,
     searching_catalog: bool,
     /// How many catalog results we already hold, and whether Apple has run out.
     /// Together these decide whether scrolling to the end fetches more.
@@ -350,10 +351,16 @@ impl Drop for Timed {
 /// never taken back is how a UI comes to lie — which it did: a removal against
 /// a stale sidecar answered `unknown-command`, and the row went on showing the
 /// change that never happened.
+///
+/// **Keyed by the id the command carried**, not by the command name. There was
+/// one slot and a name match, and the sidecar's dispatch is async — so removing
+/// two tracks inside one round trip overwrote the first record, and the first
+/// completion was attributed to the second's row. The wrong row left the list
+/// while the removed one stayed.
 #[derive(Debug, Clone)]
 struct PendingWrite {
-    /// The wire name, matched against the `detail` of a sidecar error.
-    cmd: &'static str,
+    /// The row to correct, which is not always the id the command carried:
+    /// removal takes a library id, un-favouriting a catalog id.
     catalog_id: String,
     undo: WriteUndo,
 }
@@ -1324,7 +1331,7 @@ impl Component for AppModel {
             catalog: Vec::new(),
             catalog_paged: 0,
             catalog_filter: CatalogFilter::default(),
-            pending_write: None,
+            pending_writes: std::collections::HashMap::new(),
             pages: Vec::new(),
             next_page_id: 1,
             nav,
@@ -1955,12 +1962,14 @@ impl AppModel {
                 catalog_id,
             } => {
                 tracing::info!(%library_id, "removing from library");
+                self.pending_writes.insert(
+                    library_id.clone(),
+                    PendingWrite {
+                        catalog_id: catalog_id.clone(),
+                        undo: WriteUndo::InLibrary(true),
+                    },
+                );
                 self.send(Command::RemoveFromLibrary { id: library_id });
-                self.pending_write = Some(PendingWrite {
-                    cmd: "removeFromLibrary",
-                    catalog_id: catalog_id.clone(),
-                    undo: WriteUndo::InLibrary(true),
-                });
                 // Mirrored locally for the same reason the star is: the menu
                 // reads this, and making someone reload to see their own click
                 // is absurd. `include=library` is cached for tens of seconds
@@ -1970,13 +1979,15 @@ impl AppModel {
             }
             AppMsg::Unfavorite { catalog_id } => {
                 tracing::info!(%catalog_id, "removing favourite");
+                self.pending_writes.insert(
+                    catalog_id.clone(),
+                    PendingWrite {
+                        catalog_id: catalog_id.clone(),
+                        undo: WriteUndo::Favorite(true),
+                    },
+                );
                 self.send(Command::Unfavorite {
                     id: catalog_id.clone(),
-                });
-                self.pending_write = Some(PendingWrite {
-                    cmd: "unfavorite",
-                    catalog_id: catalog_id.clone(),
-                    undo: WriteUndo::Favorite(true),
                 });
                 // The star only. The song stays in the library — see the note
                 // on `AppMsg::Unfavorite`.
@@ -2573,23 +2584,30 @@ impl AppModel {
         );
     }
 
-    /// Put back a removal the sidecar refused, and say so in words a person can
-    /// act on.
+    /// Settle one library write against the id it was for.
     ///
-    /// Without this the row keeps the change that never happened. It is not
+    /// On success a removal is the moment the row may leave the list. On
+    /// failure the optimistic change is put back and said out loud — without
+    /// this the row keeps a change that never happened, which is not
     /// hypothetical: pointed at a sidecar too old to know the command, every
-    /// removal answered `unknown-command`, the toast said it was happening, and
-    /// the row agreed — while the library on the user's phone did not move.
-    pub(super) fn undo_pending_write(&mut self, detail: &str) -> bool {
-        let Some(pending) = self.pending_write.clone() else {
-            return false;
+    /// removal answered `unknown-command`, the toast said it was happening, the
+    /// row agreed, and the library on the user's phone did not move.
+    pub(super) fn settle_library_write(&mut self, kind: &str, id: &str, ok: bool, detail: &str) {
+        // Keyed by id, so two writes in flight cannot be confused for each
+        // other — see `PendingWrite`.
+        let Some(pending) = self.pending_writes.remove(id) else {
+            tracing::debug!(kind, id, ok, "library write with no pending record");
+            return;
         };
-        // Both failure shapes name the command: `unknown-command` sends it
-        // bare, `command-failed` prefixes it to the message.
-        if !detail.starts_with(pending.cmd) {
-            return false;
+
+        if ok {
+            if matches!(pending.undo, WriteUndo::InLibrary(_)) {
+                self.drop_removed_track(&pending.catalog_id);
+            }
+            return;
         }
-        self.pending_write = None;
+
+        tracing::warn!(kind, id, %detail, "library write refused; row put back");
         match pending.undo {
             WriteUndo::InLibrary(was) => {
                 self.set_in_library(&pending.catalog_id, was);
@@ -2600,8 +2618,30 @@ impl AppModel {
                 self.toast("Couldn't remove that favourite");
             }
         }
-        tracing::warn!(cmd = pending.cmd, %detail, "library write refused; row put back");
-        true
+    }
+
+    /// Correct the copy of a track held **inside the list store**.
+    ///
+    /// `TypedListView` items own a clone of the entry, taken when the rows were
+    /// built, and `RelmListItem::bind` reads that clone every time a recycled
+    /// widget is reused. So a change applied only to `all_tracks` and to the
+    /// widget on screen is undone the moment the row scrolls out and back.
+    ///
+    /// Linear, because the store is not indexed by id and a library is a few
+    /// hundred rows — the scan costs less than keeping a second index honest.
+    fn patch_stored_row(&mut self, catalog_id: &str, patch: impl Fn(&mut Track)) {
+        for index in 0..self.library.len() {
+            let Some(item) = self.library.get(index) else {
+                continue;
+            };
+            let mut item = item.borrow_mut();
+            if let Entry::Song(track) = &mut item.entry
+                && track.catalog_id.as_deref() == Some(catalog_id)
+            {
+                patch(track);
+                break;
+            }
+        }
     }
 
     /// Record library membership locally, so the row menu stops offering "Add
@@ -2612,6 +2652,8 @@ impl AppModel {
     /// favourite star. It is read at menu-build time, which is why updating the
     /// model is enough.
     fn set_in_library(&mut self, catalog_id: &str, in_library: bool) {
+        // As in `set_favorite`: the stored clone is what a rebind reads.
+        self.patch_stored_row(catalog_id, |track| track.in_library = in_library);
         for track in &mut self.all_tracks {
             if track.catalog_id.as_deref() == Some(catalog_id) {
                 track.in_library = in_library;
@@ -2642,6 +2684,13 @@ impl AppModel {
     /// list — a rebuild would throw away the scroll position, and this is the
     /// same discipline as the play marker.
     fn set_favorite(&mut self, catalog_id: &str, on: bool) {
+        // The list store keeps its **own clone** of each entry, made when the
+        // rows were built. Updating `all_tracks` and the visible widget is not
+        // enough: scroll away and back and the row re-binds from that clone,
+        // and the star returns. Correcting the stored item is what makes the
+        // change survive recycling — and it is why this looked like the write
+        // had failed when it had not.
+        self.patch_stored_row(catalog_id, |track| track.favorite = on);
         for track in &mut self.all_tracks {
             if track.catalog_id.as_deref() == Some(catalog_id) {
                 track.favorite = on;
