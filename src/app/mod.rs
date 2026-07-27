@@ -1199,24 +1199,40 @@ impl Component for AppModel {
                                             },
                                         },
 
-                                        // The Clamp goes OUTSIDE the
-                                        // ScrolledWindow. Inside, it breaks
-                                        // ListView's height allocation and the
-                                        // list stops materialising rows part
-                                        // way down.
-                                        add_named[Some("library")] = &adw::Clamp {
-                                            set_maximum_size: 800,
+                                        // **`AdwClampScrollable`, not `AdwClamp`.**
+                                        //
+                                        // A plain clamp had to go *outside* the
+                                        // scroller, because inside it breaks
+                                        // `GtkListView`'s height allocation and
+                                        // the list stops materialising rows part
+                                        // way down. But outside, the clamp is
+                                        // what the window sizes, so the scroller
+                                        // is only 800px wide and its scrollbar
+                                        // sits in the middle of the window
+                                        // rather than at the edge.
+                                        //
+                                        // `AdwClampScrollable` is the widget for
+                                        // exactly this trade: it implements
+                                        // `GtkScrollable` and passes the
+                                        // interface through to its child, so the
+                                        // list still gets the adjustments it
+                                        // needs while being clamped. The
+                                        // scroller can then be the full width
+                                        // and keep its bar at the edge.
+                                        #[name = "library_scroller"]
+                                        add_named[Some("library")] = &gtk::ScrolledWindow {
+                                            set_vexpand: true,
+                                            // See `.plain-scroller`: now that
+                                            // this spans the window rather than
+                                            // being clamped, its `view`
+                                            // background does too.
+                                            add_css_class: "plain-scroller",
 
                                             #[wrap(Some)]
-                                            #[name = "library_scroller"]
-                                            set_child = &gtk::ScrolledWindow {
-                                                set_vexpand: true,
-
-                                                #[local_ref]
-                                                library_list -> gtk::ListView {
-                                                    set_single_click_activate: true,
-                                                    add_css_class: "navigation-sidebar",
-                                                },
+                                            #[name = "library_clamp"]
+                                            set_child = &adw::ClampScrollable {
+                                                set_maximum_size: 800,
+                                                add_css_class: "plain-scroller",
                                             },
                                         },
 
@@ -1699,6 +1715,50 @@ impl Component for AppModel {
             root.add_breakpoint(breakpoint);
         } else {
             tracing::warn!("unparsable window breakpoint; the sidebar will not collapse");
+        }
+
+        // The clamp takes the list here rather than in `view!`: the macro has
+        // no form for `set_child` on a `#[local_ref]`, and the list is owned by
+        // the model.
+        // The clamp takes the list here rather than in `view!`, because the
+        // macro has no form for `set_child` on a `#[local_ref]` — so the two
+        // properties the list used to carry inline have to be set here too.
+        //
+        // **They were dropped when this moved, and both symptoms followed.**
+        // `navigation-sidebar` is what makes a `GtkListView` transparent, so
+        // without it the rows painted the `view` background and read as darker
+        // than the window; and without `single-click-activate` a row needed two
+        // clicks to play. Neither is decoration: losing them looked like two
+        // unrelated bugs in a layout change.
+        widgets.library_clamp.set_child(Some(library_list));
+        library_list.set_single_click_activate(true);
+        library_list.add_css_class("navigation-sidebar");
+
+        // **Keep the content clear of the Now Playing bar.**
+        //
+        // The bar is `AdwBottomSheet`'s `bottom_bar`, and a bottom bar is drawn
+        // *over* the content rather than beside it. So the last row of any
+        // scrollable sat behind it: reachable by GTK's reckoning — the scroller
+        // had already run to its end — and invisible, which is the worst
+        // combination, because nothing suggests there is more to see.
+        //
+        // Maximising appeared to fix it, which sent the first diagnosis after a
+        // ten-pixel measurement discrepancy in the detail page's layout. That
+        // was real and irrelevant: a taller window simply put the last row above
+        // the bar.
+        //
+        // `bottom-bar-height` is the property libadwaita exposes for exactly
+        // this, and it notifies, so the inset follows the bar rather than
+        // guessing at its height — which changes with the theme and the text
+        // scale.
+        {
+            let content = widgets.nav_split.clone();
+            let sheet = widgets.player_sheet.clone();
+            let apply = move |sheet: &adw::BottomSheet| {
+                content.set_margin_bottom(sheet.bottom_bar_height());
+            };
+            apply(&sheet);
+            sheet.connect_bottom_bar_height_notify(apply);
         }
 
         // The drawer opens to most of the window, rather than to whatever

@@ -192,6 +192,22 @@ pub fn set_accent(accent: Accent) {
          .np-bar {{ background-size: cover, cover; }}
          .np-sheet {{ background-size: cover, 150%; }}
 
+         /* A scroller wrapping a `view` widget paints the `view` background,
+            which is a shade darker than the window. That was invisible while
+            this one was clamped to 800px and centred — it read as the list's
+            own surface — and became a dark band across the whole window the
+            moment the scroller spanned it, which is what moving the clamp
+            *inside* (as `AdwClampScrollable`) did.
+
+            Cleared on the scroller and on the viewport GTK may put inside it,
+            because which of the two paints depends on whether the child
+            implements `GtkScrollable`. The grid below needs the same thing for
+            the same reason. */
+         .plain-scroller,
+         .plain-scroller > viewport {{
+             background: none;
+         }}
+
          /* Same reason. A GridView draws its own background, so insetting it
             with a margin shows a band of the window around every grid. */
          .tile-grid {{
