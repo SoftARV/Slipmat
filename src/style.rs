@@ -249,6 +249,13 @@ thread_local! {
     /// The fade in flight, if any.
     static FADE: std::cell::RefCell<Option<gtk::glib::SourceId>> =
         const { std::cell::RefCell::new(None) };
+    /// The cover currently behind the drawer, so the next one has something to
+    /// fade *from*. The colour's counterpart, kept separately because the two
+    /// fade in their own providers.
+    static SHOWN_ART: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static ART_FADE: std::cell::RefCell<Option<gtk::glib::SourceId>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Tint the Now Playing bar with a colour taken from the cover.
@@ -324,19 +331,74 @@ pub fn set_bar_tint(rgb: Option<(u8, u8, u8)>) {
 /// forty-eight pixels, so it is being stretched either way; the extra gives
 /// the drift somewhere to go without ever exposing an edge.
 pub fn set_sheet_backdrop(path: Option<&std::path::Path>) {
-    let css = match path {
-        Some(path) => format!(
+    // Whatever was in flight is now heading for the wrong cover.
+    ART_FADE.with(|f| {
+        if let Some(id) = f.borrow_mut().take() {
+            id.remove();
+        }
+    });
+
+    let from = SHOWN_ART.with(|c| c.borrow().clone());
+    let to = path.map(std::path::Path::to_path_buf);
+    SHOWN_ART.with(|c| *c.borrow_mut() = to.clone());
+
+    let (Some(from), Some(to)) = (from, to) else {
+        // Nothing to fade between — the first cover of a session, or playback
+        // stopping. Snap, exactly as the colour does.
+        paint_backdrop(path.map(image_of));
+        return;
+    };
+    if from == to {
+        return;
+    }
+
+    // Same clock as the colour, deliberately. They are two readings of one
+    // cover, and finishing apart would be more noticeable than either alone.
+    let start = std::time::Instant::now();
+    let id = gtk::glib::timeout_add_local(std::time::Duration::from_millis(FRAME_MS), move || {
+        let t = (start.elapsed().as_millis() as f32 / FADE_MS as f32).min(1.0);
+        if t >= 1.0 {
+            // Painted plainly at the end rather than as a 100% cross-fade, so
+            // the settled state is one image and one url — and so a wrong guess
+            // about which way `cross-fade` reads its percentage could only ever
+            // be a fade in the wrong direction, never a wrong final frame.
+            paint_backdrop(Some(image_of(&to)));
+            // Cleared here, not by the canceller: removing an already-finished
+            // source logs a GLib critical.
+            ART_FADE.with(|f| *f.borrow_mut() = None);
+            return gtk::glib::ControlFlow::Break;
+        }
+        let pct = (ease(t) * 100.0).round();
+        paint_backdrop(Some(format!(
+            "cross-fade({pct}% {}, {})",
+            image_of(&to),
+            image_of(&from)
+        )));
+        gtk::glib::ControlFlow::Continue
+    });
+    ART_FADE.with(|f| *f.borrow_mut() = Some(id));
+}
+
+/// One cover as a CSS image.
+fn image_of(path: &std::path::Path) -> String {
+    format!("url(\"file://{}\")", path.display())
+}
+
+/// Write the backdrop rule. A CSS *image* in, CSS out — so the caller can hand
+/// over one cover or a cross-fade of two and this does not care which.
+fn paint_backdrop(image: Option<String>) {
+    let css = match image {
+        Some(image) => format!(
             ".np-sheet {{
                  background-image:
                      linear-gradient(
                          alpha(@window_bg_color, 0.86),
                          alpha(@window_bg_color, 0.78)
                      ),
-                     url(\"file://{}\");
+                     {image};
                  background-size: cover, 150%;
                  background-repeat: no-repeat, no-repeat;
-             }}",
-            path.display()
+             }}"
         ),
         None => ".np-sheet { background-image: none; }".into(),
     };
