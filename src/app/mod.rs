@@ -190,6 +190,10 @@ pub struct AppModel {
     /// Whether the navigation sidebar is open. Persisted, like the section:
     /// someone who closes it wants it closed next time too.
     show_sidebar: bool,
+    /// What [`AppModel::sync_animated`] last pushed to the widgets. `None`
+    /// until the first sync, which writes all three so the initial state is
+    /// asserted once — at startup, when nothing is being resized.
+    animated_shown: std::cell::Cell<Option<Animated>>,
     /// Whether the sidebar is currently an overlay rather than a pane.
     ///
     /// Mirrored from the split view rather than derived from a width we would
@@ -1422,6 +1426,7 @@ impl Component for AppModel {
             show_queue: false,
             show_sidebar: settings.show_sidebar,
             sidebar_collapsed: false,
+            animated_shown: std::cell::Cell::new(None),
             marked_playing: None,
             library_icons: row_registry(),
             current_track: current_track(),
@@ -1721,46 +1726,8 @@ impl Component for AppModel {
         root: &Self::Root,
     ) {
         let view_before = self.view;
-        // The three animated properties, sampled before and after. See below.
-        let animated_before = self.animated_state();
         self.update(msg, sender.clone(), root);
-
-        // **Written only on an actual transition, and never from the view.**
-        //
-        // These three drive an `AdwAnimation` each — the sidebar's spring, the
-        // drawer's slide, the bottom bar's reveal — and writing one is asking
-        // an animation to start or re-aim. That is fine when something
-        // changed and catastrophic on a timer.
-        //
-        // They were `#[watch]`es, which re-assert after *every* message, and
-        // during playback those never stop: a `refreshTokens` a second, a
-        // position tick twice a second. Then a guarded `post_view` compared
-        // against the *widget* instead, which is no better — a widget and a
-        // model that disagree persistently disagree on every message too, so
-        // it still wrote on every one.
-        //
-        // Comparing against our own previous value is what actually bounds it:
-        // no message, no transition, no write. Measured from a core dump of a
-        // wedged process, twice: the main thread spinning at 100% inside
-        // `adw_spring_animation_set_value_to` under
-        // `adw_overlay_split_view_set_show_sidebar`, reached from `update_view`
-        // while handling — both times — a routine `refreshTokens`.
-        //
-        // A GTK layout loop logs nothing, because no message is being
-        // processed. That is how it tells itself apart from a runaway reducer
-        // (#37), which logs a dispatch per lap.
-        let animated_after = self.animated_state();
-        if animated_after.sidebar != animated_before.sidebar {
-            widgets.nav_split.set_show_sidebar(animated_after.sidebar);
-        }
-        if animated_after.queue != animated_before.queue {
-            widgets.player_sheet.set_open(animated_after.queue);
-        }
-        if animated_after.bottom_bar != animated_before.bottom_bar {
-            widgets
-                .player_sheet
-                .set_reveal_bottom_bar(animated_after.bottom_bar);
-        }
+        self.sync_animated(widgets);
 
         if self.view != view_before {
             // `set_text` fires `search-changed`, but `SearchChanged` returns
@@ -1777,6 +1744,27 @@ impl Component for AppModel {
             // and a message that costs more than a few is worth naming.
             tracing::debug!(ms, "view refresh");
         }
+    }
+
+    /// Overridden for one reason: [`AppModel::sync_animated`] has to run on
+    /// **both** paths.
+    ///
+    /// The default calls `update_cmd` then `update_view`, and command messages
+    /// are how the sidecar's events arrive — including the one that moves
+    /// `stage` to `Ready`, which is what reveals the Now Playing bar. Syncing
+    /// only in `update_with_view` left the bar and the drawer hidden for the
+    /// whole session, because their transition happened on the path that was
+    /// not looking.
+    fn update_cmd_with_view(
+        &mut self,
+        widgets: &mut Self::Widgets,
+        message: Self::CommandOutput,
+        sender: ComponentSender<Self>,
+        root: &Self::Root,
+    ) {
+        self.update_cmd(message, sender.clone(), root);
+        self.sync_animated(widgets);
+        self.update_view(widgets, sender);
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
@@ -1811,6 +1799,34 @@ impl AppModel {
             queue: self.show_queue,
             bottom_bar: matches!(self.stage, Stage::Ready),
         }
+    }
+
+    /// Push the three animated properties, and **only where they changed**.
+    ///
+    /// Each drives an `AdwAnimation` — the sidebar's spring, the drawer's
+    /// slide, the bar's reveal — so writing one asks an animation to start or
+    /// re-aim. That is correct on an edge and catastrophic on a level: as a
+    /// `#[watch]` it re-fired after every message, and during playback those
+    /// never stop, which wedged the app inside libadwaita's spring solver.
+    ///
+    /// Compared against **what we last wrote**, not against the widget. A
+    /// widget that disagrees persistently disagrees on every message too, so
+    /// asking it is the level trigger again wearing a guard's clothes — that
+    /// was the first attempt at this fix, and the second core dump found it
+    /// still spinning.
+    fn sync_animated(&self, widgets: &<Self as relm4::Component>::Widgets) {
+        let now = self.animated_state();
+        let last = self.animated_shown.get();
+        if last.map(|l| l.sidebar) != Some(now.sidebar) {
+            widgets.nav_split.set_show_sidebar(now.sidebar);
+        }
+        if last.map(|l| l.queue) != Some(now.queue) {
+            widgets.player_sheet.set_open(now.queue);
+        }
+        if last.map(|l| l.bottom_bar) != Some(now.bottom_bar) {
+            widgets.player_sheet.set_reveal_bottom_bar(now.bottom_bar);
+        }
+        self.animated_shown.set(Some(now));
     }
 
     fn handle(
