@@ -145,7 +145,13 @@ impl AppModel {
                 cmd,
                 state,
                 queue_len,
-            } => tracing::debug!(%cmd, state, queue_len, "sidecar finished command"),
+            } => {
+                tracing::debug!(%cmd, state, queue_len, "sidecar finished command");
+                // Confirmed, so there is nothing left to put back.
+                if self.pending_write.as_ref().is_some_and(|p| p.cmd == cmd) {
+                    self.pending_write = None;
+                }
+            }
             Event::Tokens(tokens) => {
                 // `has_user_token` is the one that matters after sign-in: a
                 // developer token alone gets you catalog search but not
@@ -196,7 +202,12 @@ impl AppModel {
             }
             Event::Error { code, detail } => {
                 tracing::warn!(%code, %detail, "sidecar error");
-                if !self.retry_without_dead_tracks(detail) {
+                // A refused library write has to put the row back before
+                // anything else looks at it, and it words its own toast — the
+                // raw detail is a command name, which means nothing to anyone.
+                let handled =
+                    self.undo_pending_write(detail) || self.retry_without_dead_tracks(detail);
+                if !handled {
                     self.toast(detail);
                 }
             }
