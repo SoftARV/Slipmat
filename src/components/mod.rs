@@ -12,6 +12,73 @@ pub mod now_playing;
 pub mod queue_view;
 pub mod track_row;
 
+/// Put a list's scroll position back after `GtkListView` throws it away.
+///
+/// **Measured, after five attempts that were not** (issue #6). Across a
+/// single-row removal the adjustment is fine at first — `value` unchanged, and
+/// `upper` shrunk by exactly one row as it should — and then, somewhere between
+/// 50ms and 100ms, `ListView` assigns `value = 0.0` while `upper` is still
+/// healthy, and leaves it there:
+///
+/// ```text
+/// before   value=26000  upper=29535  page=556
+/// +50ms    value=26000  upper=29480
+/// +100ms   value=0.0    upper=29480
+/// ```
+///
+/// So there is no clamp, whatever #6 assumed. Nothing forces the value down; it
+/// is overwritten. That is why restoring it in an idle, or once `upper` settled,
+/// or calling `scroll_to` one tick after the edit all failed — every one of them
+/// ran *before* the assignment and corrected a value that was still correct.
+///
+/// Hence: watch for the assignment rather than race it. On the first collapse to
+/// zero *while there is still room above*, re-anchor and stop listening.
+///
+/// Two details that both matter:
+///
+/// * **`scroll_to`, not `set_value`.** Restoring the pixel offset alone moves the
+///   viewport while `ListView`'s anchor stays on item 0, so it has materialised
+///   no rows near the new position and the list renders blank until nudged.
+/// * **Bounded.** The listener disconnects after 500ms either way, so a genuine
+///   scroll to the top later is never fought over.
+pub fn restore_scroll_after_edit(
+    view: &relm4::gtk::ListView,
+    adjustment: &relm4::gtk::Adjustment,
+    item: u32,
+) {
+    use relm4::gtk::prelude::*;
+
+    let was_at = adjustment.value();
+    // Already at the top: nothing to protect, and no way to tell a real jump
+    // from the bug.
+    if was_at <= adjustment.page_size() {
+        return;
+    }
+
+    let handler = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = handler.clone();
+    let view = view.clone();
+    let id = adjustment.connect_value_changed(move |adj| {
+        // Only the collapse, and only while it is unjustified.
+        if adj.value() > 1.0 || was_at > adj.upper() - adj.page_size() {
+            return;
+        }
+        view.scroll_to(item, relm4::gtk::ListScrollFlags::NONE, None);
+        if let Some(id) = slot.borrow_mut().take() {
+            adj.disconnect(id);
+        }
+    });
+    *handler.borrow_mut() = Some(id);
+
+    let adj = adjustment.clone();
+    let slot = handler.clone();
+    relm4::gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+        if let Some(id) = slot.borrow_mut().take() {
+            adj.disconnect(id);
+        }
+    });
+}
+
 /// Widgets that are **currently bound and on screen**, keyed by track id.
 ///
 /// `ListView` recycles rows, so most items have no widget at any given moment.

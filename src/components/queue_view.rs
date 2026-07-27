@@ -345,17 +345,15 @@ impl Component for QueueView {
                 // (An earlier version restored on every sync, including marker
                 // changes, and re-asserting an offset against an `upper` that
                 // was still settling is what made the list twitch.)
-                // Anchor on an ITEM, not on a pixel offset.
+                // Anchor on an ITEM, not on a pixel offset. The topmost
+                // visible row is a stable thing to hold on to, and `scroll_to`
+                // is ListView's own operation on it.
                 //
-                // Restoring the adjustment's value keeps losing: on a model
-                // change `ListView` briefly reports a much smaller content
-                // height and clamps `value` to near zero, and whatever we set
-                // afterwards is clamped again. Two attempts at timing that were
-                // both wrong.
-                //
-                // The topmost visible row is a stable thing to hold on to, and
-                // `scroll_to` is ListView's own operation on it — no
-                // adjustment arithmetic, no race with measurement.
+                // That much was always right. What was wrong was *when*: this
+                // deferred one idle tick, which measurement later showed is
+                // before GTK assigns the zero (#6). `restore_scroll_after_edit`
+                // waits for the assignment instead of racing it — the comment
+                // there has the numbers.
                 let anchor = self.topmost_visible();
                 let structural = self.apply(entries, playing, sender.input_sender().clone());
 
@@ -363,12 +361,11 @@ impl Component for QueueView {
                     && let Some(anchor) = anchor
                     && let Some(position) = self.shown.iter().position(|id| *id == anchor)
                 {
-                    let list = widgets.queue_list.clone();
-                    // Deferred one tick: the store has changed, but the view
-                    // has not been through a layout pass yet.
-                    gtk::glib::idle_add_local_once(move || {
-                        list.scroll_to(position as u32, gtk::ListScrollFlags::NONE, None);
-                    });
+                    crate::components::restore_scroll_after_edit(
+                        &widgets.queue_list,
+                        &widgets.scroller.vadjustment(),
+                        position as u32,
+                    );
                 }
             }
             QueueViewInput::ScrollToPlaying => {

@@ -2549,71 +2549,19 @@ impl AppModel {
             // The widgets it owned are gone with it.
             self.library_icons.borrow_mut().remove(catalog_id);
 
-            // Put the scroll position back once GTK has thrown it away.
-            //
-            // Measured, after five blind attempts (#6): across a single-row
-            // removal `value` is *correct* immediately and still correct 50ms
-            // later, `upper` shrinks by exactly one row as it should — and then
-            // somewhere between 50ms and 100ms `GtkListView` sets `value` to
-            // 0.0 while `upper` is still healthy, and leaves it there.
-            //
-            //     before   value=26000 upper=29535
-            //     +50ms    value=26000 upper=29480
-            //     +100ms   value=0.0   upper=29480
-            //
-            // So this is not the clamp #6 assumed. Nothing is forcing the value
-            // down; it is assigned. That is why restoring it in an idle, or
-            // when `upper` settles, both failed — they ran *before* the
-            // assignment and corrected a value that was not yet wrong.
-            //
-            // Rather than guess at a delay, watch for the assignment and undo
-            // it: the first time the value drops to near zero while there is
-            // plenty of room above, put it back and stop listening. Bounded, so
-            // a genuine scroll to the top by the user is never fought over.
+            // The same restore the queue uses — see `restore_scroll_after_edit`
+            // for the measurements behind it (#6). Anchored on the row that was
+            // at the top, derived from the pixel offset over the mean row
+            // height; the rows here are uniform, so that lands exactly.
             if let Some(adj) = probe {
-                let want = adj.value();
-                // Which item was at the top, so the view can be re-anchored by
-                // *item* rather than by pixel. Setting the adjustment alone
-                // moved the viewport while ListView's own anchor stayed on item
-                // 0, so it rendered nothing until a scroll forced a re-layout —
-                // the list simply vanished.
                 let rows = self.library.len().max(1) as f64;
                 let row_height = adj.upper() / rows;
-                let top_item = if row_height > 0.0 {
-                    (want / row_height).floor() as u32
-                } else {
-                    0
-                };
-                let view = self.library.view.clone();
-                if want > adj.page_size() {
-                    let handler = std::rc::Rc::new(std::cell::RefCell::new(None));
-                    let slot = handler.clone();
-                    let id = adj.connect_value_changed(move |a| {
-                        // Only the collapse, and only while it is unjustified.
-                        if a.value() > 1.0 || want > a.upper() - a.page_size() {
-                            return;
-                        }
-                        // `scroll_to`, not `set_value`: it moves the anchor as
-                        // well as the viewport, which is what actually puts the
-                        // rows back. NONE rather than FOCUS — nothing here
-                        // should steal focus.
-                        view.scroll_to(top_item, gtk::ListScrollFlags::NONE, None);
-                        if let Some(id) = slot.borrow_mut().take() {
-                            a.disconnect(id);
-                        }
-                    });
-                    *handler.borrow_mut() = Some(id);
-                    // Stop listening either way, so a later legitimate jump to
-                    // the top is left alone.
-                    let a = adj.clone();
-                    let slot = handler.clone();
-                    gtk::glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(500),
-                        move || {
-                            if let Some(id) = slot.borrow_mut().take() {
-                                a.disconnect(id);
-                            }
-                        },
+                if row_height > 0.0 {
+                    let top_item = (adj.value() / row_height).floor() as u32;
+                    crate::components::restore_scroll_after_edit(
+                        &self.library.view,
+                        &adj,
+                        top_item,
                     );
                 }
             }
