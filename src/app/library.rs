@@ -475,12 +475,10 @@ impl AppModel {
         tiles
             .into_iter()
             .map(|tile| {
-                GridItem::new(
-                    tile,
-                    self.tile_art.clone(),
-                    registry.clone(),
-                    self.tile_art_request.clone(),
-                )
+                // No artwork cache handed over any more: a tile never reads
+                // one, because it no longer decides whether to load a cover
+                // itself. It asks, and the answer arrives decoded (#27).
+                GridItem::new(tile, registry.clone(), self.tile_art_request.clone())
             })
             .collect()
     }

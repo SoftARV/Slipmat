@@ -606,10 +606,13 @@ pub enum CommandMsg {
         action: LibraryAction,
         result: Result<(), String>,
     },
-    /// A grid tile's cover is on disk, or could not be fetched.
+    /// A grid tile's cover is on disk and decoded, or could not be had.
+    /// Carries pixels rather than a path because the decode is the expensive
+    /// part and it has already happened, off the GTK thread (#27).
     TileArt {
         key: String,
         path: Option<PathBuf>,
+        cover: Option<artwork::Decoded>,
     },
 }
 
@@ -2017,10 +2020,15 @@ impl AppModel {
                     return;
                 }
                 sender.oneshot_command(async move {
-                    CommandMsg::TileArt {
-                        key,
-                        path: artwork::fetch(art, TILE_ART).await.ok(),
-                    }
+                    // Fetch only if it is missing — `fetch` short-circuits on
+                    // the disk cache — but decode either way, here, off the
+                    // GTK thread. That is the whole point of #27: the tile is
+                    // handed pixels, not a filename.
+                    let path = artwork::fetch(art, TILE_ART).await.ok();
+                    let cover = path
+                        .as_deref()
+                        .and_then(|path| artwork::decode(path, TILE_ART as i32));
+                    CommandMsg::TileArt { key, path, cover }
                 });
             }
             AppMsg::LoadMoreCatalog => {
@@ -2511,26 +2519,32 @@ impl AppModel {
                     self.toast(&err);
                 }
             },
-            CommandMsg::TileArt { key, path } => {
+            CommandMsg::TileArt { key, path, cover } => {
                 self.tile_art_pending.remove(&key);
-                let Some(path) = path else {
+                let (Some(path), Some(cover)) = (path, cover) else {
                     // Cosmetic. The tile keeps its placeholder.
                     return;
                 };
-                // Cache first, so a tile that binds later reads it straight off
-                // disk instead of asking again...
-                self.tile_art.borrow_mut().insert(key.clone(), path.clone());
-                // ...then paint whichever tile is showing this artwork *now*.
+                // Cached so a later bind knows the file is there and the
+                // request skips the network — the decode still happens off the
+                // thread, because that is the part worth avoiding here.
+                self.tile_art.borrow_mut().insert(key.clone(), path);
+
+                // Paint whichever tile is showing this artwork *now*.
                 // Recycling means it may not be the one that asked, and may be
                 // none at all if it scrolled away — both are correct.
-                for registry in [
+                //
+                // The pixels are moved, so exactly one widget can take them.
+                // That is the truth of it anyway: one key, one live tile.
+                let target = [
                     &self.album_art_widgets,
                     &self.artist_art_widgets,
                     &self.playlist_art_widgets,
-                ] {
-                    if let Some(cover) = registry.borrow().get(&key) {
-                        cover.set_file(&path);
-                    }
+                ]
+                .into_iter()
+                .find_map(|registry| registry.borrow().get(&key).cloned());
+                if let Some(widget) = target {
+                    widget.set_decoded(cover);
                 }
             }
             CommandMsg::PageArtwork { page, path } => {

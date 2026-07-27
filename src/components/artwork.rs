@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use relm4::gtk::gdk_pixbuf;
+use relm4::gtk::{gdk, gdk_pixbuf, glib};
 
 use crate::music::types::Artwork;
 
@@ -73,6 +73,65 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
     Ok(())
+}
+
+/// A cover turned into pixels **off the GTK thread**.
+///
+/// The decode is the expensive half of showing a cover — measured at 2.5ms for
+/// one 320px JPEG — and `gtk_image_set_from_file` does it synchronously on
+/// whichever thread calls it. A grid fills 385 tiles in one go (#27), so doing
+/// it inline froze the UI for half a second.
+///
+/// Raw pixels rather than a `gdk::Texture` because a texture is a GObject and
+/// therefore not `Send`: it cannot be built on a worker and carried back. A
+/// `Vec<u8>` can, and turning one into a `gdk::MemoryTexture` on the main
+/// thread is a wrap, not a decode.
+pub struct Decoded {
+    pixels: Vec<u8>,
+    width: i32,
+    height: i32,
+    stride: usize,
+    has_alpha: bool,
+}
+
+impl std::fmt::Debug for Decoded {
+    /// Without this the pixels would be printed. All of them.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Decoded")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Decoded {
+    /// Wrap the pixels as a texture. Main thread, and cheap — no decoding here.
+    pub fn into_texture(self) -> gdk::MemoryTexture {
+        let format = if self.has_alpha {
+            gdk::MemoryFormat::R8g8b8a8
+        } else {
+            gdk::MemoryFormat::R8g8b8
+        };
+        gdk::MemoryTexture::new(
+            self.width,
+            self.height,
+            format,
+            &glib::Bytes::from_owned(self.pixels),
+            self.stride,
+        )
+    }
+}
+
+/// Decode a cover that is already on disk. Call this off the GTK thread.
+pub fn decode(path: &Path, size: i32) -> Option<Decoded> {
+    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(path, size, size, true).ok()?;
+    Some(Decoded {
+        width: pixbuf.width(),
+        height: pixbuf.height(),
+        stride: pixbuf.rowstride() as usize,
+        has_alpha: pixbuf.has_alpha(),
+        pixels: pixbuf.read_pixel_bytes().to_vec(),
+    })
 }
 
 /// How wide the drawer's backdrop image is, in pixels. Deliberately tiny.

@@ -126,16 +126,14 @@ fn one_line(text: &str) -> String {
 
 pub struct GridItem {
     pub tile: Tile,
-    art: ArtCache,
     registry: ArtRegistry,
     request: ArtRequest,
 }
 
 impl GridItem {
-    pub fn new(tile: Tile, art: ArtCache, registry: ArtRegistry, request: ArtRequest) -> Self {
+    pub fn new(tile: Tile, registry: ArtRegistry, request: ArtRequest) -> Self {
         Self {
             tile,
-            art,
             registry,
             request,
         }
@@ -228,12 +226,15 @@ impl RelmGridItem for GridItem {
 
         if let Some(art) = self.tile.artwork() {
             let key = art.cache_key();
-            match self.art.borrow().get(&key) {
-                // Already on disk from an earlier bind, or from the Now Playing
-                // bar having played something off this album.
-                Some(path) if path.is_file() => widgets.cover.set_file(path),
-                _ => (self.request)(key.clone(), art.clone()),
-            }
+            // **Always ask; never decode here.** A cover already on disk used
+            // to be loaded inline, which is a 2.5ms JPEG decode on the GTK
+            // thread — fine for one tile, and half a second of frozen UI for
+            // the ~385 a grid materialises in a single frame (#27).
+            //
+            // The request answers off the thread either way: it fetches only
+            // if the file is missing, and decodes in both cases. The tile keeps
+            // its placeholder for a frame or two and then fills in.
+            (self.request)(key.clone(), art.clone());
             self.registry
                 .borrow_mut()
                 .insert(key, widgets.cover.clone());
