@@ -49,6 +49,24 @@ impl AppModel {
         }
     }
 
+    /// Whether the window's own controls should respond yet.
+    ///
+    /// The same argument the first-run gate is built on, applied to the seconds
+    /// before we know whether there is a session at all: until the sidecar
+    /// reports, every control here is one that cannot work. A sidebar section
+    /// has nothing to load, the search box would query a catalog with no token,
+    /// and the sort menu reorders a list that is not there.
+    ///
+    /// Measured at ~5 seconds from launch, so this is not a flicker — it is
+    /// long enough to click something and be told nothing happened.
+    ///
+    /// Deliberately *not* everything: the primary menu stays live throughout,
+    /// because it holds Quit and About, and an app you cannot leave while it
+    /// starts is worse than one that starts slowly.
+    pub(super) fn controls_live(&self) -> bool {
+        matches!(self.stage, Stage::Ready)
+    }
+
     /// What the spinner page says it is waiting for.
     ///
     /// Bringing the sidecar up comes first: during those stages no section is

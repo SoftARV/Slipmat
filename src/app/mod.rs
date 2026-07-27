@@ -586,6 +586,15 @@ impl Component for AppModel {
                                     #[wrap(Some)]
                                     set_content = &gtk::ScrolledWindow {
                                         set_vexpand: true,
+                                        // The sections, and their reload
+                                        // buttons. Insensitive until there is a
+                                        // session to load anything from — but
+                                        // note this is the ToolbarView's
+                                        // *content*, so the header bar above it
+                                        // keeps the primary menu live, and with
+                                        // it Quit.
+                                        #[watch]
+                                        set_sensitive: model.controls_live(),
 
                                         #[wrap(Some)]
                                         set_child = &gtk::Box {
@@ -902,6 +911,11 @@ impl Component for AppModel {
                                         #[name = "search_entry"]
                                         set_title_widget = &gtk::SearchEntry {
                                             set_width_request: 320,
+                                            // Typing here before the tokens
+                                            // arrive queries a catalog that
+                                            // cannot answer.
+                                            #[watch]
+                                            set_sensitive: model.controls_live(),
                                             #[watch]
                                             set_placeholder_text: Some(match model.view {
                                                 View::Songs => "Search your library",
@@ -925,6 +939,11 @@ impl Component for AppModel {
                                             add_css_class: "flat",
                                             #[watch]
                                             set_visible: model.view == View::Songs,
+                                            // Visibility follows the section,
+                                            // which says nothing about whether
+                                            // there is a list to reorder yet.
+                                            #[watch]
+                                            set_sensitive: model.controls_live(),
                                         },
 
                                     },
