@@ -87,10 +87,22 @@ const SHEET_MIN_H: i32 = 260;
 /// acyclic: our request changes how tall the sheet is, and how tall the sheet
 /// is never changes the surface. Measuring the sheet would be a loop.
 ///
-/// The request is dropped entirely while the drawer is closed. A height
-/// request is a *minimum*, and a minimum that tracks the current height would
-/// fight the user as they drag the window shorter — so the app only carries it
-/// when the drawer is actually open and asking to be tall.
+/// While the drawer is closed this falls back to [`SHEET_MIN_H`] — **not to
+/// `-1`**. A height request is a minimum, and one that tracked the current
+/// height would fight the user as they drag the window shorter, so it does
+/// have to come off. But `-1` does not restore the floor the `view!` declared
+/// with `set_size_request`; it *clears* it, because they are the same
+/// property. That left the `AdwBreakpointBin` with no minimum height at all,
+/// which libadwaita warns about by name:
+///
+/// ```text
+/// AdwBreakpointBin does not have a minimum height, set the 'height-request'
+/// property to specify it
+/// ```
+///
+/// A breakpoint container with no floor is being asked to decide which
+/// breakpoint applies at a height it never agreed to, which is not a state to
+/// leave a resize in.
 ///
 /// `Rc` rather than `Arc` because every one of these callbacks is a GTK signal
 /// handler: they all run on the main thread, and none of them crosses one.
@@ -103,12 +115,12 @@ pub fn fill_window(
         let (window, sheet, content) = (window.clone(), sheet.clone(), content.clone());
         std::rc::Rc::new(move || {
             let height = window.surface().map_or(0, |surface| surface.height());
-            let target = (f64::from(height) * WINDOW_FRACTION) as i32;
-            content.set_height_request(if sheet.is_open() && height > 0 {
-                target.max(SHEET_MIN_H)
+            let target = if sheet.is_open() && height > 0 {
+                (f64::from(height) * WINDOW_FRACTION) as i32
             } else {
-                -1
-            });
+                SHEET_MIN_H
+            };
+            content.set_height_request(target.max(SHEET_MIN_H));
         })
     };
 

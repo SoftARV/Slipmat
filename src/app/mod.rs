@@ -673,10 +673,10 @@ impl Component for AppModel {
                         // to click behind it, and dismissing by clicking away
                         // is what a drawer should do.
                         set_modal: true,
-                        #[watch]
+                        // Not a `#[watch]`. See `post_view`.
                         set_open: model.show_queue,
                         // The bar is only meaningful once there is a player.
-                        #[watch]
+                        // Not a `#[watch]`. See `post_view`.
                         set_reveal_bottom_bar: matches!(model.stage, Stage::Ready),
 
                         // Dragged shut, or clicked away from — the model has to
@@ -706,7 +706,7 @@ impl Component for AppModel {
                         set_content = &adw::OverlaySplitView {
                             set_min_sidebar_width: 200.0,
                             set_max_sidebar_width: 260.0,
-                            #[watch]
+                            // Not a `#[watch]`. See `post_view`.
                             set_show_sidebar: model.show_sidebar,
                             // **The model has to adopt what the widget did.**
                             //
@@ -1737,6 +1737,37 @@ impl Component for AppModel {
             // Only the slow ones: at ~60fps anything over 16ms drops a frame,
             // and a message that costs more than a few is worth naming.
             tracing::debug!(ms, "view refresh");
+        }
+    }
+
+    /// The three properties that must **not** be `#[watch]`ed, and why.
+    ///
+    /// `#[watch]` re-asserts its value after every message, and during playback
+    /// those never stop arriving — a `refreshTokens` a second, a position tick
+    /// twice a second. That is harmless for a label. These three are not
+    /// labels: each drives an `AdwAnimation`, so re-asserting one is asking a
+    /// spring to re-aim mid-flight, twice a second, forever.
+    ///
+    /// It hung the app. Measured from a core dump of the wedged process, the
+    /// main thread was spinning at 100% inside
+    /// `adw_spring_animation_set_value_to`, called from
+    /// `adw_overlay_split_view_set_show_sidebar`, called from `update_view`.
+    /// No message was being processed and nothing was logged, which is how a
+    /// GTK layout loop tells itself apart from a runaway reducer (#37) — that
+    /// one logs a dispatch per lap.
+    ///
+    /// So: written only when the widget does not already agree. A no-op write
+    /// is free for a label and is not free for an animation.
+    fn post_view(&self, widgets: &mut Self::Widgets) {
+        if widgets.nav_split.shows_sidebar() != self.show_sidebar {
+            widgets.nav_split.set_show_sidebar(self.show_sidebar);
+        }
+        if widgets.player_sheet.is_open() != self.show_queue {
+            widgets.player_sheet.set_open(self.show_queue);
+        }
+        let reveal = matches!(self.stage, Stage::Ready);
+        if widgets.player_sheet.reveals_bottom_bar() != reveal {
+            widgets.player_sheet.set_reveal_bottom_bar(reveal);
         }
     }
 
