@@ -6,7 +6,7 @@
 #
 # Gapless has two halves and this measures the one your ears cannot.
 #
-#   1. Rust must not drive the queue. `RUST_LOG=tonearm=info` prints a
+#   1. Rust must not drive the queue. `RUST_LOG=slipmat=info` prints a
 #      "track transition" line at every boundary saying what prompted it.
 #      A natural boundary must read `prompted_by="nothing — MusicKit
 #      advanced itself"`. Anything else means Rust is feeding tracks one at
@@ -31,35 +31,35 @@ if ! command -v pactl >/dev/null; then
 	exit 1
 fi
 
-# Which sink-input belongs to Tonearm. Matched on any property containing the
+# Which sink-input belongs to Slipmat. Matched on any property containing the
 # name, because Chromium spreads it across application.name,
 # application.process.binary and media.name depending on the version — and
-# `app.setName('Tonearm')` in sidecar/main.js is what puts it there at all.
+# `app.setName('Slipmat')` in sidecar/main.js is what puts it there at all.
 #
 # This filter is the point: a notification sound or a screenshot shutter opens
 # and closes its own short-lived stream, and reporting those as gaps makes the
 # whole instrument untrustworthy.
-tonearm_indices() {
+slipmat_indices() {
 	pactl list sink-inputs 2>/dev/null | awk '
 		/^Sink Input #/ { idx = substr($3, 2); hit = 0 }
-		tolower($0) ~ /tonearm/ { hit = 1 }
+		tolower($0) ~ /slipmat/ { hit = 1 }
 		/^[[:space:]]*$/ { if (hit && idx != "") print idx; idx = ""; hit = 0 }
 		END { if (hit && idx != "") print idx }
 	'
 }
 
-echo "Watching Tonearm's audio stream. Play across a track boundary."
-echo "Expect: nothing at all. A 'remove' of Tonearm's own stream is a gap."
+echo "Watching Slipmat's audio stream. Play across a track boundary."
+echo "Expect: nothing at all. A 'remove' of Slipmat's own stream is a gap."
 echo
 printf 'Timestamps below are local time; the app logs UTC (offset %s).\n' \
 	"$(date '+%:z')"
 echo
 
-known=$(tonearm_indices | tr '\n' ' ')
+known=$(slipmat_indices | tr '\n' ' ')
 if [ -n "${known// /}" ]; then
-	echo "Tonearm is already playing on sink-input(s): $known"
+	echo "Slipmat is already playing on sink-input(s): $known"
 else
-	echo "Tonearm is not playing yet — its stream will appear when you hit play."
+	echo "Slipmat is not playing yet — its stream will appear when you hit play."
 fi
 echo
 
@@ -78,17 +78,17 @@ pactl subscribe 2>/dev/null | while read -r line; do
 		# it appeared.
 		case " $known " in
 		*" $index "*)
-			echo "$stamp  Tonearm's stream #$index went away"
+			echo "$stamp  Slipmat's stream #$index went away"
 			echo "    ^^ the decoder stopped — that is an audible gap."
 			known=${known// $index / }
 			;;
 		esac
 		;;
 	*)
-		current=$(tonearm_indices | tr '\n' ' ')
+		current=$(slipmat_indices | tr '\n' ' ')
 		case " $current " in
 		*" $index "*)
-			[ -n "${known// /}" ] || echo "$stamp  Tonearm's stream #$index appeared"
+			[ -n "${known// /}" ] || echo "$stamp  Slipmat's stream #$index appeared"
 			known=$current
 			;;
 		esac

@@ -9,10 +9,20 @@ Two packages, both built from this tree:
 
 | Directory | Package | Builds from |
 | --- | --- | --- |
-| `tonearm/` | `tonearm` | the `v0.1.1` release tarball |
-| `tonearm-git/` | `tonearm-git` | the latest commit on `main` |
+| `slipmat/` | `slipmat` | the `v0.2.0` release tarball |
+| `slipmat-git/` | `slipmat-git` | the latest commit on `main` |
 
 They conflict with each other, as the two conventions require.
+
+**The release package cannot be built until there is a release under this
+name.** It is pinned to `v0.2.0`, and that tag predates the rename from
+Tonearm — its tree still builds a binary called `tonearm`, so `package()` fails
+looking for `target/release/slipmat`. The `sha256sum` is wrong too: a GitHub
+archive names its root directory after the repository as it stands *now*, so
+renaming the repository changes the tarball's bytes even though the tag did
+not move. Both are fixed by the next tag, and neither can be fixed before it —
+so `slipmat/PKGBUILD` is correct in shape and pinned to a version it cannot
+build. `slipmat-git` is unaffected; it tracks `main`.
 
 ## Why the PKGBUILDs live here
 
@@ -31,9 +41,9 @@ Nothing here has been pushed to the AUR yet.
 ## Publishing, when the time comes
 
 ```bash
-git clone ssh://aur@aur.archlinux.org/tonearm.git aur-tonearm
-cp packaging/aur/tonearm/PKGBUILD aur-tonearm/
-cd aur-tonearm && makepkg --printsrcinfo > .SRCINFO
+git clone ssh://aur@aur.archlinux.org/slipmat.git aur-slipmat
+cp packaging/aur/slipmat/PKGBUILD aur-slipmat/
+cd aur-slipmat && makepkg --printsrcinfo > .SRCINFO
 git commit -am "…" && git push
 ```
 
@@ -43,11 +53,11 @@ one.
 ## Things that are true of these builds
 
 **The Widevine CDM is not in the package.** `wvcus` fetches it through
-Chromium's own component updater at first run, into `~/.config/Tonearm/`. What
-ships is Electron (MIT) and Tonearm (GPL-3), so there is no proprietary
+Chromium's own component updater at first run, into `~/.config/Slipmat/`. What
+ships is Electron (MIT) and Slipmat (GPL-3), so there is no proprietary
 redistribution — which is what makes packaging this possible at all.
 
-**The sidecar goes to `/usr/share/tonearm/sidecar`,** which
+**The sidecar goes to `/usr/share/slipmat/sidecar`,** which
 `player::sidecar::locate` finds through `XDG_DATA_DIRS`. That search path was
 added *for* packaging: before it, only `~/.local/share` and the dev tree were
 checked, and a system install would have been invisible to the binary that
@@ -71,7 +81,7 @@ complained about them.
 ## Building one locally
 
 ```bash
-cd packaging/aur/tonearm && makepkg -f
+cd packaging/aur/slipmat && makepkg -f
 ```
 
 Needs the `rust` package rather than a rustup toolchain — makepkg resolves

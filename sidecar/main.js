@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Miguel Rincon
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Tonearm sidecar — the invisible half of the app.
+// Slipmat sidecar — the invisible half of the app.
 //
 // This process exists for exactly one reason: Widevine. Apple Music full tracks
 // are HLS + Widevine, and on Linux the only CDM that exists ships inside
@@ -9,7 +9,7 @@
 // window that is never shown, and drive MusicKit from Rust over stdio.
 //
 // The window is shown exactly once — for Apple's own sign-in — and then hides
-// forever; the session cookie persists in the `persist:tonearm` partition.
+// forever; the session cookie persists in the `persist:slipmat` partition.
 //
 // PROTOCOL: newline-delimited JSON.
 //   stdin  <- commands from Rust   { id?, cmd, ...args }
@@ -30,7 +30,7 @@ const {
 const path = require('node:path')
 const readline = require('node:readline')
 
-// TONEARM_SHOW_SIDECAR=1 keeps the window on screen. This is the fastest way
+// SLIPMAT_SHOW_SIDECAR=1 keeps the window on screen. This is the fastest way
 // to tell a frozen renderer from a broken command: if playback works with the
 // window visible and not without, the problem is Chromium freezing a page it
 // thinks nobody is looking at.
@@ -42,7 +42,7 @@ const readline = require('node:readline')
 // from a Rust one did not run at all. The argv check is kept because it costs
 // nothing and still works if the flag is passed somewhere Electron ignores it.
 const DEBUG =
-  process.argv.includes('--debug') || process.env.TONEARM_SHOW_SIDECAR === '1'
+  process.argv.includes('--debug') || process.env.SLIPMAT_SHOW_SIDECAR === '1'
 
 /// Per-command logging. **Off by default, and that is a safety property rather
 /// than tidiness.**
@@ -54,16 +54,16 @@ const DEBUG =
 /// commands and the machine had to be power-cycled; those disk writes are a
 /// large part of why an app bug became a system one (#37).
 ///
-/// `TONEARM_SIDECAR_TRACE=1` brings it back for the evening you need it. The
+/// `SLIPMAT_SIDECAR_TRACE=1` brings it back for the evening you need it. The
 /// protocol events it duplicates — `cmd-recv`, `cmd-done`, `cmd-queued` — are
 /// unaffected, and are what CLAUDE.md's "diagnose by layer" actually reads.
-const TRACE = process.env.TONEARM_SIDECAR_TRACE === '1'
+const TRACE = process.env.SLIPMAT_SIDECAR_TRACE === '1'
 const APPLE_MUSIC = 'https://music.apple.com/'
 /// Where the login lives. Named once because sign-out has to clear the very
 /// partition the window was created with — two spellings of this string is a
 /// sign-out that silently forgets nothing.
-const PARTITION = 'persist:tonearm'
-/// How the window stays out of the way. Set TONEARM_SIDECAR_WINDOW to override:
+const PARTITION = 'persist:slipmat'
+/// How the window stays out of the way. Set SLIPMAT_SIDECAR_WINDOW to override:
 ///
 ///   hidden     (default) never mapped. Completely invisible — nothing in the
 ///              window overview, nothing in the dash. Verified on GNOME/Wayland
@@ -76,7 +76,7 @@ const PARTITION = 'persist:tonearm'
 /// Note the --disable-renderer-backgrounding family below was already in place
 /// when `hidden` was verified, so those switches may well be what makes it
 /// viable. Do not remove them and assume this still works.
-const WINDOW_MODE = process.env.TONEARM_SIDECAR_WINDOW || 'hidden'
+const WINDOW_MODE = process.env.SLIPMAT_SIDECAR_WINDOW || 'hidden'
 
 const READY_TIMEOUT_MS = 60_000
 const PROBE_INTERVAL_MS = 500
@@ -104,18 +104,18 @@ const TOKEN_NUDGES = 10
 //     entirely unmapped (WINDOW_MODE=hidden), which is verified working — so
 //     treat them as load-bearing, not as leftovers from a fixed bug.
 // Identity. Without these the sidecar shows up in the dash and window list as
-// a separate app called "tonearm-sidecar" (from package.json's name), with a
-// generic icon. Pointing it at Tonearm's own desktop entry makes the shell
-// treat any window it does show as part of Tonearm rather than a stray second
+// a separate app called "slipmat-sidecar" (from package.json's name), with a
+// generic icon. Pointing it at Slipmat's own desktop entry makes the shell
+// treat any window it does show as part of Slipmat rather than a stray second
 // app. Must be set before app.whenReady().
-app.setName('Tonearm')
+app.setName('Slipmat')
 if (process.platform === 'linux') {
-  app.setDesktopName('dev.miguelrincon.Tonearm.desktop')
+  app.setDesktopName('dev.miguelrincon.Slipmat.desktop')
 }
 
 // Chromium publishes its OWN MPRIS player as soon as a page plays media, and
-// grabs the hardware media keys with it. Tonearm exports MPRIS itself (see
-// src/mpris.rs), so leaving these on gives the shell two identical "Tonearm"
+// grabs the hardware media keys with it. Slipmat exports MPRIS itself (see
+// src/mpris.rs), so leaving these on gives the shell two identical "Slipmat"
 // players — the visible symptom — and lets an invisible Chromium win the race
 // for Play/Pause on the keyboard.
 //
@@ -357,7 +357,7 @@ function probeForMusicKit() {
     let ready = false
     try {
       ready = await win.webContents.executeJavaScript(
-        'window.__tonearmReady ? window.__tonearmReady() : false',
+        'window.__slipmatReady ? window.__slipmatReady() : false',
       )
     } catch (err) {
       log('probe failed:', err && err.message)
@@ -366,7 +366,7 @@ function probeForMusicKit() {
     if (ready) {
       wired = true
       clearInterval(probeTimer)
-      win.webContents.send('tonearm:wire')
+      win.webContents.send('slipmat:wire')
       // The developer token can appear slightly after MusicKit, so nudge a few
       // times. `tokenTimer` is module-level and cleared at the top of this
       // function — a `const` here shadowed it, so the nudger was unstoppable
@@ -376,7 +376,7 @@ function probeForMusicKit() {
         if (++nudges > TOKEN_NUDGES || !win || win.isDestroyed()) {
           return clearInterval(tokenTimer)
         }
-        win.webContents.send('tonearm:command', { cmd: 'refreshTokens' })
+        win.webContents.send('slipmat:command', { cmd: 'refreshTokens' })
       }, 1000)
     }
   }, PROBE_INTERVAL_MS)
@@ -390,7 +390,7 @@ function probeForMusicKit() {
 ///
 /// `music.unauthorize()` was the whole of sign-out, and it is a MusicKit call —
 /// it clears the Music User Token and nothing else. The login itself is an
-/// ordinary browser session in the `persist:tonearm` partition, so it survived,
+/// ordinary browser session in the `persist:slipmat` partition, so it survived,
 /// and signing back in silently reused it. Measured after a sign-out and a
 /// sign-in: a `.idmsa.apple.com` cookie two days older than the others was
 /// still there, i.e. the same Apple identity was being re-presented. A user who
@@ -403,7 +403,7 @@ function probeForMusicKit() {
 async function signOut() {
   if (win && !win.isDestroyed()) {
     try {
-      win.webContents.send('tonearm:command', { cmd: 'unauthorize' })
+      win.webContents.send('slipmat:command', { cmd: 'unauthorize' })
     } catch (err) {
       log('unauthorize could not be delivered:', err && err.message)
     }
@@ -487,13 +487,13 @@ function dispatch(msg) {
   if (TRACE) {
     log('dispatch', msg.cmd, 'visible=', win.isVisible(), 'crashed=', win.webContents.isCrashed())
   }
-  win.webContents.send('tonearm:command', msg)
+  win.webContents.send('slipmat:command', msg)
 }
 
 function drainPending() {
   const queued = pending
   pending = []
-  for (const msg of queued) win.webContents.send('tonearm:command', msg)
+  for (const msg of queued) win.webContents.send('slipmat:command', msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -518,7 +518,7 @@ app.whenReady().then(async () => {
   // The renderer talks back through the same channel name in both directions.
   const { ipcMain } = require('electron')
 
-  ipcMain.on('tonearm:event', (_e, ev) => {
+  ipcMain.on('slipmat:event', (_e, ev) => {
     if (ev && ev.event === 'hook-ready') {
       hookReady = true
       drainPending()

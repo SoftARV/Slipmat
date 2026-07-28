@@ -182,7 +182,7 @@ pub fn overridden(
 /// watch where the count stops. A few dozen means recycling; 500 means every
 /// row is real and something upstream is asking the view for its full height.
 ///
-/// `RUST_LOG=tonearm=trace` to see it.
+/// `RUST_LOG=slipmat=trace` to see it.
 pub fn count_widget(kind: &'static str) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     // One counter per kind, kept in a small table rather than a static per

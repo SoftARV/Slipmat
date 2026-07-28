@@ -10,7 +10,7 @@
 /packaging/aur/*/.SRCINFO
 # The bare clone a -git PKGBUILD's source=('git+…') leaves behind. Named after
 # the package rather than living under src/, so the rules above miss it.
-/packaging/aur/*/tonearm/
+/packaging/aur/*/slipmat/
 
 # Flatpak build output
 build-dir/
@@ -19,4 +19,4 @@ flatpak-repo/
 
 # fetched on demand by packaging/flatpak/generate-sources.sh
 packaging/flatpak/.flatpak-cargo-generator.py
-Tonearm.flatpak
+Slipmat.flatpak

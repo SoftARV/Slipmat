@@ -642,7 +642,7 @@ impl Component for AppModel {
 
     view! {
         adw::ApplicationWindow {
-            set_title: Some("Tonearm"),
+            set_title: Some("Slipmat"),
 
             // Closing a music player mid-song should not stop the music.
             // Always `Stop` — the reducer decides whether this is a hide or a
@@ -742,7 +742,7 @@ impl Component for AppModel {
                                     add_top_bar = &adw::HeaderBar {
                                         #[wrap(Some)]
                                         set_title_widget = &adw::WindowTitle {
-                                            set_title: "Tonearm",
+                                            set_title: "Slipmat",
                                             #[watch]
                                             set_subtitle: &model.subtitle(),
                                         },
@@ -1055,7 +1055,7 @@ impl Component for AppModel {
                             #[local_ref]
                             set_content = nav_view -> adw::NavigationView {
                                 add = &adw::NavigationPage {
-                                    set_title: "Tonearm",
+                                    set_title: "Slipmat",
                                     // The root page. Albums and artists push on
                                     // top of it; nothing ever pops it.
                                     set_tag: Some("results"),
@@ -1549,7 +1549,7 @@ impl Component for AppModel {
             let section = gtk::gio::Menu::new();
             section.append(Some("_Preferences"), Some("win.preferences"));
             section.append(Some("_Keyboard Shortcuts"), Some("win.shortcuts"));
-            section.append(Some("_About Tonearm"), Some("win.about"));
+            section.append(Some("_About Slipmat"), Some("win.about"));
             primary_menu.append_section(None, &section);
 
             // Its own section: signing out is an account action, not app
@@ -2554,7 +2554,7 @@ impl AppModel {
                 // is unaffected either way.
                 Err(err) => tracing::warn!(
                     %err,
-                    "background portal refused; Quick Settings will not list Tonearm \
+                    "background portal refused; Quick Settings will not list Slipmat \
                      (expected when not launched from its .desktop entry)"
                 ),
             },

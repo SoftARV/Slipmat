@@ -1,5 +1,5 @@
 [package]
-name = "tonearm"
+name = "slipmat"
 version = "0.3.0-dev"
 edition = "2024"
 description = "A native GNOME client for Apple Music"

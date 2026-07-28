@@ -1,19 +1,19 @@
-# Tonearm — build and install to a personal (per-user) prefix.
+# Slipmat — build and install to a personal (per-user) prefix.
 #
 # No sudo: this is a one-user, one-machine app (see CLAUDE.md), so everything
 # lands under ~/.local, which is already on PATH and XDG_DATA_DIRS. Override
 # PREFIX for a system install (make PREFIX=/usr/local install, with sudo).
 #
-# Unlike its siblings, Tonearm installs a *second* artefact: the Electron
+# Unlike its siblings, Slipmat installs a *second* artefact: the Electron
 # sidecar that owns DRM playback. It is ~200 MB of Chromium and is fetched by
-# npm, never committed. The binary finds it via TONEARM_SIDECAR, else
-# $(DATADIR)/tonearm/sidecar, else ./sidecar for a dev tree.
+# npm, never committed. The binary finds it via SLIPMAT_SIDECAR, else
+# $(DATADIR)/slipmat/sidecar, else ./sidecar for a dev tree.
 
 PREFIX  ?= $(HOME)/.local
 BINDIR   = $(PREFIX)/bin
 DATADIR  = $(PREFIX)/share
-APPID    = dev.miguelrincon.Tonearm
-SIDECAR  = $(DATADIR)/tonearm/sidecar
+APPID    = dev.miguelrincon.Slipmat
+SIDECAR  = $(DATADIR)/slipmat/sidecar
 
 ICON_SIZES = 16 32 48 64 128 256 512
 
@@ -56,7 +56,7 @@ sidecar-run: sidecar
 	cd sidecar && npm run debug
 
 # Watch the audio stream across a track boundary. Run it in one terminal and
-# `RUST_LOG=tonearm=info cargo run` in another — the log says whether Rust
+# `RUST_LOG=slipmat=info cargo run` in another — the log says whether Rust
 # drove the transition, this says whether the decoder stopped.
 gapless:
 	./scripts/gapless-check.sh
@@ -71,15 +71,15 @@ FLATPAK_BUILDER := $(shell command -v flatpak-builder >/dev/null 2>&1 \
 
 flatpak:
 	$(FLATPAK_BUILDER) --force-clean --user --install \
-		--repo=flatpak-repo build-dir packaging/flatpak/dev.miguelrincon.Tonearm.yml
+		--repo=flatpak-repo build-dir packaging/flatpak/dev.miguelrincon.Slipmat.yml
 
 flatpak-bundle: flatpak
-	flatpak build-bundle flatpak-repo Tonearm.flatpak dev.miguelrincon.Tonearm master
-	@echo "Tonearm.flatpak — copy it anywhere and: flatpak install ./Tonearm.flatpak"
+	flatpak build-bundle flatpak-repo Slipmat.flatpak dev.miguelrincon.Slipmat master
+	@echo "Slipmat.flatpak — copy it anywhere and: flatpak install ./Slipmat.flatpak"
 
 install: build install-sidecar dev-install
-	install -Dm755 target/release/tonearm $(BINDIR)/tonearm
-	@echo "Installed to $(PREFIX). Launch 'Tonearm' from the app grid, or run 'tonearm'."
+	install -Dm755 target/release/slipmat $(BINDIR)/slipmat
+	@echo "Installed to $(PREFIX). Launch 'Slipmat' from the app grid, or run 'slipmat'."
 
 install-sidecar: sidecar
 	install -d $(SIDECAR)
@@ -118,8 +118,8 @@ dev-install:
 	-update-desktop-database -q $(DATADIR)/applications
 
 uninstall:
-	rm -f $(BINDIR)/tonearm
-	rm -rf $(DATADIR)/tonearm
+	rm -f $(BINDIR)/slipmat
+	rm -rf $(DATADIR)/slipmat
 	rm -f $(DATADIR)/applications/$(APPID).desktop
 	rm -f $(DATADIR)/icons/hicolor/scalable/apps/$(APPID).svg
 	rm -f $(DATADIR)/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg

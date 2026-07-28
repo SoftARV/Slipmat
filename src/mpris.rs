@@ -3,7 +3,7 @@
 
 //! MPRIS — the v1 headline.
 //!
-//! Exposes `org.mpris.MediaPlayer2.Tonearm` so the GNOME Shell media applet,
+//! Exposes `org.mpris.MediaPlayer2.Slipmat` so the GNOME Shell media applet,
 //! the lock screen and `playerctl` can see and drive playback. Half-working
 //! MPRIS is the most common failure of the Apple Music wrappers; this has to be
 //! bidirectional and correct or it isn't worth shipping.
@@ -41,8 +41,8 @@ use relm4::ComponentSender;
 
 use crate::app::{AppModel, AppMsg};
 
-/// Bus name suffix — the full name becomes `org.mpris.MediaPlayer2.Tonearm`.
-const BUS_SUFFIX: &str = "Tonearm";
+/// Bus name suffix — the full name becomes `org.mpris.MediaPlayer2.Slipmat`.
+const BUS_SUFFIX: &str = "Slipmat";
 
 /// Everything MPRIS exports, flattened so it can be diffed cheaply.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -138,7 +138,7 @@ fn track_id(id: Option<&str>) -> Option<TrackId> {
     if safe.is_empty() {
         return None;
     }
-    TrackId::try_from(format!("/dev/miguelrincon/Tonearm/track/{safe}")).ok()
+    TrackId::try_from(format!("/dev/miguelrincon/Slipmat/track/{safe}")).ok()
 }
 
 /// Handle to the exported player. Cheap to clone and hold in the model.
@@ -172,7 +172,7 @@ impl Mpris {
         let slot = this.player.clone();
         relm4::spawn_local(async move {
             let player = match Player::builder(BUS_SUFFIX)
-                .identity("Tonearm")
+                .identity("Slipmat")
                 .desktop_entry(crate::APP_ID)
                 .can_play(true)
                 .can_pause(true)
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn track_ids_are_valid_object_paths() {
         let id = track_id(Some("1049009209")).expect("numeric id");
-        assert_eq!(id.as_str(), "/dev/miguelrincon/Tonearm/track/1049009209");
+        assert_eq!(id.as_str(), "/dev/miguelrincon/Slipmat/track/1049009209");
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
         // path, and an invalid one makes the whole metadata dict fail to
         // serialise — which takes the Shell applet's display down with it.
         let id = track_id(Some("i.AbCd-123")).expect("sanitised id");
-        assert_eq!(id.as_str(), "/dev/miguelrincon/Tonearm/track/i_AbCd_123");
+        assert_eq!(id.as_str(), "/dev/miguelrincon/Slipmat/track/i_AbCd_123");
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn art_url_is_a_file_uri() {
         let state = MprisState {
-            art_path: Some(PathBuf::from("/home/x/.cache/tonearm/artwork/ab-512.jpg")),
+            art_path: Some(PathBuf::from("/home/x/.cache/slipmat/artwork/ab-512.jpg")),
             ..Default::default()
         };
         let art = state.metadata().art_url().expect("art url");

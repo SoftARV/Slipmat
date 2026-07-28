@@ -4,14 +4,15 @@ Project instructions for Claude Code. Read this fully before writing code.
 
 ## What this is
 
-**Tonearm** — a small, native GNOME desktop app to play **Apple Music** on one
+**Slipmat** — a small, native GNOME desktop app to play **Apple Music** on one
 personal Linux laptop. Not a product, not multi-user, not cross-platform. One
 user, one machine.
 
 It is the sibling of **Dockyard** (a native GNOME Docker manager) and **Pitwall**
 (a native GNOME GitHub Actions monitor), and shares their stack, architecture and
-taste. The name is the arm that tracks the record groove: the precision part that
-sits between the catalogue and the sound.
+taste. The name is the felt disc between the platter and the record: the layer
+that sits between the mechanism and the music, and lets the record turn on its
+own terms.
 
 The app should be indistinguishable from a first-party GNOME application. If a
 design decision would make it look like an Electron app or a generic Qt tool, it
@@ -19,7 +20,7 @@ is the wrong decision.
 
 **Why this project exists.** Every Apple Music option on Linux — Cider, Sidra,
 the various wrappers — is `music.apple.com` in a costume. You get a web page's
-scroll behaviour, a web page's search field, and none of GNOME's taste. Tonearm
+scroll behaviour, a web page's search field, and none of GNOME's taste. Slipmat
 is the first one where the *interface is actually native*; the web engine is
 present but never rendered.
 
@@ -70,24 +71,24 @@ no Widevine binary anywhere in the 327 MB Electron dist; verify with
 find sidecar/node_modules -iname "*widevine*"   # finds nothing
 ```
 
-It lands at `~/.config/Tonearm/WidevineCdm/` on first run, beside the copies
+It lands at `~/.config/Slipmat/WidevineCdm/` on first run, beside the copies
 Chrome and Chromium fetched for themselves.
 
 This matters for **packaging**, and this entry used to say "bundles", which
-pointed the wrong way. Nothing Tonearm would ship contains proprietary Google
+pointed the wrong way. Nothing Slipmat would ship contains proprietary Google
 code: Electron is MIT, our code is GPL-3, and the CDM arrives on the user's own
 machine through their own component updater into their own config directory. So
 redistribution is not the obstacle it looked like — a Flatpak or an AUR package
 would carry Electron and nothing more, and the CDM download needs only network
 access and a writable, persistent config directory.
 
-**And that is now measured rather than reasoned.** Tonearm was run inside a real
+**And that is now measured rather than reasoned.** Slipmat was run inside a real
 `org.gnome.Platform//49` sandbox with `--nofilesystem=home`, a private `HOME`
 carrying the Apple session but **no CDM**, and playback worked:
 
 ```text
 widevine ready: {"status":"updated","version":"4.10.3050.0"}
-…/.config/Tonearm/WidevineCdm/4.10.3050.0/_platform_specific/linux_x64/libwidevinecdm.so
+…/.config/Slipmat/WidevineCdm/4.10.3050.0/_platform_specific/linux_x64/libwidevinecdm.so
 ```
 
 So the component updater reaches out over `--share=network`, writes into the
@@ -106,7 +107,7 @@ Three things that experiment settled, and that a manifest has to carry:
 - **`--device=dri`.** Without it GTK falls back to software rendering — `egl:
   failed to create dri2 screen` — and the grids scroll badly enough to read as
   an app problem rather than a packaging one.
-- **`--own-name=dev.miguelrincon.Tonearm`** and the MPRIS name. Flatpak's bus
+- **`--own-name=dev.miguelrincon.Slipmat`** and the MPRIS name. Flatpak's bus
   proxy only lets an app own names matching its ID, and `GtkApplication` exits
   0 without a window if it cannot register.
 
@@ -151,17 +152,17 @@ Two Linux facts that follow, and that you must not design around:
 
 - **No VMP signing needed.** Linux Widevine reports `PLATFORM_UNVERIFIED`; the
   castLabs EVS account is a macOS/Windows concern. Nothing to sign.
-- **No persistent licences.** Therefore **Tonearm requires a network connection
+- **No persistent licences.** Therefore **Slipmat requires a network connection
   to play, always. Offline and downloaded playback are impossible** — not a v1
   cut, a permanent property of the platform. Never add a "download" affordance.
 
 ## The axis that differs from Pitwall
 
-Pitwall polls a **remote, rate-limited HTTP API**. Tonearm supervises a
+Pitwall polls a **remote, rate-limited HTTP API**. Slipmat supervises a
 **long-lived local child process** and mirrors its state. Almost every rule below
 follows from that one difference:
 
-| Concern       | Pitwall (remote GitHub)          | Tonearm (local sidecar)                        |
+| Concern       | Pitwall (remote GitHub)          | Slipmat (local sidecar)                        |
 | ------------- | -------------------------------- | ---------------------------------------------- |
 | Transport     | HTTPS, latency, rate limits      | NDJSON over the child's stdin/stdout, sub-ms   |
 | State         | We own it; poll refreshes it     | **The sidecar owns playback state; we mirror** |
@@ -203,7 +204,7 @@ the state belongs in a model and the change belongs in an `update()`.
 
 ### 1. The line we do not cross
 
-Tonearm plays through **Apple's own MusicKit player**, using **Google's official
+Slipmat plays through **Apple's own MusicKit player**, using **Google's official
 CDM**, inside a licensed session that requires an active Apple Music
 subscription. It is a native front-end and a remote control for a player that
 Apple ships.
@@ -257,7 +258,7 @@ it **tiny and defensive**:
 - Feature-detect every property (`MusicKit?.getInstance?.()`), never assume.
 - Poll for readiness with a timeout, then **fail loudly** — a
   `sidecar/hook-failed` event that becomes an `adw::Toast` naming the fix
-  ("Apple Music changed; Tonearm needs an update"). Never degrade silently into
+  ("Apple Music changed; Slipmat needs an update"). Never degrade silently into
   a dead player with a spinning UI.
 - Do not scrape the DOM. Only `MusicKit.getInstance()` and its documented events.
   DOM scraping is what makes wrappers break monthly.
@@ -270,7 +271,7 @@ internally.
 
 ### 6. The sidecar is supervised, not fired-and-forgotten
 
-If the child exits, Tonearm restarts it with backoff, replays the queue and
+If the child exits, Slipmat restarts it with backoff, replays the queue and
 position, and toasts once. A dead sidecar must never present as a healthy,
 silent player. This is the local analogue of Pitwall's "a present-but-dead token
 must not render an empty, healthy-looking list".
@@ -308,7 +309,7 @@ validate". Likewise, protocol types live only in `player/protocol.rs`. The
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  Tonearm — Rust · relm4 · libadwaita             │  ← 100% of what the user sees
+│  Slipmat — Rust · relm4 · libadwaita             │  ← 100% of what the user sees
 │  library · search · queue · Now Playing          │
 │  MPRIS · notifications · media keys · artwork    │
 │  HTTPS ─────────────────► api.music.apple.com    │
@@ -439,9 +440,9 @@ Three files, three homes, and the distinction is not pedantry:
 
 | What | Where | Why |
 | --- | --- | --- |
-| Preferences | `~/.config/tonearm/settings.ini` | somebody chose them |
-| Unplayable ids | `~/.cache/tonearm/` | rederivable — Apple will tell us again |
-| The last queue | `$XDG_STATE_HOME/tonearm/session.json` | neither chosen nor rederivable |
+| Preferences | `~/.config/slipmat/settings.ini` | somebody chose them |
+| Unplayable ids | `~/.cache/slipmat/` | rederivable — Apple will tell us again |
+| The last queue | `$XDG_STATE_HOME/slipmat/session.json` | neither chosen nor rederivable |
 
 Two rules the restore follows:
 
@@ -509,22 +510,22 @@ the specific traps; do not re-introduce them.
   it was verified, so treat them as load-bearing rather than leftovers — pulling
   them may reintroduce a frozen renderer. `concealed` (mapped, 1x1,
   transparent) remains as an escape hatch for a compositor that needs it.
-- **The sidecar must not look like a second app.** `app.setName('Tonearm')` plus
-  `app.setDesktopName('dev.miguelrincon.Tonearm.desktop')`, or the shell invents
-  a "tonearm-sidecar" entry with a generic icon.
+- **The sidecar must not look like a second app.** `app.setName('Slipmat')` plus
+  `app.setDesktopName('dev.miguelrincon.Slipmat.desktop')`, or the shell invents
+  a "slipmat-sidecar" entry with a generic icon.
 - **The sidecar must not publish its own MPRIS player.** Chromium registers one
   the moment a page plays media, and grabs the hardware media keys with it —
-  giving two identical "Tonearm" entries in the shell and letting an invisible
+  giving two identical "Slipmat" entries in the shell and letting an invisible
   browser win the race for Play/Pause. Disabled via
   `--disable-features=MediaSessionService,HardwareMediaKeyHandling`. Neither
-  affects decoding. Tonearm owns MPRIS; the sidecar owns audio.
+  affects decoding. Slipmat owns MPRIS; the sidecar owns audio.
 - **Diagnose by layer, in order:** `cmd-queued` → never dispatched.
   No `cmd-recv` → renderer never ran it. `cmd-recv` but no `cmd-done` → the
   command is hanging. `cmd-done` with a full queue but a non-playing state →
   playback is blocked, not failing.
 - **`unknown-command` means you are running the *installed* sidecar, not the
   repo's.** `locate()` prefers `$XDG_DATA_HOME` over the build tree, so once
-  anything has been installed to `~/.local/share/tonearm/sidecar`, a debug build
+  anything has been installed to `~/.local/share/slipmat/sidecar`, a debug build
   runs **fresh Rust against stale JavaScript** — and says nothing about it.
 
   It fails in the most misleading way available: the command goes out, the
@@ -536,24 +537,24 @@ the specific traps; do not re-introduce them.
   Any change under `sidecar/` needs one of:
 
   ```bash
-  TONEARM_SIDECAR=$PWD/sidecar cargo run   # what the repo has, always
+  SLIPMAT_SIDECAR=$PWD/sidecar cargo run   # what the repo has, always
   make install-sidecar                     # or refresh the installed copy
   ```
 
   The first is the better habit while developing. Check it in one line:
-  `grep -c yourNewCommand ~/.local/share/tonearm/sidecar/preload.js`.
+  `grep -c yourNewCommand ~/.local/share/slipmat/sidecar/preload.js`.
 - **A second instance never announces itself — it just wins.** relm4 apps are
   unique by default, so launching while one is already up hands off to the
   primary and exits **0 with no output**: no window, no log, nothing to
   suggest what happened. Every later run then exercises the *old* binary.
 
   Scanning `/proc` for the executable is not reliable — an instance started as
-  `./target/debug/tonearm` whose binary has since been replaced by a rebuild no
+  `./target/debug/slipmat` whose binary has since been replaced by a rebuild no
   longer matches. Ask the bus, which is never wrong about who holds the name:
 
   ```bash
   busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
-    org.freedesktop.DBus GetConnectionUnixProcessID s dev.miguelrincon.Tonearm
+    org.freedesktop.DBus GetConnectionUnixProcessID s dev.miguelrincon.Slipmat
   ```
 
   Both of these are the same trap wearing two costumes: **old code quietly in
@@ -575,8 +576,8 @@ src/
     chrome.rs        # the menu, its accelerators, and the three dialogs
     row_menu.rs      # the per-row context menu, and what each item sends
     writes.rs        # library writes: the optimistic row change, and taking it back
-  settings.rs        # glib::KeyFile → ~/.config/tonearm/settings.ini. NEVER tokens.
-  session.rs         # what was playing, → $XDG_STATE_HOME/tonearm/session.json
+  settings.rs        # glib::KeyFile → ~/.config/slipmat/settings.ini. NEVER tokens.
+  session.rs         # what was playing, → $XDG_STATE_HOME/slipmat/session.json
   style.rs           # accent colour + the cover behind the player. The only CSS.
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)
@@ -606,8 +607,8 @@ src/
 sidecar/
   package.json  main.js  preload.js    # ~200 lines of JS, total
 data/
-  dev.miguelrincon.Tonearm.desktop
-  icons/hicolor/{scalable,symbolic}/apps/dev.miguelrincon.Tonearm{,-symbolic}.svg
+  dev.miguelrincon.Slipmat.desktop
+  icons/hicolor/{scalable,symbolic}/apps/dev.miguelrincon.Slipmat{,-symbolic}.svg
                        # the PNG sizes are rendered from the SVG by `make install`,
                        # never committed — two copies of an icon always drift
 Makefile             # make install → ~/.local (no sudo); make sidecar; make check
@@ -638,7 +639,7 @@ struct AppModel {
     tokens: Option<Tokens>,            // developer + music user; never persisted (rule 7)
     library: FactoryVecDeque<TrackRow>,
     query: String,
-    mpris: Option<mpris_server::Server<TonearmPlayer>>,
+    mpris: Option<mpris_server::Server<SlipmatPlayer>>,
     settings: Settings,
     toast_overlay: adw::ToastOverlay,
 }
@@ -718,7 +719,7 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   control by counting what reaches the sidecar —
 
   ```bash
-  RUST_LOG=tonearm=info cargo run 2>&1 | grep -c "dispatch setVolume"
+  RUST_LOG=slipmat=info cargo run 2>&1 | grep -c "dispatch setVolume"
   ```
 
   One command per change, then silence. Anything that keeps climbing is this
@@ -760,7 +761,7 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
 
   ```bash
   kill -ABRT $(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
-    org.freedesktop.DBus GetConnectionUnixProcessID s dev.miguelrincon.Tonearm \
+    org.freedesktop.DBus GetConnectionUnixProcessID s dev.miguelrincon.Slipmat \
     | awk '{print $2}')
   coredumpctl debug --debugger=gdb --debugger-arguments="-batch -ex 'bt 30'"
   ```
@@ -801,7 +802,7 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   `adw::ToastOverlay`. That's where the native feel comes from. No custom CSS
   unless there is no libadwaita widget for the job — say why before adding any.
 - **First run**: a **modal that cannot be dismissed**, wearing the app's own
-  icon, saying what Tonearm is, that it needs an active subscription, and —
+  icon, saying what Slipmat is, that it needs an active subscription, and —
   before the button, not after — that Apple's own sign-in page opens in a
   separate window.
 
@@ -831,14 +832,14 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
 
 ## MPRIS (the v1 bar)
 
-`org.mpris.MediaPlayer2.Tonearm`, via `mpris-server` 0.10.
+`org.mpris.MediaPlayer2.Slipmat`, via `mpris-server` 0.10.
 
 - Metadata: `mpris:trackid`, `mpris:length`, `mpris:artUrl`, `xesam:title`,
   `xesam:album`, `xesam:artist`, `xesam:trackNumber`.
 - `mpris:artUrl` **must be a `file://` path** — the Shell will not fetch an
   `https://` URL reliably. Apple serves artwork as a *template* URL containing
   `{w}x{h}bb.jpg`; substitute the size, fetch, and cache under
-  `~/.cache/tonearm/artwork/` keyed by catalog id. That is what `artwork.rs` is
+  `~/.cache/slipmat/artwork/` keyed by catalog id. That is what `artwork.rs` is
   for.
 - Bidirectional: `PlayPause` / `Next` / `Previous` / `Seek` / `SetPosition` /
   `Volume` from the Shell must reach the sidecar, and every sidecar event must
@@ -857,7 +858,7 @@ Playback engine first. One vertical slice, one PR each.
 - ✅ **M2 — Transport.** The Now Playing bar, sidecar-owned queue, supervision.
   **Gapless verified 2026-07-26** — see below; the architecture's central claim
   is no longer taken on trust.
-- ✅ **M3 — MPRIS.** `org.mpris.MediaPlayer2.Tonearm`, bidirectional, artwork as
+- ✅ **M3 — MPRIS.** `org.mpris.MediaPlayer2.Slipmat`, bidirectional, artwork as
   a `file://` URL. Verified over `busctl`: properties read, and `PlayPause` /
   `Next` from the bus reach the sidecar.
 - ✅ **M4 — Queue view.** MusicKit's queue as an `adw::OverlaySplitView`
@@ -927,7 +928,7 @@ opinion.** `RelmListItem::setup` runs once per *widget*, not once per item, so
 `components::count_widget` counts them and logs at `trace`:
 
 ```bash
-RUST_LOG=tonearm=trace cargo run 2>&1 | grep "list widget built"
+RUST_LOG=slipmat=trace cargo run 2>&1 | grep "list widget built"
 ```
 
 Scroll a 500-track library and watch where the count stops. A few dozen means
@@ -973,7 +974,7 @@ matches. Anything that changes the underlying data sets the fingerprint to
 `None`. The first build of a section still costs its ~500ms, once, behind the
 spinner that is already showing.
 
-`RUST_LOG=tonearm=debug` reports `rebuild what=… ms=…` and `section switch`, so
+`RUST_LOG=slipmat=debug` reports `rebuild what=… ms=…` and `section switch`, so
 this stays measurable rather than remembered.
 
 A pushed page is not virtualised on purpose: its list sits in a `Box` under the
@@ -996,7 +997,7 @@ its full height. An album is a dozen tracks. That is the right trade.
 
 ```bash
 cargo run                                    # dev (expects ./sidecar/node_modules)
-RUST_LOG=tonearm=debug cargo run             # traces the NDJSON protocol both ways
+RUST_LOG=slipmat=debug cargo run             # traces the NDJSON protocol both ways
 make sidecar                                 # npm install castLabs Electron (~200 MB)
                                              # — `make install` already does this
 make sidecar-run                             # sidecar alone, window VISIBLE — isolates DRM bugs
@@ -1047,7 +1048,7 @@ Two things that run cost, both now fixed, both worth not re-learning:
 - **The two logs are on different clocks.** `tracing` prints UTC, the script
   printed local time. A `remove` two hours adrift looked like a gap at a
   boundary and was in fact a screenshot shutter. The script now prints the
-  offset, and only reports Tonearm's *own* stream — any notification sound
+  offset, and only reports Slipmat's *own* stream — any notification sound
   opens and closes a stream of its own, and reporting those made the whole
   instrument untrustworthy.
 - **`left_ms` was sampled at the wrong moment.** Read live when
@@ -1068,7 +1069,7 @@ they fail for different reasons:
 
 ```bash
 make gapless                                  # terminal 1: watch the audio stream
-RUST_LOG=tonearm=info cargo run               # terminal 2: watch the transitions
+RUST_LOG=slipmat=info cargo run               # terminal 2: watch the transitions
 ```
 
 Queue an album with a **true** gapless transition — a live record, a DJ mix,
@@ -1095,12 +1096,12 @@ Debugging, in order — always isolate the layer first:
    running. Rule these out before doubting the change — they cost more time
    than anything else on this list.
 1. `make sidecar-run` — if a track won't play with the window visible, it's DRM
-   or Apple, not Rust. (Uses `TONEARM_SHOW_SIDECAR=1`; `--debug` never reached
+   or Apple, not Rust. (Uses `SLIPMAT_SHOW_SIDECAR=1`; `--debug` never reached
    the app, Electron eats it as Node's deprecated flag.)
-2. `RUST_LOG=tonearm=debug cargo run` — watch the NDJSON both ways.
-3. `playerctl -p Tonearm metadata` / `busctl --user introspect
-   org.mpris.MediaPlayer2.Tonearm /org/mpris/MediaPlayer2` — the MPRIS surface.
-4. `pavucontrol` — confirm the stream exists and is named Tonearm.
+2. `RUST_LOG=slipmat=debug cargo run` — watch the NDJSON both ways.
+3. `playerctl -p Slipmat metadata` / `busctl --user introspect
+   org.mpris.MediaPlayer2.Slipmat /org/mpris/MediaPlayer2` — the MPRIS surface.
+4. `pavucontrol` — confirm the stream exists and is named Slipmat.
 
 ## Conventions
 
@@ -1119,9 +1120,9 @@ Debugging, in order — always isolate the layer first:
 - **Licence: GPL-3.0-or-later.** Full text in `COPYING`; declared in
   `Cargo.toml`. Every source file carries the two-line SPDX header
   (`SPDX-FileCopyrightText` + `SPDX-License-Identifier: GPL-3.0-or-later`).
-- App ID: `dev.miguelrincon.Tonearm`. It must match the `.desktop` file name, the
-  GResource prefix (`/dev/miguelrincon/Tonearm/`), `RelmApp::new()`, and the
-  MPRIS bus name suffix. The app is called **Tonearm** in the window title and
+- App ID: `dev.miguelrincon.Slipmat`. It must match the `.desktop` file name, the
+  GResource prefix (`/dev/miguelrincon/Slipmat/`), `RelmApp::new()`, and the
+  MPRIS bus name suffix. The app is called **Slipmat** in the window title and
   `.desktop` `Name=`.
 - Versioning: SemVer in `Cargo.toml`; `main` carries a `-dev` pre-release.
   Releasing is: bump to the release version, tag `vX.Y.Z` on the merge commit,

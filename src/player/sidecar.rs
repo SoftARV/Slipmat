@@ -4,7 +4,7 @@
 //! Locate, spawn and supervise the Electron child.
 //!
 //! This is the piece Dockyard and Pitwall never needed. Both talked to
-//! something that already existed (a socket, an API); Tonearm *owns a process*.
+//! something that already existed (a socket, an API); Slipmat *owns a process*.
 //! So the module's job is lifetime: start it, read its stdout forever, notice
 //! when it dies, and let `app.rs` restart it (CLAUDE.md rule 6).
 //!
@@ -44,7 +44,7 @@ pub enum Incoming {
     Died(String),
 }
 
-/// The most commands of one kind Tonearm will send in a second.
+/// The most commands of one kind Slipmat will send in a second.
 ///
 /// A ceiling, not a budget, and deliberately generous.
 ///
@@ -148,7 +148,7 @@ impl Handle {
 pub fn locate() -> Result<PathBuf> {
     let mut tried = Vec::new();
 
-    if let Ok(dir) = std::env::var("TONEARM_SIDECAR") {
+    if let Ok(dir) = std::env::var("SLIPMAT_SIDECAR") {
         let p = PathBuf::from(dir);
         if p.join("main.js").is_file() {
             return Ok(p);
@@ -159,9 +159,9 @@ pub fn locate() -> Result<PathBuf> {
     // Per-user first, then system-wide. `XDG_DATA_DIRS` is what makes a
     // packaged install work at all: `make install` puts the sidecar under
     // `~/.local/share`, but a distribution package puts it in
-    // `/usr/share/tonearm/sidecar`, which nothing here used to look at.
+    // `/usr/share/slipmat/sidecar`, which nothing here used to look at.
     for data in dirs_data_home().into_iter().chain(dirs_data_dirs()) {
-        let p = data.join("tonearm/sidecar");
+        let p = data.join("slipmat/sidecar");
         if p.join("main.js").is_file() {
             return Ok(p);
         }
@@ -423,11 +423,11 @@ mod tests {
         // sends you to a search engine; the command to run does not.
         // (Deliberately not testing `locate()` via env vars — `set_var` is
         // process-global and tests run in parallel threads.)
-        let err = electron_binary(Path::new("/nonexistent/tonearm")).unwrap_err();
+        let err = electron_binary(Path::new("/nonexistent/slipmat")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("make sidecar"), "unhelpful error: {msg}");
         assert!(
-            msg.contains("/nonexistent/tonearm"),
+            msg.contains("/nonexistent/slipmat"),
             "should say where it looked: {msg}"
         );
     }
@@ -440,7 +440,7 @@ mod data_dirs_tests {
     #[test]
     fn the_system_data_dirs_default_to_what_xdg_mandates() {
         // A packaged install lands in one of these. If this ever returns
-        // nothing, `/usr/share/tonearm/sidecar` becomes unreachable and every
+        // nothing, `/usr/share/slipmat/sidecar` becomes unreachable and every
         // distribution package silently stops working.
         //
         // Read from the environment, so this asserts on the shape rather than

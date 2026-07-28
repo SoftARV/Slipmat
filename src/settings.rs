@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Miguel Rincon
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Persistent **preferences**, in `~/.config/tonearm/settings.ini`.
+//! Persistent **preferences**, in `~/.config/slipmat/settings.ini`.
 //!
 //! Preferences only. Tokens live in the keyring and are re-harvested every
 //! launch (CLAUDE.md rule 7) — nothing secret goes in this file, ever. If you
@@ -14,7 +14,7 @@
 
 use relm4::gtk::glib::{self, KeyFile, KeyFileFlags};
 
-const GROUP: &str = "Tonearm";
+const GROUP: &str = "Slipmat";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
@@ -146,7 +146,7 @@ impl Default for Settings {
 }
 
 fn path() -> Option<std::path::PathBuf> {
-    let dir = glib::user_config_dir().join("tonearm");
+    let dir = glib::user_config_dir().join("slipmat");
     Some(dir.join("settings.ini"))
 }
 

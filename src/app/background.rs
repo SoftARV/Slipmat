@@ -25,7 +25,7 @@ impl AppModel {
     ///
     /// The asymmetry is deliberate and is the decision recorded in #32. What
     /// makes it honest rather than surprising is that a hidden-but-playing
-    /// Tonearm is *findable*: the Shell's media applet shows it, and the
+    /// Slipmat is *findable*: the Shell's media applet shows it, and the
     /// Background portal below lists it under Quick Settings where it can be
     /// quit.
     pub(super) fn close_window(
@@ -61,7 +61,7 @@ impl AppModel {
     ///
     /// Best-effort on purpose. A refusal, a missing portal, or a headless
     /// session must not stop playback — the app is already in the background by
-    /// the time this runs. It only decides whether GNOME shows Tonearm under
+    /// the time this runs. It only decides whether GNOME shows Slipmat under
     /// Quick Settings → Background Apps, so a failure costs discoverability, not
     /// function.
     fn request_background(&self, sender: &ComponentSender<Self>) {
@@ -72,11 +72,11 @@ impl AppModel {
             // identify — measured: "EnableAutostart call failed: Autostart not
             // supported (no AppId detected)", and that failure sank the whole
             // request. Omitted, the portal defaults to no autostart, which is
-            // what we wanted: Tonearm needs a network and a live session, and
+            // what we wanted: Slipmat needs a network and a live session, and
             // an app that launches itself to play nothing is the kind of
             // background process people resent.
             let result = ashpd::desktop::background::Background::request()
-                .reason("Tonearm keeps playing while its window is closed")
+                .reason("Slipmat keeps playing while its window is closed")
                 .send()
                 .await;
             CommandMsg::BackgroundPortal(match result {

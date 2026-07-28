@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>Slipmat symbolic</title>
+  <path d="M6 5a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 3a1 1 0 1 1 0 2 1 1 0 0 1 0-2z" fill="#000000"></path>
+  <path d="M13 4v8" stroke="#000000" stroke-width="2" fill="none"></path>
+  <circle cx="13" cy="4" r="2" fill="#000000"></circle>
+</svg>

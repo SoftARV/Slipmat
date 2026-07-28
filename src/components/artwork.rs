@@ -22,13 +22,13 @@ use crate::music::types::Artwork;
 /// cache simple; the Shell scales it down and nobody notices.
 pub const ART_SIZE: u32 = 512;
 
-/// `$XDG_CACHE_HOME/tonearm/artwork`, else `~/.cache/tonearm/artwork`.
+/// `$XDG_CACHE_HOME/slipmat/artwork`, else `~/.cache/slipmat/artwork`.
 pub fn cache_dir() -> Option<PathBuf> {
     let base = match std::env::var("XDG_CACHE_HOME") {
         Ok(x) if !x.is_empty() => PathBuf::from(x),
         _ => PathBuf::from(std::env::var("HOME").ok()?).join(".cache"),
     };
-    Some(base.join("tonearm/artwork"))
+    Some(base.join("slipmat/artwork"))
 }
 
 fn cache_path(art: &Artwork, size: u32) -> Option<PathBuf> {
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn write_atomically_creates_the_directory_and_leaves_no_temp() {
-        let dir = std::env::temp_dir().join(format!("tonearm-art-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("slipmat-art-test-{}", std::process::id()));
         let target = dir.join("nested/cover.jpg");
         write_atomically(&target, b"not really a jpeg").unwrap();
 
