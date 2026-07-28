@@ -105,6 +105,13 @@ fetching itself into the sandbox, a real library over the API, and a track
 decrypting and playing. That is the first time any of it has run outside Arch,
 and it is what the Flatpak exists for.
 
+The desktop integration came with it, which is the half that could have failed
+quietly: the icon appears in the app grid rather than needing `flatpak run`, and
+**the shell's media controls appear and work** — so `--own-name` and the bus
+proxy do what the manifest claims on a foreign system. Playback working while
+the shell showed nothing would have been the plausible failure there, and it did
+not happen.
+
 Two things that run also settled, and neither could have been found here:
 
 - **A bundle needs `--runtime-repo`.** It carries the app and never the runtime,
@@ -112,7 +119,10 @@ Two things that run also settled, and neither could have been found here:
   org.gnome.Platform/x86_64/49 which was not found"*. Every machine that has
   ever *built* this already had the runtime, because building needs the SDK
   beside it — so the one artefact aimed at systems that cannot build was the one
-  thing never installed on one.
+  thing never installed on one. Fixed, and then **re-tested on a freshly built
+  VM** rather than the one that had already been repaired by hand: the install
+  adds Flathub and pulls GNOME 49 on its own. Re-testing on the repaired machine
+  would have proved nothing, because the runtime was already there.
 - **The app had never been seen in a light theme.** It works, but the drawer's
   backdrop is washed out: the veil is `@window_bg_color` so it adapts, but the
   two numbers behind it were tuned against dark only. Not a design question, a
