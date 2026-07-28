@@ -10,6 +10,11 @@ on:
   # So the packaging can be exercised on demand without waiting for a tag.
   workflow_dispatch:
 
+# Read-only by default. The one job that needs more says so itself, rather
+# than every job in the file carrying the rights to publish a release.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -79,6 +84,12 @@ jobs:
   flatpak:
     name: Flatpak bundle
     runs-on: ubuntu-latest
+    # Creating a release needs this, and the default token does not have it:
+    # the first tag build produced a perfectly good bundle and then failed with
+    # `403 Resource not accessible by integration`. Scoped to this job because
+    # it is the only one that publishes anything.
+    permissions:
+      contents: write
     # Not on pull requests, and not on every merge either. The build fetches a
     # ~1.5GB SDK and 120MB of Electron and takes far longer than the checks —
     # too slow to sit in front of every review, and wasteful on a day when six
