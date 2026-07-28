@@ -35,7 +35,7 @@ page.
 filtering and its own sorting. Click anything and the list you are looking at
 becomes the queue.
 
-**A player worth the name.** Gapless — the thing every wrapper gets wrong — with
+**A player worth the name.** Gapless, with
 a full-size view you can pull up, the queue beside it, and the cover behind it.
 [Measured, not hoped for](#gapless-verified).
 
@@ -92,9 +92,6 @@ Verified 2026-07-26 across four consecutive boundaries of a segued album:
 - The PipeWire stream was **created once and never torn down**. One sink-input
   survived all four boundaries, which means the decoder ran continuously.
 - No audible gap.
-
-You can re-run it: `make gapless` in one terminal, `RUST_LOG=slipmat=info cargo
-run` in another. The procedure is in [CLAUDE.md](CLAUDE.md).
 
 ## How it works, honestly
 
