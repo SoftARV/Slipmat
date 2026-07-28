@@ -1179,3 +1179,31 @@ Debugging, in order — always isolate the layer first:
   is.
 - `sidecar/node_modules` is **never** committed — it is ~200 MB of Chromium,
   fetched by `make sidecar`.
+
+### The README is not a feature list
+
+`## What it does` says **six** things, and that is the whole budget:
+
+1. a native GNOME app, with a small hidden web layer
+2. the library — songs, albums, artists, playlists
+3. a player worth the name, gapless
+4. controls from the shell, the lock screen and the media keys, and playback
+   that survives closing the window
+5. all of Apple Music, searchable
+6. quick, and out of the way
+
+It grew to eight dense paragraphs once — MPRIS, the queue view, and "the GNOME
+furniture" (preferences, shortcuts, About) each had their own — and reading it
+felt like an inventory rather than a reason to install anything. Preferences are
+table stakes; nobody chooses a music player for its About dialog.
+
+**A new feature earns a line only if it changes what the app is for.** Not "it
+is new", not "it was hard" — the test is whether somebody deciding between this
+and the alternatives would want to know. Most things belong in the release notes
+instead, which are written from the merged PRs and where the reasoning already
+is. When something does earn a line, take one out or fold it in; six is a
+ceiling, not a starting point.
+
+Say it the way a user would. **Never "MPRIS"** — that is a bus name, not a
+feature. It is "play, pause and skip from the GNOME top bar, the lock screen, or
+your media keys", because that is the thing they can picture.
