@@ -1065,12 +1065,19 @@ its full height. An album is a dozen tracks. That is the right trade.
 - **Removing a queue track scrolls the list to the top** (#6). Four approaches
   tried and ruled out; the issue records them so they are not retried. Playing
   and jumping are unaffected, and the library list no longer does it.
-- **Nothing stands between a runaway reducer and the session** (#37). The
-  sidecar journals every dispatch, commands are not coalesced, and there is no
-  rate ceiling — so a message loop costs a disk write and a bus round trip per
-  lap. That is why the binding bug above reached the compositor instead of
-  staying an app bug. Rule 6 says a dead sidecar must not look healthy; this is
-  the same argument reversed.
+- **The drawer's backdrop washes out in a light theme** (#77). Found the first time
+  the app was seen outside a dark theme, on the Ubuntu VM. The veil is
+  `@window_bg_color` so it adapts on its own, but the two numbers beside it —
+  the bar's lighter veil, the drawer's 150% sizing — were chosen against dark
+  only. A pair of numbers, not a design question.
+
+**Fixed, and left here because the reasoning is still load-bearing:** a runaway
+reducer used to have nothing between it and the session (#37) — every dispatch
+journalled, no coalescing, no ceiling, so a message loop cost a disk write and a
+bus round trip per lap. That is why the `#[watch]` binding bug above reached the
+compositor instead of staying an app bug. `sidecar.rs` now carries a per-kind
+rate ceiling, deliberately generous: it exists to stop a storm, not to shape
+ordinary traffic.
 
 ## Commands
 
