@@ -9,20 +9,19 @@ Two packages, both built from this tree:
 
 | Directory | Package | Builds from |
 | --- | --- | --- |
-| `slipmat/` | `slipmat` | the `v0.2.0` release tarball |
+| `slipmat/` | `slipmat` | the `v0.3.0` release tarball |
 | `slipmat-git/` | `slipmat-git` | the latest commit on `main` |
 
 They conflict with each other, as the two conventions require.
 
-**The release package cannot be built until there is a release under this
-name.** It is pinned to `v0.2.0`, and that tag predates the rename from
-Tonearm — its tree still builds a binary called `tonearm`, so `package()` fails
-looking for `target/release/slipmat`. The `sha256sum` is wrong too: a GitHub
-archive names its root directory after the repository as it stands *now*, so
-renaming the repository changes the tarball's bytes even though the tag did
-not move. Both are fixed by the next tag, and neither can be fixed before it —
-so `slipmat/PKGBUILD` is correct in shape and pinned to a version it cannot
-build. `slipmat-git` is unaffected; it tracks `main`.
+**`v0.3.0` is the first tag under this name, and the release package needed
+it.** Between the rename and that tag `slipmat/PKGBUILD` was pinned to
+`v0.2.0`, whose tree still builds a binary called `tonearm` — `package()` would
+have failed looking for `target/release/slipmat`. The recorded `sha256sum` was
+wrong for a second reason worth remembering: **a GitHub archive names its root
+directory after the repository as it stands now**, so renaming the repository
+changed the tarball's bytes even though the tag itself never moved, and
+`cd "Slipmat-$pkgver"` only started matching once both had happened.
 
 ## Why the PKGBUILDs live here
 
