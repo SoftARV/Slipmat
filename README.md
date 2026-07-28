@@ -19,11 +19,9 @@ search, and media controls that answer from the top bar and the lock screen.
 
 The web engine is still there. You just never see it.
 
-![Slipmat showing a library of songs: the playing track marked in red, one
-Apple cannot stream greyed out and struck through, a menu button on every row,
-and the Now Playing bar along the bottom — the playing track's cover behind it,
-and its progress as a thin line across the
-top](docs/screenshots/library.webp)
+<p align="center">
+  <img src="docs/screenshots/library.webp" alt="Slipmat showing a library of songs: the playing track marked in red, one Apple cannot stream greyed out, a menu button on every row, and the Now Playing bar along the bottom with the playing track's cover behind it">
+</p>
 
 ## What it does
 
@@ -37,23 +35,9 @@ page.
 filtering and its own sorting. Click anything and the list you are looking at
 becomes the queue.
 
-![The Albums grid with the sidebar collapsed, covers loading as tiles scroll
-into view](docs/screenshots/albums.webp)
-
-![The Artists grid: round portraits, each pulled from the artist's catalogue
-twin, with their genre beneath](docs/screenshots/artists.webp)
-
-![A playlist page: the four-up cover Slipmat composes from the first four
-tracks — Apple sends none for a playlist you made yourself — then the song
-count, Play and Shuffle, and the tracks below](docs/screenshots/playlist.webp)
-
 **A player worth the name.** Gapless — the thing every wrapper gets wrong — with
 a full-size view you can pull up, the queue beside it, and the cover behind it.
 [Measured, not hoped for](#gapless-verified).
-
-![The expanded player: large artwork, transport beneath it, a 522-track queue
-alongside, and the cover blurred behind the whole
-surface](docs/screenshots/player.webp)
 
 **Controls where you already look.** Play, pause and skip from the GNOME top
 bar, from the lock screen, or with your keyboard's media keys — cover and title
@@ -64,14 +48,37 @@ music keeps going; it quits when you tell it to, not when you tidy your desktop.
 list, paginated as you scroll, each opening a page you can play from and drill
 through.
 
-![A catalogue search for the Beatles: artists, Apple Music playlists, albums
-and songs in one list, each opening a page of its own, with a filter to narrow
-the type](docs/screenshots/search.webp)
-
 **Quick, and out of the way.** A five-hundred-track library scrolls without
 stuttering, a section you have already opened comes back instantly, and whatever
 you were playing is waiting next launch — restored, never resumed. An app that
 starts making noise because you opened it is a hostile one.
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <img src="docs/screenshots/albums.webp" alt="The Albums grid with the sidebar collapsed, covers loading as tiles scroll into view">
+      <p align="center"><sub>Albums, with the sidebar collapsed</sub></p>
+    </td>
+    <td width="33%" valign="top">
+      <img src="docs/screenshots/artists.webp" alt="The Artists grid: round portraits, each pulled from the artist's catalogue twin, with their genre beneath">
+      <p align="center"><sub>Artists, portraits from the catalogue</sub></p>
+    </td>
+    <td width="33%" valign="top">
+      <img src="docs/screenshots/playlist.webp" alt="A playlist page: the four-up cover Slipmat composes from the first four tracks, the song count, Play and Shuffle, and the tracks below">
+      <p align="center"><sub>A playlist — cover built from its tracks</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/screenshots/player.webp" alt="The expanded player: large artwork, transport beneath it, a 522-track queue alongside, and the cover blurred behind the whole surface">
+      <p align="center"><sub>The player opened out, queue alongside</sub></p>
+    </td>
+    <td valign="top">
+      <img src="docs/screenshots/search.webp" alt="A catalogue search for the Beatles: artists, Apple Music playlists, albums and songs in one list, each opening a page of its own">
+      <p align="center"><sub>Searching the whole catalogue</sub></p>
+    </td>
+  </tr>
+</table>
 
 ## Gapless, verified
 
