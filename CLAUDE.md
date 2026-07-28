@@ -97,6 +97,27 @@ plan called a sandboxed CDM "genuinely hard" and deferred Flatpak on the
 strength of it; that was reasoning, and it was wrong. What is actually hard is
 the *build*, not the runtime.
 
+**And on 2026-07-28 it stopped being an experiment on the developer's own
+machine.** The `v0.3.0` release bundle was installed on a stock **Ubuntu 25.10**
+VM — a system whose libadwaita is below the `gnome_49` floor, so it cannot build
+Slipmat at all — and the whole chain worked from nothing: sign-in, the CDM
+fetching itself into the sandbox, a real library over the API, and a track
+decrypting and playing. That is the first time any of it has run outside Arch,
+and it is what the Flatpak exists for.
+
+Two things that run also settled, and neither could have been found here:
+
+- **A bundle needs `--runtime-repo`.** It carries the app and never the runtime,
+  so on a machine with no Flathub remote it stops at *"requires the runtime
+  org.gnome.Platform/x86_64/49 which was not found"*. Every machine that has
+  ever *built* this already had the runtime, because building needs the SDK
+  beside it — so the one artefact aimed at systems that cannot build was the one
+  thing never installed on one.
+- **The app had never been seen in a light theme.** It works, but the drawer's
+  backdrop is washed out: the veil is `@window_bg_color` so it adapts, but the
+  two numbers behind it were tuned against dark only. Not a design question, a
+  pair of numbers.
+
 Three things that experiment settled, and that a manifest has to carry:
 
 - **`org.electronjs.Electron2.BaseApp`, for zypak.** Chromium's SUID sandbox
