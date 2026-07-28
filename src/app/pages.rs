@@ -154,14 +154,33 @@ impl AppModel {
         art: Option<Artwork>,
         sender: &ComponentSender<Self>,
     ) {
-        let Some(art) = art else { return };
+        // **The quietest of the three exits, and the one that matters.** A page
+        // whose resource carries no artwork at all keeps its placeholder having
+        // asked for nothing — indistinguishable, from the outside, from a fetch
+        // that failed or one still in flight. Note this is the artwork on the
+        // *details* response, which is a different request from the one the
+        // grid's `with_art` counter measures: a playlist can carry a picture in
+        // one and not the other.
+        let Some(art) = art else {
+            tracing::warn!(page, "page resource carries no artwork; nothing to fetch");
+            return;
+        };
         sender.oneshot_command(async move {
             // A missing cover is cosmetic — `None` and the page keeps its
-            // placeholder, exactly as the Now Playing bar does.
-            CommandMsg::PageArtwork {
-                page,
-                path: artwork::fetch(art, ART_SIZE).await.ok(),
-            }
+            // placeholder, exactly as the Now Playing bar does. **Cosmetic is
+            // not the same as unexplained**, and this was `.ok()`: a header
+            // that silently kept its placeholder was indistinguishable from a
+            // playlist Apple has no picture for, which is exactly how a
+            // playlist mosaic that used to render went missing without a word.
+            // The error carries the URL it tried — see `artwork::fetch`.
+            let path = match artwork::fetch(art, ART_SIZE).await {
+                Ok(path) => Some(path),
+                Err(err) => {
+                    tracing::warn!(page, ?err, "page artwork not fetched");
+                    None
+                }
+            };
+            CommandMsg::PageArtwork { page, path }
         });
     }
 }
