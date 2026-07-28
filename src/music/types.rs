@@ -149,10 +149,19 @@ pub struct Playlist {
     pub date_added: String,
     pub last_modified: String,
     pub name: String,
-    /// Who made it — Apple's editors for a catalog playlist, empty for one of
-    /// your own, which is the common case in a library.
+    /// Who made it — Apple's editors for a catalog playlist, **always empty for
+    /// a library one**, which is the common case here. `curatorName` is a
+    /// catalog attribute; `LibraryPlaylists.Attributes` does not carry it, so
+    /// this is not something a request could ask harder for.
     pub curator: String,
     /// Apple's blurb, plain text. Empty far more often than not.
+    ///
+    /// **Parsed, and deliberately not shown anywhere.** It reads like the
+    /// obvious subtitle for a playlist with no curator, and it is not: these
+    /// are paragraphs, and one under the title pushed the cover, the buttons
+    /// and the whole track list off the bottom of the window. Both the tile and
+    /// the page had to learn this separately. If it ever earns a place it is
+    /// somewhere with room for a sentence, not a header line.
     pub description: String,
     pub artwork: Option<Artwork>,
     /// As [`Album::library`].

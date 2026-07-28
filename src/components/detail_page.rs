@@ -349,17 +349,18 @@ impl DetailPage {
     /// Fill a playlist page: cover, curator or blurb, and its tracks.
     pub fn show_playlist(&mut self, playlist: &Playlist, tracks: Vec<Entry>) {
         self.cover.square("view-list-symbolic");
-        // **Who made it beats what it is about.** A curator is a name — short,
-        // and the thing you actually want under a playlist's title. The blurb
-        // is the fallback for the playlists Apple gives no curator for, and it
-        // is a paragraph; the label caps it at two lines and the full text is
-        // on hover, so a long one costs the page nothing.
-        let subtitle = if playlist.curator.is_empty() {
-            &playlist.description
-        } else {
-            &playlist.curator
-        };
-        self.head(&playlist.name, subtitle, playlist.artwork.as_ref());
+        // **The curator, or nothing.** Deliberately *not* the description as a
+        // fallback — the same rule the tile already follows, and for a stronger
+        // reason here. Apple's blurbs are paragraphs, so one under the title
+        // pushed the cover, the buttons and the whole track list down the page,
+        // and a playlist opened showing prose instead of music.
+        //
+        // Which means most library playlists get no subtitle at all, and that
+        // is correct: `curatorName` is a **catalog** attribute and library
+        // playlists do not carry it, so a playlist you made has no curator to
+        // show. An empty line is the honest answer; a blurb standing in for a
+        // name is not.
+        self.head(&playlist.name, &playlist.curator, playlist.artwork.as_ref());
 
         let songs = tracks.len();
         self.meta.set_label(&format!(
