@@ -32,6 +32,12 @@ use crate::music::types::{Album, Artist, Artwork, Playlist};
 /// the `card` background cannot outgrow the picture inside it.
 const ART_PX: i32 = 160;
 
+/// How wide the header subtitle grows before it wraps, in characters.
+///
+/// Also what decides whether the full text is worth a tooltip: two lines of
+/// this is roughly what the label can show.
+const SUBTITLE_CHARS: usize = 48;
+
 /// What a page is about — and everything needed to ask Apple for it again.
 ///
 /// Catalog and library are separate variants rather than one variant plus a
@@ -160,9 +166,21 @@ impl DetailPage {
             .justify(gtk::Justification::Center)
             .label(heading)
             .build();
+        // **Bounded on both axes.** This holds a curator's name most of the
+        // time — two or three words — but falls back to a playlist's blurb,
+        // and Apple's blurbs are paragraphs. Unbounded, one of those pushed the
+        // cover, the buttons and the whole track list off the bottom of the
+        // window, so the page opened showing prose and no music.
+        //
+        // `lines` needs both `wrap` and an ellipsize mode to take effect;
+        // `max_width_chars` caps how wide it grows before wrapping, so a blurb
+        // does not stretch to the full width of a maximised window either.
         let subtitle = gtk::Label::builder()
             .css_classes(["title-4", "dim-label"])
             .wrap(true)
+            .lines(2)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(SUBTITLE_CHARS as i32)
             .justify(gtk::Justification::Center)
             .build();
         let meta = gtk::Label::builder()
@@ -331,15 +349,18 @@ impl DetailPage {
     /// Fill a playlist page: cover, curator or blurb, and its tracks.
     pub fn show_playlist(&mut self, playlist: &Playlist, tracks: Vec<Entry>) {
         self.cover.square("view-list-symbolic");
-        // Unlike the tile, a page *can* show the blurb: its subtitle label
-        // wraps and is centred, which is where a sentence belongs. The curator
-        // still wins when there is one.
-        let subtitle = if playlist.curator.is_empty() {
-            &playlist.description
-        } else {
-            &playlist.curator
-        };
-        self.head(&playlist.name, subtitle, playlist.artwork.as_ref());
+        // **The curator, or nothing.** Deliberately *not* the description as a
+        // fallback — the same rule the tile already follows, and for a stronger
+        // reason here. Apple's blurbs are paragraphs, so one under the title
+        // pushed the cover, the buttons and the whole track list down the page,
+        // and a playlist opened showing prose instead of music.
+        //
+        // Which means most library playlists get no subtitle at all, and that
+        // is correct: `curatorName` is a **catalog** attribute and library
+        // playlists do not carry it, so a playlist you made has no curator to
+        // show. An empty line is the honest answer; a blurb standing in for a
+        // name is not.
+        self.head(&playlist.name, &playlist.curator, playlist.artwork.as_ref());
 
         let songs = tracks.len();
         self.meta.set_label(&format!(
@@ -379,6 +400,11 @@ impl DetailPage {
         self.title.set_label(title);
         self.subtitle.set_label(subtitle);
         self.subtitle.set_visible(!subtitle.is_empty());
+        // The whole blurb on hover, but only when there is more of it than the
+        // two lines can hold — a tooltip repeating a label you can already read
+        // in full is noise.
+        self.subtitle
+            .set_tooltip_text((subtitle.chars().count() > SUBTITLE_CHARS * 2).then_some(subtitle));
         // Artwork lands separately once it is on disk (see `set_artwork`) — the
         // page has to be readable before the network says anything. `artwork`
         // is only consulted for whether one is coming at all.

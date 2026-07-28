@@ -434,6 +434,49 @@ Library membership is the same shape of fact: a track that came from
 `/me/library/…` is in the library by definition, so `Track::in_library` is set
 by the client method that fetched it — never guessed from the id.
 
+**Apple sends artwork for its own playlists and not for yours.** Measured
+against a real library, and the split is the whole finding rather than the
+count:
+
+| `with_art` | `without_art` |
+| --- | --- |
+| Edgerunners Soundtrack | Game on |
+| Favorite Songs | My Shazam Tracks |
+| Forza Horizon 4 Soundtrack | Red Soundtrack |
+| Vos Veis | Shazams |
+
+Curated and Apple-generated playlists carry an `artwork` object; **every
+user-created one carries none**, on both endpoints — the list *and*
+`/me/library/playlists/{id}`. So the 2×2 mosaic of four covers that
+`music.apple.com` shows for a playlist you never gave a picture to is drawn by
+the web player, not fetched. `include=catalog` cannot rescue it either, the way
+it rescues a library artist's portrait: a playlist you made has no catalog twin
+to borrow from.
+
+`all_library_playlists` logs both lists on every load, **named rather than
+counted**, because a bare count answered the wrong question — it described the
+list endpoint while the bug was on the details endpoint, and the two are
+different requests that can carry different attributes.
+
+Two traps here, both of which cost a round:
+
+- **A screenshot in `docs/screenshots/playlist.webp` shows Slipmat rendering
+  that mosaic for "Game on" in 0.2.0.** So Apple returned it at least once and
+  no longer does, on identical code — `git diff v0.2.0..` over `client.rs`,
+  `types.rs` and `pages.rs` is the rename and nothing else. Treat playlist
+  artwork as *inconsistent between accounts and over time*, and never conclude
+  from one absence that a thing was never there.
+- **Three separate silent exits** hid this: `fetch` and `decode` were `.ok()`
+  and `and_then`, and `fetch_page_art` returned early on `None` artwork saying
+  nothing. A page holding its placeholder therefore looked identical whether
+  the fetch failed, the file was undecodable, or there was never a URL at all.
+  All three now warn. **Cosmetic is not the same as unexplained.**
+
+Drawing the mosaic ourselves means a compositor: take the first four tracks'
+covers, tile them, cache under the playlist's own key. On a detail page the
+tracks are already loaded and it costs nothing extra; in the grid it costs one
+request per artless playlist, because a tile knows no tracks.
+
 ### Restoring the last session
 
 Three files, three homes, and the distinction is not pedantry:

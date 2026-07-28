@@ -44,9 +44,7 @@ use relm4::typed_view::list::TypedListView;
 
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::detail_page::{DetailPage, PageKind, RowState};
-use crate::components::grid_item::{
-    ArtCache, ArtRegistry, ArtRequest, GridItem, Tile, art_cache, art_registry,
-};
+use crate::components::grid_item::{ArtRegistry, ArtRequest, GridItem, Tile, art_registry};
 use crate::components::now_playing::{
     NowPlaying, NowPlayingInput, NowPlayingOutput, Repeat, VOLUME_STEP,
 };
@@ -261,10 +259,6 @@ pub struct AppModel {
     built_albums: Option<String>,
     built_artists: Option<String>,
     built_playlists: Option<String>,
-    /// Tile artwork already on disk. Shared between the grids on purpose: it
-    /// is keyed by the artwork itself, so a cover fetched for one is a cover
-    /// the other gets for free.
-    tile_art: ArtCache,
     /// Which widget is showing which artwork — **one registry per grid**, for
     /// the same reason the row registries are per list: a shared one would have
     /// the two grids overwrite each other's entries, and clearing it for a
@@ -1500,7 +1494,6 @@ impl Component for AppModel {
             built_albums: None,
             built_artists: None,
             built_playlists: None,
-            tile_art: art_cache(),
             album_art_widgets: art_registry(),
             artist_art_widgets: art_registry(),
             playlist_art_widgets: art_registry(),
@@ -2095,13 +2088,11 @@ impl AppModel {
                 }
                 sender.oneshot_command(async move {
                     // Fetch only if it is missing — `fetch` short-circuits on
-                    // the disk cache — but decode either way, here, off the
-                    // GTK thread. That is the whole point of #27: the tile is
-                    // handed pixels, not a filename.
-                    let path = artwork::fetch(art, TILE_ART).await.ok();
-                    let cover = path
-                        .as_deref()
-                        .and_then(|path| artwork::decode(path, TILE_ART as i32));
+                    // the disk cache — but decode either way, off the GTK
+                    // thread. That is the whole point of #27: the tile is
+                    // handed pixels, not a filename. Either half failing is
+                    // cosmetic but never silent; `load_tile` says which.
+                    let (path, cover) = artwork::load_tile(art, TILE_ART, &key).await;
                     CommandMsg::TileArt { key, path, cover }
                 });
             }
@@ -2529,11 +2520,14 @@ impl AppModel {
                     Ok((playlist, tracks)) => {
                         tracing::info!(page, tracks = tracks.len(), playlist = %playlist.name, "playlist loaded");
                         let art = playlist.artwork.clone();
+                        // Read before the tracks are moved: a playlist Apple
+                        // sends no picture for gets one composed from these.
+                        let covers = pages::playlist_covers(&tracks);
                         target.show_playlist(
                             &playlist,
                             tracks.into_iter().map(Entry::Song).collect(),
                         );
-                        self.fetch_page_art(page, art, &sender);
+                        self.fetch_page_art_or_mosaic(page, art, covers, &sender);
                     }
                     Err(err) => {
                         tracing::warn!(page, %err, "playlist page failed");
@@ -2595,31 +2589,34 @@ impl AppModel {
             },
             CommandMsg::TileArt { key, path, cover } => {
                 self.tile_art_pending.remove(&key);
-                let (Some(path), Some(cover)) = (path, cover) else {
+                let (Some(_path), Some(cover)) = (path, cover) else {
                     // Cosmetic. The tile keeps its placeholder.
                     return;
                 };
-                // Cached so a later bind knows the file is there and the
-                // request skips the network — the decode still happens off the
-                // thread, because that is the part worth avoiding here.
-                self.tile_art.borrow_mut().insert(key.clone(), path);
 
-                // Paint whichever tile is showing this artwork *now*.
-                // Recycling means it may not be the one that asked, and may be
+                // Paint **every** tile showing this artwork now. Recycling
+                // means they may not include the one that asked, and may be
                 // none at all if it scrolled away — both are correct.
                 //
-                // The pixels are moved, so exactly one widget can take them.
-                // That is the truth of it anyway: one key, one live tile.
-                let target = [
+                // All three registries, not the first that matches: the grids
+                // hold their tiles bound whether or not the user is looking at
+                // them, so a hidden album tile and a visible playlist tile can
+                // want the same key at once. Stopping at the first match paid
+                // the hidden one and left the visible one blank, which is what
+                // "some artwork does not load" turned out to be.
+                let texture = cover.into_texture();
+                let mut painted = 0usize;
+                for registry in [
                     &self.album_art_widgets,
                     &self.artist_art_widgets,
                     &self.playlist_art_widgets,
-                ]
-                .into_iter()
-                .find_map(|registry| registry.borrow().get(&key).cloned());
-                if let Some(widget) = target {
-                    widget.set_decoded(cover);
+                ] {
+                    for widget in registry.borrow().get(&key).into_iter().flatten() {
+                        widget.set_texture(&texture);
+                        painted += 1;
+                    }
                 }
+                tracing::trace!(%key, painted, "tile art delivered");
             }
             CommandMsg::PageArtwork { page, path } => {
                 if let (Some(path), Some(target)) = (path, self.pages.iter().find(|p| p.id == page))
