@@ -9,7 +9,7 @@ Two packages, both built from this tree:
 
 | Directory | Package | Builds from |
 | --- | --- | --- |
-| `slipmat/` | `slipmat` | the `v0.3.0` release tarball |
+| `slipmat/` | `slipmat` | the `v0.4.0` release tarball |
 | `slipmat-git/` | `slipmat-git` | the latest commit on `main` |
 
 They conflict with each other, as the two conventions require.
