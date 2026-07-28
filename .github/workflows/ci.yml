@@ -74,7 +74,13 @@ jobs:
             echo "any=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" || echo ALL)
-          if echo "$changed" | grep -qE '^(packaging/|sidecar/|Cargo\.lock|Cargo\.toml|\.github/workflows/|slipmat-launcher)'; then
+          # `Makefile` is in this list because CI runs `make flatpak-bundle`
+          # — the build command itself lives there, so a change to it that
+          # skipped this job would ship a bundle nobody had built. That is not
+          # hypothetical: the `--runtime-repo` fix was a one-line Makefile
+          # change, and its build only ran because a README under packaging/
+          # happened to move in the same PR.
+          if echo "$changed" | grep -qE '^(packaging/|sidecar/|Cargo\.lock|Cargo\.toml|\.github/workflows/|Makefile|slipmat-launcher)'; then
             echo "any=true" >> "$GITHUB_OUTPUT"
           else
             echo "any=false" >> "$GITHUB_OUTPUT"
