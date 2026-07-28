@@ -19,9 +19,10 @@ GNOME search, and MPRIS that works in both directions.
 
 The web engine is still there. You just never see it.
 
-![Slipmat showing a library of songs, each starred as a favourite, with a menu
-button on every row and the Now Playing bar along the bottom — the playing
-track's cover behind it, and its progress as a thin line across the
+![Slipmat showing a library of songs: the playing track marked in red, one
+Apple cannot stream greyed out and struck through, a menu button on every row,
+and the Now Playing bar along the bottom — the playing track's cover behind it,
+and its progress as a thin line across the
 top](docs/screenshots/library.webp)
 
 ## What it does
@@ -36,26 +37,32 @@ the way it was mastered to. This is measured, not hoped for — see
 playlists as grids. Type-to-find filtering on all four. Artist portraits come
 from Apple's catalogue, and covers are cached to disk as they scroll into view.
 
-![The Albums grid, covers loading as tiles scroll into
-view](docs/screenshots/albums.webp)
+![The Albums grid with the sidebar collapsed, covers loading as tiles scroll
+into view](docs/screenshots/albums.webp)
+
+![The Artists grid: round portraits, each pulled from the artist's catalogue
+twin, with their genre beneath](docs/screenshots/artists.webp)
 
 **The whole catalogue.** Search Apple Music, paginated as you scroll. Results
 mix artists and albums above the songs, and either one opens a page you can play
 from and drill through — artist → album → track.
 
-![An artist page reached from a catalogue search: the portrait, the genre, and
-25 albums each with a chevron into its own page](docs/screenshots/search.webp)
+![A catalogue search for the Beatles: artists, Apple Music playlists, albums
+and songs in one list, each opening a page of its own, with a filter to narrow
+the type](docs/screenshots/search.webp)
 
-![A playlist page: the four-up cover Apple builds from its tracks, the count,
-Play and Shuffle, and the tracks below](docs/screenshots/playlist.webp)
+![A playlist page: the four-up cover Slipmat composes from the first four
+tracks — Apple sends none for a playlist you made yourself — then the song
+count, Play and Shuffle, and the tracks below](docs/screenshots/playlist.webp)
 
 **The player opens out.** Drag the Now Playing bar up, or press the queue
 button, and it becomes a full player: the artwork large, the transport under it,
 and the queue beside it. The cover sits behind the whole thing, blurred and
 drifting, and cross-fades when the track changes.
 
-![The expanded player: large artwork, transport beneath it, the queue alongside,
-and the cover blurred behind the whole surface](docs/screenshots/player.webp)
+![The expanded player: large artwork, transport beneath it, a 522-track queue
+alongside, and the cover blurred behind the whole
+surface](docs/screenshots/player.webp)
 
 **A queue you can see.** Inside that player rather than a modal, opening on the
 track that is playing. Jump to any track, remove any track, without disturbing

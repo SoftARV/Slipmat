@@ -20,10 +20,11 @@ rsvg-convert -w 128 -h 128 \
 
 | File | Shows |
 | --- | --- |
-| `library.webp` | Songs — favourites, row menus, sidebar reload |
-| `search.webp` | An artist page reached from a catalogue search |
-| `albums.webp` | The Albums grid |
-| `playlist.webp` | A playlist page: cover, Play and Shuffle, tracks |
+| `library.webp` | Songs — the play marker, an unplayable track, row menus |
+| `search.webp` | A catalogue search: artists, playlists, albums and songs mixed |
+| `albums.webp` | The Albums grid, sidebar collapsed |
+| `artists.webp` | The Artists grid — round portraits from the catalogue twin |
+| `playlist.webp` | A playlist page: the composed mosaic, Play and Shuffle, tracks |
 | `player.webp` | The expanded player: artwork, transport, queue |
 
 ## Taking them
@@ -40,12 +41,19 @@ rsvg-convert -w 128 -h 128 \
 - Show what is *new*. A shot that could have been taken three versions ago is a
   wasted one.
 
-  This matters more than it sounds. The 0.1 set went stale in one release and
-  in a way that was actively misleading: `albums.webp` was captioned "with the
-  queue sidebar open", and by 0.2 the queue had moved into the player and no
-  sidebar existed. A screenshot outlives the sentence next to it, so when the
-  UI moves, **check the captions as well as the images** — a wrong caption is
-  worse than an old picture, because a reader trusts it.
+  This matters more than it sounds, and it has now happened twice. The 0.1 set
+  went stale in one release in a way that was actively misleading:
+  `albums.webp` was captioned "with the queue sidebar open", and by 0.2 the
+  queue had moved into the player and no sidebar existed. Then the 0.2 set did
+  it again — `playlist.webp` was captioned "the four-up cover **Apple** builds
+  from its tracks", and by 0.3 that was doubly wrong: Apple sends no artwork at
+  all for a playlist you made, and the mosaic in the picture is one Slipmat
+  composes itself.
+
+  A screenshot outlives the sentence next to it, so when the UI moves, **check
+  the captions as well as the images** — a wrong caption is worse than an old
+  picture, because a reader trusts it and it explains what they are looking
+  at.
 
 ## Processing
 
