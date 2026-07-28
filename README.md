@@ -14,61 +14,64 @@ A native GNOME client for Apple Music.
 Every other Apple Music option on Linux is `music.apple.com` in a costume —
 Electron wrapped around the website, with the website's scroll behaviour and the
 website's search field. Slipmat is the first one where the interface is actually
-native: GTK4 and libadwaita, written in Rust, with real libadwaita lists, real
-GNOME search, and MPRIS that works in both directions.
+native: GTK4 and libadwaita, written in Rust, with real lists, real GNOME
+search, and media controls that answer from the top bar and the lock screen.
 
 The web engine is still there. You just never see it.
 
-![Slipmat showing a library of songs, each starred as a favourite, with a menu
-button on every row and the Now Playing bar along the bottom — the playing
-track's cover behind it, and its progress as a thin line across the
+![Slipmat showing a library of songs: the playing track marked in red, one
+Apple cannot stream greyed out and struck through, a menu button on every row,
+and the Now Playing bar along the bottom — the playing track's cover behind it,
+and its progress as a thin line across the
 top](docs/screenshots/library.webp)
 
 ## What it does
 
-**Gapless playback.** The feature the whole architecture exists to protect, and
-the one every wrapper gets wrong. Slipmat hands MusicKit the entire queue in one
-call and then keeps its hands off it, so a segued album crosses its boundaries
-the way it was mastered to. This is measured, not hoped for — see
-[Gapless, verified](#gapless-verified) below.
+**A native GNOME app, not a browser in a costume.** GTK4 and libadwaita, written
+in Rust — real lists, real keyboard navigation, a window that tiles to half a
+screen. There is a web layer, because Apple's DRM leaves no choice, but it is
+one hidden process that decodes audio and nothing else. You never see a web
+page.
 
-**Your library, natively.** Songs as a virtualised list; albums, artists and
-playlists as grids. Type-to-find filtering on all four. Artist portraits come
-from Apple's catalogue, and covers are cached to disk as they scroll into view.
+**Your library.** Songs, albums, artists and playlists, each with type-to-find
+filtering and its own sorting. Click anything and the list you are looking at
+becomes the queue.
 
-![The Albums grid, covers loading as tiles scroll into
-view](docs/screenshots/albums.webp)
+![The Albums grid with the sidebar collapsed, covers loading as tiles scroll
+into view](docs/screenshots/albums.webp)
 
-**The whole catalogue.** Search Apple Music, paginated as you scroll. Results
-mix artists and albums above the songs, and either one opens a page you can play
-from and drill through — artist → album → track.
+![The Artists grid: round portraits, each pulled from the artist's catalogue
+twin, with their genre beneath](docs/screenshots/artists.webp)
 
-![An artist page reached from a catalogue search: the portrait, the genre, and
-25 albums each with a chevron into its own page](docs/screenshots/search.webp)
+![A playlist page: the four-up cover Slipmat composes from the first four
+tracks — Apple sends none for a playlist you made yourself — then the song
+count, Play and Shuffle, and the tracks below](docs/screenshots/playlist.webp)
 
-![A playlist page: the four-up cover Apple builds from its tracks, the count,
-Play and Shuffle, and the tracks below](docs/screenshots/playlist.webp)
+**A player worth the name.** Gapless — the thing every wrapper gets wrong — with
+a full-size view you can pull up, the queue beside it, and the cover behind it.
+[Measured, not hoped for](#gapless-verified).
 
-**The player opens out.** Drag the Now Playing bar up, or press the queue
-button, and it becomes a full player: the artwork large, the transport under it,
-and the queue beside it. The cover sits behind the whole thing, blurred and
-drifting, and cross-fades when the track changes.
+![The expanded player: large artwork, transport beneath it, a 522-track queue
+alongside, and the cover blurred behind the whole
+surface](docs/screenshots/player.webp)
 
-![The expanded player: large artwork, transport beneath it, the queue alongside,
-and the cover blurred behind the whole surface](docs/screenshots/player.webp)
+**Controls where you already look.** Play, pause and skip from the GNOME top
+bar, from the lock screen, or with your keyboard's media keys — cover and title
+alongside them, and the position honest while it plays. Close the window and the
+music keeps going; it quits when you tell it to, not when you tidy your desktop.
 
-**A queue you can see.** Inside that player rather than a modal, opening on the
-track that is playing. Jump to any track, remove any track, without disturbing
-playback. Right-click any row — or use its menu button — to play it next, add
-it to the queue, save it to your library or favourite it.
+**All of Apple Music, searchable.** Artists, albums, playlists and songs in one
+list, paginated as you scroll, each opening a page you can play from and drill
+through.
 
-**MPRIS, properly.** `org.mpris.MediaPlayer2.Slipmat`, bidirectional. The GNOME
-Shell applet and the lock screen show correct metadata and artwork, and their
-controls reach the player. Hardware media keys work. Half-working MPRIS is the
-most common failure of the wrappers; this one is tested over `busctl`.
+![A catalogue search for the Beatles: artists, Apple Music playlists, albums
+and songs in one list, each opening a page of its own, with a filter to narrow
+the type](docs/screenshots/search.webp)
 
-**The GNOME furniture.** Preferences, keyboard shortcuts, an About dialog,
-opt-in track-change notifications, a proper app icon and `.desktop` entry.
+**Quick, and out of the way.** A five-hundred-track library scrolls without
+stuttering, a section you have already opened comes back instantly, and whatever
+you were playing is waiting next launch — restored, never resumed. An app that
+starts making noise because you opened it is a hostile one.
 
 ## Gapless, verified
 
