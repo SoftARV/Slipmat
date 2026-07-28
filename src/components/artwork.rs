@@ -122,6 +122,38 @@ impl Decoded {
     }
 }
 
+/// Fetch a tile's cover and decode it, off the GTK thread, reporting whichever
+/// half fails.
+///
+/// The two steps live together because their failures are the same kind of
+/// thing — cosmetic, so no toast; a missing cover is not worth interrupting
+/// anyone — and because they used to be written as `.ok()` and `and_then` at
+/// the call site, which is **silent**. A tile stuck on its placeholder for ever
+/// left no trace at all, so a 404 on one cover, a slow network and an
+/// undecodable file were indistinguishable from each other and from "it is
+/// still loading".
+///
+/// `key` is only for the log, so a warning here can be lined up with the
+/// `tile art delivered` trace on the other side.
+pub async fn load_tile(art: Artwork, size: u32, key: &str) -> (Option<PathBuf>, Option<Decoded>) {
+    let path = match fetch(art, size).await {
+        Ok(path) => Some(path),
+        Err(err) => {
+            // The error carries the URL it tried — see `fetch`.
+            tracing::warn!(%key, ?err, "tile artwork not fetched");
+            None
+        }
+    };
+    let decoded = path.as_deref().and_then(|path| {
+        let decoded = decode(path, size as i32);
+        if decoded.is_none() {
+            tracing::warn!(%key, file = %path.display(), "tile artwork on disk but undecodable");
+        }
+        decoded
+    });
+    (path, decoded)
+}
+
 /// Decode a cover that is already on disk. Call this off the GTK thread.
 pub fn decode(path: &Path, size: i32) -> Option<Decoded> {
     let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(path, size, size, true).ok()?;

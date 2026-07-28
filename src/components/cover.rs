@@ -144,28 +144,30 @@ impl Cover {
 
     /// An empty sleeve: the case, with a disc sitting inside it.
     ///
-    /// Not the same as [`Cover::square`] with a disc icon. That draws a
-    /// floating glyph; this draws a *place the artwork goes*, which is what
-    /// the Now Playing bar has always done and what the drawer was missing —
-    /// with nothing playing it showed a bare generic icon in the middle of a
-    /// 260px square, which reads as a failure rather than as an empty player.
-    ///
     /// `.np-cover-empty` is the same rule the bar uses, so the two states
     /// cannot drift apart.
     pub fn empty_sleeve(&self, size: i32) {
-        self.round.set(false);
-        self.empty.set(true);
         self.resize(size);
-        self.stack.set_visible_child_name("sleeve");
+        self.square("media-optical-symbolic");
     }
 
-    /// A record: square, with `icon` until the cover arrives.
+    /// A record: square, showing `icon` as a *sleeve* until a cover arrives.
+    ///
+    /// The icon is drawn at [`disc_px`] inside the case rather than filling the
+    /// widget, which is the whole difference between "a place the artwork goes"
+    /// and "a big glyph". The bar and the drawer have always done it this way;
+    /// tiles and detail headers did not, so a playlist with no picture showed a
+    /// 160px list icon and an album with none showed a 160px disc — reading as
+    /// a failure rather than as an empty sleeve.
+    ///
+    /// This is also why the `image` page now only ever holds a *real* cover:
+    /// the placeholder and the picture were sharing one widget, so they could
+    /// not be sized differently, and cross-fading between them was impossible.
     pub fn square(&self, icon: &str) {
         self.round.set(false);
-        self.empty.set(false);
-        self.image.set_from_file(None::<&Path>);
-        self.image.set_icon_name(Some(icon));
-        self.stack.set_visible_child_name("image");
+        self.empty.set(true);
+        self.sleeve.set_icon_name(Some(icon));
+        self.stack.set_visible_child_name("sleeve");
     }
 
     /// A person: round, with their initials until the portrait arrives.
@@ -180,24 +182,26 @@ impl Cover {
         self.avatar.set_text(Some(name));
     }
 
-    /// Show a cover that was decoded off the GTK thread.
+    /// Show a cover that was decoded off the GTK thread (#27).
     ///
-    /// The counterpart to [`Cover::set_file`], and the one a grid tile uses:
-    /// `set_file` decodes where it is called, which for a grid means hundreds
-    /// of decodes in the frame that fills it (#27).
-    pub fn set_decoded(&self, cover: crate::components::artwork::Decoded) {
+    /// Takes a texture rather than the `Decoded` pixels, because **more than
+    /// one tile can be showing the same artwork**. `Decoded` owns its pixels,
+    /// so turning it into a texture consumes it and exactly one widget could
+    /// ever be painted; a `GdkTexture` is a refcounted GObject, so one decode
+    /// paints every tile that asked for it. The caller wraps once and hands
+    /// the same texture to each.
+    pub fn set_texture(&self, texture: &gtk::gdk::MemoryTexture) {
         self.empty.set(false);
-        let texture = cover.into_texture();
         // **Shape first, same as `set_file`.** A round cover is an `AdwAvatar`,
         // not an image with a radius — see this module's header for why. Going
         // straight to the image page put every artist who *has* a portrait in a
         // square, while the ones without kept their circle, which is a strange
         // enough result to look like two different bugs.
         if self.round.get() {
-            self.avatar.set_custom_image(Some(&texture));
+            self.avatar.set_custom_image(Some(texture));
             self.stack.set_visible_child_name("avatar");
         } else {
-            self.image.set_paintable(Some(&texture));
+            self.image.set_paintable(Some(texture));
             self.stack.set_visible_child_name("image");
         }
     }

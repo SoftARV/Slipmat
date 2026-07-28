@@ -338,10 +338,19 @@ impl Client {
             .iter()
             .filter(|p| !p.last_modified.is_empty())
             .count();
+        // Counted for the same reason `dateAdded` and `inFavorites` are: two
+        // rounds went into guessing which attributes Apple honours before
+        // anyone measured. The open question here is the **composed** artwork
+        // Apple's own web player shows for a playlist you never gave a picture
+        // to — a mosaic of four covers. Whether that reaches the API at all, or
+        // is assembled client-side and therefore something we would have to
+        // build ourselves, is settled by this number rather than by argument.
+        let with_art = playlists.iter().filter(|p| p.artwork.is_some()).count();
         tracing::info!(
             total = playlists.len(),
             dated,
             modified,
+            with_art,
             "library playlist attributes present"
         );
         Ok(playlists)

@@ -434,6 +434,21 @@ Library membership is the same shape of fact: a track that came from
 `/me/library/…` is in the library by definition, so `Track::in_library` is set
 by the client method that fetched it — never guessed from the id.
 
+**A playlist's composed artwork is not in the API — measured, 4 of 8.** The
+2×2 mosaic of four album covers that `music.apple.com` shows for a playlist you
+never gave a picture to is assembled **client-side, by the web player**, from
+the first four tracks. Apple's own response carries no artwork for those
+playlists at all, so there is nothing to fetch and nothing that was ever lost:
+`all_library_playlists` logs `with_art` on every load, and the playlists
+missing a mosaic are exactly the ones missing an `artwork` object.
+
+This cost a round of debugging because it presents as a bug — a picture that a
+user has demonstrably seen for that playlist, not appearing here — and every
+instinct says "our fetch broke". It did not. **Drawing it means building a
+compositor**: fetch up to four covers, tile them, cache the result under the
+playlist's own key. That is a real feature with a real cost, not a fix, and it
+must be decided as one.
+
 ### Restoring the last session
 
 Three files, three homes, and the distinction is not pedantry:
