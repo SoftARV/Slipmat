@@ -12,7 +12,46 @@ use relm4::ComponentSender;
 
 use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, DetailPage, PageKind, RowState, artwork};
 use crate::music::client::Client;
-use crate::music::types::Artwork;
+use crate::music::types::{Artwork, Track};
+
+/// How many covers a mosaic is made of. Apple's own is 2×2 and so is ours.
+pub(super) const MOSAIC_TILES: usize = 4;
+
+/// The first `want` **distinct** covers, in order.
+///
+/// Distinct by cache key, and that is the whole subtlety: a playlist drawn from
+/// two albums would otherwise tile the same sleeve twice over, which reads as a
+/// rendering fault rather than as a playlist.
+///
+/// Takes an iterator rather than `&[Track]` so it can be tested without
+/// building a `Track`, which has no `Default` and a dozen fields.
+pub(super) fn distinct_covers<'a>(
+    arts: impl Iterator<Item = &'a Artwork>,
+    want: usize,
+) -> Vec<Artwork> {
+    let mut seen = std::collections::HashSet::new();
+    let mut covers = Vec::with_capacity(want);
+    for art in arts {
+        if seen.insert(art.cache_key()) {
+            covers.push(art.clone());
+            if covers.len() == want {
+                break;
+            }
+        }
+    }
+    covers
+}
+
+/// The covers a playlist's mosaic would be built from.
+///
+/// Fewer than [`MOSAIC_TILES`] of them means no mosaic at all: a half-filled
+/// grid looks broken in a way an empty sleeve does not.
+pub(super) fn playlist_covers(tracks: &[Track]) -> Vec<Artwork> {
+    distinct_covers(
+        tracks.iter().filter_map(|track| track.artwork.as_ref()),
+        MOSAIC_TILES,
+    )
+}
 
 impl AppModel {
     /// Push an album or artist page and ask Apple to fill it.
@@ -147,6 +186,44 @@ impl AppModel {
         }
     }
 
+    /// A playlist page's header picture: Apple's if there is one, ours if not.
+    ///
+    /// Only playlists reach the second branch. Albums and artists always have
+    /// artwork of their own — an artist's comes from the catalog twin — but
+    /// **Apple sends nothing for a playlist you made yourself**, which is why
+    /// the app showed an empty sleeve where its own web player shows a mosaic.
+    ///
+    /// This is the one place Slipmat draws a picture Apple did not send, and it
+    /// is deliberately the *cheap* one: a page has already loaded its tracks,
+    /// so the covers are known and mostly cached. The grid cannot do this — a
+    /// tile knows no tracks, so it would cost a request per artless playlist.
+    pub(super) fn fetch_page_art_or_mosaic(
+        &self,
+        page: u64,
+        art: Option<Artwork>,
+        covers: Vec<Artwork>,
+        sender: &ComponentSender<Self>,
+    ) {
+        if art.is_some() {
+            self.fetch_page_art(page, art, sender);
+            return;
+        }
+        if covers.len() < MOSAIC_TILES {
+            tracing::warn!(
+                page,
+                have = covers.len(),
+                "too few distinct covers for a mosaic; keeping the empty sleeve"
+            );
+            return;
+        }
+        sender.oneshot_command(async move {
+            CommandMsg::PageArtwork {
+                page,
+                path: artwork::mosaic(covers, ART_SIZE).await,
+            }
+        });
+    }
+
     /// Fetch a page's header art, once we know what it is.
     pub(super) fn fetch_page_art(
         &self,
@@ -182,5 +259,56 @@ impl AppModel {
             };
             CommandMsg::PageArtwork { page, path }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn art(n: &str) -> Artwork {
+        Artwork::new(format!("https://is1.mzstatic.com/{n}/{{w}}x{{h}}bb.jpg"))
+    }
+
+    #[test]
+    fn a_mosaic_never_repeats_a_cover() {
+        // The point of "distinct". A playlist drawn from two albums would
+        // otherwise tile the same sleeve twice, which reads as a rendering
+        // fault rather than as a playlist.
+        let arts = [art("a"), art("a"), art("b"), art("a"), art("b")];
+        let picked = distinct_covers(arts.iter(), MOSAIC_TILES);
+
+        assert_eq!(picked.len(), 2, "two albums can only give two quadrants");
+        assert_eq!(picked[0].cache_key(), art("a").cache_key());
+        assert_eq!(picked[1].cache_key(), art("b").cache_key());
+    }
+
+    #[test]
+    fn it_stops_at_four_however_long_the_playlist() {
+        // 117 tracks was the real case; walking all of them to fill four slots
+        // is work done for nothing.
+        let arts: Vec<_> = (0..200).map(|i| art(&i.to_string())).collect();
+        assert_eq!(
+            distinct_covers(arts.iter(), MOSAIC_TILES).len(),
+            MOSAIC_TILES
+        );
+    }
+
+    #[test]
+    fn order_follows_the_playlist() {
+        // Top-left is the first track, so the mosaic matches what the list
+        // underneath it shows.
+        let arts = [art("z"), art("y"), art("x"), art("w")];
+        let picked = distinct_covers(arts.iter(), MOSAIC_TILES);
+        let keys: Vec<_> = picked.iter().map(Artwork::cache_key).collect();
+        let want: Vec<_> = arts.iter().map(Artwork::cache_key).collect();
+        assert_eq!(keys, want);
+    }
+
+    #[test]
+    fn too_few_covers_yields_too_few() {
+        // The caller keeps the empty sleeve rather than drawing a half grid.
+        assert!(distinct_covers([art("a")].iter(), MOSAIC_TILES).len() < MOSAIC_TILES);
+        assert!(distinct_covers([].iter(), MOSAIC_TILES).is_empty());
     }
 }

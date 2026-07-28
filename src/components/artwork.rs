@@ -166,6 +166,97 @@ pub fn decode(path: &Path, size: i32) -> Option<Decoded> {
     })
 }
 
+/// Where a mosaic lands, named after the covers it is made of.
+///
+/// The four cache keys concatenated, rather than the playlist's id, and that is
+/// deliberate: it means the file **invalidates itself**. Add a track to the
+/// front of a playlist and the first four covers change, so the name changes
+/// and a new mosaic is composed; nothing has to notice the edit or expire
+/// anything. Keys are sixteen hex characters each, so four of them is a
+/// perfectly good filename and no second hash is needed.
+fn mosaic_path(arts: &[Artwork], size: u32) -> Option<PathBuf> {
+    let name: String = arts.iter().map(Artwork::cache_key).collect();
+    Some(cache_dir()?.join(format!("{name}-mosaic-{size}.png")))
+}
+
+/// Draw the 2×2 mosaic Apple's web player draws for a playlist you made.
+///
+/// Apple sends **no artwork at all** for a user-created playlist — measured,
+/// and written up in CLAUDE.md — so unlike everything else in this module there
+/// is nothing to fetch. There is only something to build, out of covers we are
+/// fetching anyway.
+///
+/// Off the GTK thread with everything else here (rule 8), and cached like
+/// everything else here: composed once and found on disk afterwards, including
+/// across restarts.
+pub async fn mosaic(arts: Vec<Artwork>, size: u32) -> Option<PathBuf> {
+    let out = mosaic_path(&arts, size)?;
+    if out.is_file() {
+        return Some(out);
+    }
+
+    // Each quadrant at half the finished size, through the ordinary `fetch` so
+    // the tiles share the disk cache with every other use of those covers.
+    let mut tiles = Vec::with_capacity(arts.len());
+    for art in &arts {
+        match fetch(art.clone(), size / 2).await {
+            Ok(path) => tiles.push(path),
+            Err(err) => {
+                tracing::warn!(?err, "mosaic tile not fetched; no mosaic");
+                return None;
+            }
+        }
+    }
+
+    let bytes = compose(&tiles, size as i32)?;
+    if let Err(err) = write_atomically(&out, &bytes) {
+        tracing::warn!(?err, "mosaic not written");
+        return None;
+    }
+    tracing::debug!(file = %out.display(), tiles = tiles.len(), "mosaic composed");
+    Some(out)
+}
+
+/// Tile `covers` into one square image, top-left to bottom-right, as PNG bytes.
+fn compose(covers: &[PathBuf], size: i32) -> Option<Vec<u8>> {
+    let half = size / 2;
+    let canvas = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, size, size)?;
+    // Opaque, so a cover with alpha does not composite onto uninitialised
+    // memory — `Pixbuf::new` does not clear what it allocates.
+    canvas.fill(0x0000_00ff);
+
+    for (i, path) in covers.iter().enumerate() {
+        let x = (i as i32 % 2) * half;
+        let y = (i as i32 / 2) * half;
+        // `false` for aspect ratio: a quadrant must be exactly square or the
+        // seams between the four do not line up. Apple's own artwork is square
+        // already, so nothing is being distorted in practice.
+        let tile = gdk_pixbuf::Pixbuf::from_file_at_scale(path, half, half, false).ok()?;
+        // Scale 1:1 and offset to the quadrant — the tile is already the right
+        // size, so this is a blit, clipped to the quadrant's rectangle.
+        tile.composite(
+            &canvas,
+            x,
+            y,
+            half,
+            half,
+            f64::from(x),
+            f64::from(y),
+            1.0,
+            1.0,
+            gdk_pixbuf::InterpType::Bilinear,
+            255,
+        );
+    }
+
+    // PNG rather than JPEG: this is synthetic, with four hard edges that JPEG
+    // would ring around, and it is written once per playlist.
+    canvas
+        .save_to_bufferv("png", &[])
+        .map_err(|err| tracing::warn!(?err, "mosaic not encoded"))
+        .ok()
+}
+
 /// How wide the drawer's backdrop image is, in pixels. Deliberately tiny.
 const BACKDROP_PX: i32 = 48;
 
@@ -215,6 +306,72 @@ mod tests {
         let a = Artwork::new("https://is1.mzstatic.com/a/{w}x{h}bb.jpg");
         let b = Artwork::new("https://is1.mzstatic.com/b/{w}x{h}bb.jpg");
         assert_ne!(cache_path(&a, 512), cache_path(&b, 512));
+    }
+
+    /// A solid-colour square on disk, standing in for a cover.
+    fn swatch(dir: &Path, name: &str, rgb: u32) -> PathBuf {
+        let pixbuf =
+            gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 16, 16).unwrap();
+        pixbuf.fill(rgb << 8 | 0xff);
+        let path = dir.join(format!("{name}.png"));
+        pixbuf.savev(&path, "png", &[]).unwrap();
+        path
+    }
+
+    /// The colour at a pixel, as `0xRRGGBB`.
+    fn pixel_at(pixbuf: &gdk_pixbuf::Pixbuf, x: i32, y: i32) -> u32 {
+        let bytes = pixbuf.read_pixel_bytes();
+        let channels = pixbuf.n_channels() as usize;
+        let offset = y as usize * pixbuf.rowstride() as usize + x as usize * channels;
+        u32::from(bytes[offset]) << 16
+            | u32::from(bytes[offset + 1]) << 8
+            | u32::from(bytes[offset + 2])
+    }
+
+    #[test]
+    fn a_mosaic_puts_each_cover_in_its_own_quadrant() {
+        // A real composition, not a mock: gdk-pixbuf needs no GTK main loop, so
+        // the arithmetic that decides where each quadrant lands is testable —
+        // and getting it wrong is the kind of thing that looks *nearly* right.
+        let dir = std::env::temp_dir().join(format!("slipmat-mosaic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let covers = [
+            swatch(&dir, "tl", 0xff_0000),
+            swatch(&dir, "tr", 0x00_ff00),
+            swatch(&dir, "bl", 0x00_00ff),
+            swatch(&dir, "br", 0xff_ff00),
+        ];
+        let png = compose(&covers, 64).unwrap();
+        let out = dir.join("mosaic.png");
+        write_atomically(&out, &png).unwrap();
+        let made = gdk_pixbuf::Pixbuf::from_file(&out).unwrap();
+
+        assert_eq!((made.width(), made.height()), (64, 64));
+        // Sampled well inside each quadrant, away from the seams.
+        assert_eq!(pixel_at(&made, 16, 16), 0xff_0000, "top left");
+        assert_eq!(pixel_at(&made, 48, 16), 0x00_ff00, "top right");
+        assert_eq!(pixel_at(&made, 16, 48), 0x00_00ff, "bottom left");
+        assert_eq!(pixel_at(&made, 48, 48), 0xff_ff00, "bottom right");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_mosaic_is_named_after_its_covers_so_it_reinvalidates() {
+        // Named by content rather than by playlist id, so adding a track to the
+        // front of a playlist changes the filename and a new mosaic is composed.
+        // Nothing has to notice the edit or expire anything.
+        let a = Artwork::new("https://is1.mzstatic.com/a/{w}x{h}bb.jpg");
+        let b = Artwork::new("https://is1.mzstatic.com/b/{w}x{h}bb.jpg");
+
+        let one = mosaic_path(&[a.clone(), b.clone()], 512).unwrap();
+        let same = mosaic_path(&[a.clone(), b.clone()], 512).unwrap();
+        let reordered = mosaic_path(&[b, a], 512).unwrap();
+
+        assert_eq!(one, same, "the same covers must reuse one file");
+        assert_ne!(one, reordered, "order is part of the picture");
+        assert!(one.to_string_lossy().ends_with("-mosaic-512.png"));
     }
 
     #[test]

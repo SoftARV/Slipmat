@@ -2520,11 +2520,14 @@ impl AppModel {
                     Ok((playlist, tracks)) => {
                         tracing::info!(page, tracks = tracks.len(), playlist = %playlist.name, "playlist loaded");
                         let art = playlist.artwork.clone();
+                        // Read before the tracks are moved: a playlist Apple
+                        // sends no picture for gets one composed from these.
+                        let covers = pages::playlist_covers(&tracks);
                         target.show_playlist(
                             &playlist,
                             tracks.into_iter().map(Entry::Song).collect(),
                         );
-                        self.fetch_page_art(page, art, &sender);
+                        self.fetch_page_art_or_mosaic(page, art, covers, &sender);
                     }
                     Err(err) => {
                         tracing::warn!(page, %err, "playlist page failed");
