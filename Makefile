@@ -73,8 +73,19 @@ flatpak:
 	$(FLATPAK_BUILDER) --force-clean --user --install \
 		--repo=flatpak-repo build-dir packaging/flatpak/dev.miguelrincon.Slipmat.yml
 
+# `--runtime-repo` is the difference between a bundle that installs and one
+# that stops with "requires the runtime org.gnome.Platform/x86_64/49 which was
+# not found". A .flatpak carries the *app* and never the runtime, so on a
+# machine with no Flathub remote there is nothing for it to sit on and flatpak
+# has no idea where to look. The URL is recorded inside the bundle, so
+# installing it offers to add Flathub and pull the runtime itself.
+#
+# Found by installing on a clean Ubuntu VM, which is the only place it could
+# have been found: every machine that has ever built this already had the
+# runtime.
 flatpak-bundle: flatpak
-	flatpak build-bundle flatpak-repo Slipmat.flatpak dev.miguelrincon.Slipmat master
+	flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+		flatpak-repo Slipmat.flatpak dev.miguelrincon.Slipmat master
 	@echo "Slipmat.flatpak — copy it anywhere and: flatpak install ./Slipmat.flatpak"
 
 install: build install-sidecar dev-install
