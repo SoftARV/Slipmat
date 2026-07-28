@@ -189,31 +189,56 @@ fn mosaic_path(arts: &[Artwork], size: u32) -> Option<PathBuf> {
 /// Off the GTK thread with everything else here (rule 8), and cached like
 /// everything else here: composed once and found on disk afterwards, including
 /// across restarts.
-pub async fn mosaic(arts: Vec<Artwork>, size: u32) -> Option<PathBuf> {
+pub async fn mosaic(arts: Vec<Artwork>, size: u32, tile_px: u32) -> Option<PathBuf> {
     let out = mosaic_path(&arts, size)?;
     if out.is_file() {
         return Some(out);
     }
+    let started = std::time::Instant::now();
 
-    // Each quadrant at half the finished size, through the ordinary `fetch` so
-    // the tiles share the disk cache with every other use of those covers.
-    let mut tiles = Vec::with_capacity(arts.len());
-    for art in &arts {
-        match fetch(art.clone(), size / 2).await {
-            Ok(path) => tiles.push(path),
+    // **All four at once, and at a size something else already fetches.**
+    //
+    // Both halves of that were wrong first time round and both were felt as
+    // "the page takes a long time". Awaiting them in a loop makes four round
+    // trips where one will do; and fetching the exact quadrant size — half the
+    // finished mosaic — asks for a size *nothing else in the app uses*, so four
+    // covers already sitting on disk at `tile_px` were downloaded again anyway.
+    // Passed in rather than assumed here, so the call site is what guarantees
+    // it matches the grids.
+    let mut tasks = tokio::task::JoinSet::new();
+    for (slot, art) in arts.iter().cloned().enumerate() {
+        tasks.spawn(async move { (slot, fetch(art, tile_px).await) });
+    }
+
+    // Collected by slot: which download finishes first must not decide where a
+    // cover lands, or the mosaic reshuffles itself between runs.
+    let mut tiles: Vec<Option<PathBuf>> = vec![None; arts.len()];
+    while let Some(joined) = tasks.join_next().await {
+        let Ok((slot, fetched)) = joined else {
+            tracing::warn!("mosaic tile task panicked; no mosaic");
+            return None;
+        };
+        match fetched {
+            Ok(path) => tiles[slot] = Some(path),
             Err(err) => {
                 tracing::warn!(?err, "mosaic tile not fetched; no mosaic");
                 return None;
             }
         }
     }
+    let tiles: Vec<PathBuf> = tiles.into_iter().collect::<Option<Vec<_>>>()?;
 
     let bytes = compose(&tiles, size as i32)?;
     if let Err(err) = write_atomically(&out, &bytes) {
         tracing::warn!(?err, "mosaic not written");
         return None;
     }
-    tracing::debug!(file = %out.display(), tiles = tiles.len(), "mosaic composed");
+    tracing::debug!(
+        file = %out.display(),
+        tiles = tiles.len(),
+        ms = started.elapsed().as_millis(),
+        "mosaic composed"
+    );
     Some(out)
 }
 

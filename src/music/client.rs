@@ -371,10 +371,13 @@ impl Client {
     /// the first 100 of a 400-track playlist is the kind of wrong answer that
     /// looks right.
     pub async fn library_playlist(&self, id: &str) -> Result<(Playlist, Vec<Track>)> {
-        // Sequential rather than joined: the details request is one small
-        // response, and the track walk below is already six pages at a time.
-        // Overlapping them would save a round trip and cost a tokio feature.
-        let playlist = self.library_playlist_details(id).await?;
+        // **Overlapped.** A small details request in front of the track walk is
+        // still a round trip of nothing on screen, and joining costs no tokio
+        // feature `all_pages` does not already use below.
+        let details = self.clone();
+        let for_details = id.to_owned();
+        let spawned =
+            tokio::spawn(async move { details.library_playlist_details(&for_details).await });
         let tracks = self
             .all_library::<Resource<SongAttributes>, Track>(
                 &format!("playlists/{id}/tracks"),
@@ -382,6 +385,7 @@ impl Client {
                 PLAYLIST_MAX,
             )
             .await?;
+        let playlist = spawned.await.context("playlist details task panicked")??;
         Ok((playlist, tracks))
     }
 
