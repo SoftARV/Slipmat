@@ -1,6 +1,6 @@
 # Maintainer: Miguel Rincon <miguelaezak@gmail.com>
 pkgname=tonearm
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="A native GNOME client for Apple Music"
 arch=('x86_64')          # Widevine on Linux is x86_64 only
@@ -9,7 +9,7 @@ license=('GPL-3.0-or-later')
 depends=('gtk4' 'libadwaita' 'librsvg' 'hicolor-icon-theme')
 makedepends=('cargo' 'nodejs' 'npm' 'git' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('1ce8aa0102dcdf6997a0f5f270d8e8321498abb24563ffb505fd4b96ea4385af')
+sha256sums=('3e7dc047d05fc49442c36f7ba621f6b7507da3ba7563ee9ff3c8679f515bb11c')
 options=('!debug' '!lto')
 
 # The ~200 MB castLabs Electron download and the crate registry both need the
