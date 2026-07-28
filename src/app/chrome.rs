@@ -459,9 +459,13 @@ impl AppModel {
         }
         appearance.add(&accent);
 
+        // No group description. It carried a caveat about notifications needing
+        // the app to be installed, which is a **developer's** problem — anyone
+        // who has Preferences open from a Flatpak or `make install` is already
+        // past it, and pointing at the README from inside a settings dialog is
+        // not something a preferences pane should do.
         let notifications = adw::PreferencesGroup::builder()
             .title("Notifications")
-            .description("Notifications only appear once Slipmat is installed — see the README.")
             .build();
         let notify = adw::SwitchRow::builder()
             .title("Notify on track change")
