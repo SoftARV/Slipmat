@@ -162,6 +162,16 @@ flatpak install ./Slipmat.flatpak
 flatpak run dev.miguelrincon.Slipmat
 ```
 
+A bundle carries the app and **not** the GNOME 49 runtime it sits on, so the
+install offers to fetch that from Flathub the first time. Answer yes, or it
+stops with *"requires the runtime org.gnome.Platform/x86_64/49 which was not
+found"*. If your machine has no Flathub remote at all:
+
+```bash
+flatpak remote-add --if-not-exists --user flathub \
+  https://dl.flathub.org/repo/flathub.flatpakrepo
+```
+
 It is **not on Flathub** and is not intended to be. Build one yourself with
 `make flatpak-bundle`, which needs `org.flatpak.Builder` and takes a few
 minutes; see [`packaging/flatpak/README.md`](packaging/flatpak/README.md).

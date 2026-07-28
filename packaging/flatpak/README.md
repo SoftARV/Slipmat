@@ -16,6 +16,12 @@ make flatpak-bundle   # produces Slipmat.flatpak to carry elsewhere
 The first build needs the toolchain, all of it from Flathub and none of it
 needing root:
 
+**Those are build dependencies.** Installing the finished bundle needs only
+`org.gnome.Platform//49`, and `make flatpak-bundle` records Flathub inside the
+bundle (`--runtime-repo`) so flatpak offers to fetch it. Without that flag the
+install stops dead on a machine with no Flathub remote — which is every clean
+machine, and none of the ones this was developed on.
+
 ```bash
 flatpak install --user flathub \
   org.flatpak.Builder \
