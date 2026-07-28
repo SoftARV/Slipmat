@@ -105,6 +105,13 @@ fetching itself into the sandbox, a real library over the API, and a track
 decrypting and playing. That is the first time any of it has run outside Arch,
 and it is what the Flatpak exists for.
 
+The desktop integration came with it, which is the half that could have failed
+quietly: the icon appears in the app grid rather than needing `flatpak run`, and
+**the shell's media controls appear and work** — so `--own-name` and the bus
+proxy do what the manifest claims on a foreign system. Playback working while
+the shell showed nothing would have been the plausible failure there, and it did
+not happen.
+
 Two things that run also settled, and neither could have been found here:
 
 - **A bundle needs `--runtime-repo`.** It carries the app and never the runtime,
@@ -112,7 +119,10 @@ Two things that run also settled, and neither could have been found here:
   org.gnome.Platform/x86_64/49 which was not found"*. Every machine that has
   ever *built* this already had the runtime, because building needs the SDK
   beside it — so the one artefact aimed at systems that cannot build was the one
-  thing never installed on one.
+  thing never installed on one. Fixed, and then **re-tested on a freshly built
+  VM** rather than the one that had already been repaired by hand: the install
+  adds Flathub and pulls GNOME 49 on its own. Re-testing on the repaired machine
+  would have proved nothing, because the runtime was already there.
 - **The app had never been seen in a light theme.** It works, but the drawer's
   backdrop is washed out: the veil is `@window_bg_color` so it adapts, but the
   two numbers behind it were tuned against dark only. Not a design question, a
@@ -1055,12 +1065,19 @@ its full height. An album is a dozen tracks. That is the right trade.
 - **Removing a queue track scrolls the list to the top** (#6). Four approaches
   tried and ruled out; the issue records them so they are not retried. Playing
   and jumping are unaffected, and the library list no longer does it.
-- **Nothing stands between a runaway reducer and the session** (#37). The
-  sidecar journals every dispatch, commands are not coalesced, and there is no
-  rate ceiling — so a message loop costs a disk write and a bus round trip per
-  lap. That is why the binding bug above reached the compositor instead of
-  staying an app bug. Rule 6 says a dead sidecar must not look healthy; this is
-  the same argument reversed.
+- **The drawer's backdrop washes out in a light theme** (#77). Found the first time
+  the app was seen outside a dark theme, on the Ubuntu VM. The veil is
+  `@window_bg_color` so it adapts on its own, but the two numbers beside it —
+  the bar's lighter veil, the drawer's 150% sizing — were chosen against dark
+  only. A pair of numbers, not a design question.
+
+**Fixed, and left here because the reasoning is still load-bearing:** a runaway
+reducer used to have nothing between it and the session (#37) — every dispatch
+journalled, no coalescing, no ceiling, so a message loop cost a disk write and a
+bus round trip per lap. That is why the `#[watch]` binding bug above reached the
+compositor instead of staying an app bug. `sidecar.rs` now carries a per-kind
+rate ceiling, deliberately generous: it exists to stop a storm, not to shape
+ordinary traffic.
 
 ## Commands
 
