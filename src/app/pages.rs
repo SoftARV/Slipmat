@@ -14,7 +14,8 @@ use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, DetailPage, PageKind, RowSta
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
 
-/// How many covers a mosaic is made of. Apple's own is 2×2 and so is ours.
+/// The most covers a mosaic uses. Fewer is fine — they divide the square
+/// between them rather than leaving holes; see `artwork::layout`.
 pub(super) const MOSAIC_TILES: usize = 4;
 
 /// The first `want` **distinct** covers, in order.
@@ -42,10 +43,8 @@ pub(super) fn distinct_covers<'a>(
     covers
 }
 
-/// The covers a playlist's mosaic would be built from.
-///
-/// Fewer than [`MOSAIC_TILES`] of them means no mosaic at all: a half-filled
-/// grid looks broken in a way an empty sleeve does not.
+/// The covers a playlist's mosaic would be built from — up to
+/// [`MOSAIC_TILES`], and any number below that is still a picture.
 pub(super) fn playlist_covers(tracks: &[Track]) -> Vec<Artwork> {
     distinct_covers(
         tracks.iter().filter_map(|track| track.artwork.as_ref()),
@@ -208,12 +207,16 @@ impl AppModel {
             self.fetch_page_art(page, art, sender);
             return;
         }
-        if covers.len() < MOSAIC_TILES {
-            tracing::warn!(
-                page,
-                have = covers.len(),
-                "too few distinct covers for a mosaic; keeping the empty sleeve"
-            );
+        // **One cover is not a mosaic, it is a cover.** A playlist drawn from a
+        // single album gets that album's sleeve, fetched at page size through
+        // the ordinary path — sharper than compositing one picture into a
+        // square we would then have to invent a name for.
+        if covers.len() == 1 {
+            self.fetch_page_art(page, covers.into_iter().next(), sender);
+            return;
+        }
+        if covers.is_empty() {
+            tracing::warn!(page, "no track covers; keeping the empty sleeve");
             return;
         }
         sender.oneshot_command(async move {

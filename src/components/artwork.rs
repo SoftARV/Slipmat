@@ -242,40 +242,82 @@ pub async fn mosaic(arts: Vec<Artwork>, size: u32, tile_px: u32) -> Option<PathB
     Some(out)
 }
 
-/// Tile `covers` into one square image, top-left to bottom-right, as PNG bytes.
+/// Where each cover goes, for however many there are. `(x, y, w, h)`.
+///
+/// **A playlist is not guaranteed four albums**, and a grid with holes in it
+/// looks broken rather than sparse. So the covers there are divide the square
+/// between them instead:
+///
+/// ```text
+///   two            three          four
+///  ┌────┬────┐   ┌────┬────┐   ┌────┬────┐
+///  │    │    │   │    ├────┤   ├────┼────┤
+///  └────┴────┘   └────┴────┘   └────┴────┘
+/// ```
+///
+/// `b` rather than a second `a` so an odd `size` still tiles exactly: a stray
+/// pixel column down the middle is the sort of thing nobody sees in a mockup
+/// and everybody sees at 2am.
+fn layout(count: usize, size: i32) -> Vec<(i32, i32, i32, i32)> {
+    let a = size / 2;
+    let b = size - a;
+    match count {
+        0 => Vec::new(),
+        1 => vec![(0, 0, size, size)],
+        2 => vec![(0, 0, a, size), (a, 0, b, size)],
+        3 => vec![(0, 0, a, size), (a, 0, b, a), (a, a, b, b)],
+        _ => vec![(0, 0, a, a), (a, 0, b, a), (0, a, a, b), (a, a, b, b)],
+    }
+}
+
+/// Draw one cover to fill `(x, y, w, h)`, cropping rather than squashing.
+///
+/// Scaled by whichever axis needs the *most* — "cover", not "contain" — then
+/// centred, so the rectangle is filled edge to edge and what falls outside is
+/// trimmed evenly. The alternative distorts: a square sleeve stretched into a
+/// half-width strip makes everyone on the cover look thin, which reads as a
+/// rendering fault rather than as a crop.
+fn place(canvas: &gdk_pixbuf::Pixbuf, cover: &Path, x: i32, y: i32, w: i32, h: i32) -> Option<()> {
+    let src = gdk_pixbuf::Pixbuf::from_file(cover).ok()?;
+    let (sw, sh) = (f64::from(src.width()), f64::from(src.height()));
+    if sw <= 0.0 || sh <= 0.0 {
+        return None;
+    }
+    let scale = (f64::from(w) / sw).max(f64::from(h) / sh);
+    // Where the scaled cover's own origin lands, so its middle sits over the
+    // middle of the rectangle. `composite` clips to the rectangle, so the
+    // overhang costs nothing but is what makes the fill exact.
+    let offset_x = f64::from(x) + (f64::from(w) - sw * scale) / 2.0;
+    let offset_y = f64::from(y) + (f64::from(h) - sh * scale) / 2.0;
+    src.composite(
+        canvas,
+        x,
+        y,
+        w,
+        h,
+        offset_x,
+        offset_y,
+        scale,
+        scale,
+        gdk_pixbuf::InterpType::Bilinear,
+        255,
+    );
+    Some(())
+}
+
+/// Tile `covers` into one square image, as PNG bytes.
 fn compose(covers: &[PathBuf], size: i32) -> Option<Vec<u8>> {
-    let half = size / 2;
     let canvas = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, size, size)?;
     // Opaque, so a cover with alpha does not composite onto uninitialised
     // memory — `Pixbuf::new` does not clear what it allocates.
     canvas.fill(0x0000_00ff);
 
-    for (i, path) in covers.iter().enumerate() {
-        let x = (i as i32 % 2) * half;
-        let y = (i as i32 / 2) * half;
-        // `false` for aspect ratio: a quadrant must be exactly square or the
-        // seams between the four do not line up. Apple's own artwork is square
-        // already, so nothing is being distorted in practice.
-        let tile = gdk_pixbuf::Pixbuf::from_file_at_scale(path, half, half, false).ok()?;
-        // Scale 1:1 and offset to the quadrant — the tile is already the right
-        // size, so this is a blit, clipped to the quadrant's rectangle.
-        tile.composite(
-            &canvas,
-            x,
-            y,
-            half,
-            half,
-            f64::from(x),
-            f64::from(y),
-            1.0,
-            1.0,
-            gdk_pixbuf::InterpType::Bilinear,
-            255,
-        );
+    for (cover, (x, y, w, h)) in covers.iter().zip(layout(covers.len(), size)) {
+        place(&canvas, cover, x, y, w, h)?;
     }
 
-    // PNG rather than JPEG: this is synthetic, with four hard edges that JPEG
-    // would ring around, and it is written once per playlist.
+    // PNG rather than JPEG: this is synthetic, with hard edges that JPEG would
+    // ring around, and it is written once per playlist.
     canvas
         .save_to_bufferv("png", &[])
         .map_err(|err| tracing::warn!(?err, "mosaic not encoded"))
@@ -397,6 +439,55 @@ mod tests {
         assert_eq!(one, same, "the same covers must reuse one file");
         assert_ne!(one, reordered, "order is part of the picture");
         assert!(one.to_string_lossy().ends_with("-mosaic-512.png"));
+    }
+
+    #[test]
+    fn a_mosaic_divides_the_square_however_many_covers_there_are() {
+        // A playlist is not guaranteed four albums, and a 2x2 with holes in it
+        // looks broken rather than sparse. Whatever there is fills the square.
+        for count in 1..=4 {
+            let rects = layout(count, 64);
+            assert_eq!(rects.len(), count, "one rectangle per cover");
+            let area: i32 = rects.iter().map(|(_, _, w, h)| w * h).sum();
+            assert_eq!(area, 64 * 64, "{count} covers must leave no gap");
+        }
+        assert!(layout(0, 64).is_empty());
+    }
+
+    #[test]
+    fn an_odd_size_still_tiles_exactly() {
+        // `size / 2` twice leaves a stray pixel column down the middle — the
+        // sort of thing nobody sees in a mockup and everybody sees at 2am.
+        for count in 1..=4 {
+            let area: i32 = layout(count, 65).iter().map(|(_, _, w, h)| w * h).sum();
+            assert_eq!(area, 65 * 65, "{count} covers at an odd size");
+        }
+    }
+
+    #[test]
+    fn two_and_three_covers_land_where_the_diagram_says() {
+        let dir = std::env::temp_dir().join(format!("slipmat-layout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let red = swatch(&dir, "r", 0xff_0000);
+        let green = swatch(&dir, "g", 0x00_ff00);
+        let blue = swatch(&dir, "b", 0x00_00ff);
+
+        // Two: left half, right half.
+        let out = dir.join("two.png");
+        write_atomically(&out, &compose(&[red.clone(), green.clone()], 64).unwrap()).unwrap();
+        let two = gdk_pixbuf::Pixbuf::from_file(&out).unwrap();
+        assert_eq!(pixel_at(&two, 16, 32), 0xff_0000, "left");
+        assert_eq!(pixel_at(&two, 48, 32), 0x00_ff00, "right");
+
+        // Three: tall left, then two stacked on the right.
+        let out = dir.join("three.png");
+        write_atomically(&out, &compose(&[red, green, blue], 64).unwrap()).unwrap();
+        let three = gdk_pixbuf::Pixbuf::from_file(&out).unwrap();
+        assert_eq!(pixel_at(&three, 16, 32), 0xff_0000, "tall left");
+        assert_eq!(pixel_at(&three, 48, 16), 0x00_ff00, "top right");
+        assert_eq!(pixel_at(&three, 48, 48), 0x00_00ff, "bottom right");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
