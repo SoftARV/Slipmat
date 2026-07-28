@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Slipmat
+GenericName=Music Player
+Comment=Play your Apple Music library natively on GNOME
+Exec=slipmat
+Icon=dev.miguelrincon.Slipmat
+Terminal=false
+Categories=AudioVideo;Audio;Player;GTK;
+Keywords=Music;Apple;Player;Audio;Playlist;Streaming;
+StartupNotify=true
+StartupWMClass=slipmat
+X-GNOME-UsesNotifications=true

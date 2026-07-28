@@ -1,6 +1,6 @@
 # Flatpak
 
-Tonearm needs libadwaita ≥ 1.8 and GTK ≥ 4.20 — relm4's `gnome_49` feature —
+Slipmat needs libadwaita ≥ 1.8 and GTK ≥ 4.20 — relm4's `gnome_49` feature —
 which almost nothing ships yet. Debian stable, Ubuntu 24.04 and Fedora ≤ 42
 cannot build it. A Flatpak carries the GNOME 49 runtime with it, so those same
 systems can run it.
@@ -10,7 +10,7 @@ yourself.
 
 ```bash
 make flatpak          # build and install locally
-make flatpak-bundle   # produces Tonearm.flatpak to carry elsewhere
+make flatpak-bundle   # produces Slipmat.flatpak to carry elsewhere
 ```
 
 The first build needs the toolchain, all of it from Flathub and none of it
@@ -28,7 +28,7 @@ flatpak install --user flathub \
 
 | | |
 | --- | --- |
-| `dev.miguelrincon.Tonearm.yml` | the manifest |
+| `dev.miguelrincon.Slipmat.yml` | the manifest |
 | `cargo-sources.json` | 489 crates by hash — generated, committed |
 | `generate-sources.sh` | regenerates the above from `Cargo.lock` |
 | `electron-shim` | puts zypak where it has to be |
@@ -69,8 +69,8 @@ during a build. Every crate is declared with a hash up front.
 ## The CDM
 
 It is fetched, not bundled — by Chromium's own component updater, into
-`~/.var/app/dev.miguelrincon.Tonearm/config/Tonearm/WidevineCdm/`. Nothing
-proprietary is redistributed here: Electron is MIT, Tonearm is GPL-3, and the
+`~/.var/app/dev.miguelrincon.Slipmat/config/Slipmat/WidevineCdm/`. Nothing
+proprietary is redistributed here: Electron is MIT, Slipmat is GPL-3, and the
 CDM arrives on the user's machine through their own updater.
 
 This was measured rather than assumed — see CLAUDE.md. The original plan

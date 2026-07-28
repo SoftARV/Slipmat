@@ -16,12 +16,12 @@ use relm4::RelmApp;
 use relm4::gtk;
 use tracing_subscriber::EnvFilter;
 
-pub(crate) const APP_ID: &str = "dev.miguelrincon.Tonearm";
+pub(crate) const APP_ID: &str = "dev.miguelrincon.Slipmat";
 
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("tonearm=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("slipmat=info")),
         )
         .init();
 

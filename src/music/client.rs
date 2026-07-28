@@ -305,7 +305,7 @@ impl Client {
     //
     // The harvested web-player token does not carry that permission, and there
     // is no way to ask for it from here. So favouriting is **add-only** in
-    // Tonearm, and the menu does not offer a removal it cannot perform.
+    // Slipmat, and the menu does not offer a removal it cannot perform.
 
     /// The shared POST-and-check for both. Neither returns a body worth
     /// parsing; what matters is that Apple accepted it.

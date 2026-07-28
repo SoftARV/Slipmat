@@ -23,7 +23,7 @@ pub(super) fn start_sidecar(sender: &ComponentSender<AppModel>) {
 /// This is a **streaming** command, not a `oneshot_command`: the receiver stays
 /// alive for the whole session, which is the one case CLAUDE.md reserves
 /// `command` for. `drop_on_shutdown` is what guarantees the child can't outlive
-/// the window — without it, closing Tonearm would leave Chromium playing music
+/// the window — without it, closing Slipmat would leave Chromium playing music
 /// with no way to stop it.
 pub(super) fn respawn_sidecar(sender: &ComponentSender<AppModel>, delay: std::time::Duration) {
     sender.command(move |out, shutdown| {
@@ -130,8 +130,8 @@ impl AppModel {
             Event::HookFailed { detail } => {
                 // The loud failure rule 4 demands.
                 self.stage = Stage::Broken(format!(
-                    "Apple Music changed and Tonearm can't attach to its player ({detail}). \
-                     Tonearm needs an update."
+                    "Apple Music changed and Slipmat can't attach to its player ({detail}). \
+                     Slipmat needs an update."
                 ));
             }
             Event::HookWarning { detail } => tracing::warn!(%detail, "hook warning"),

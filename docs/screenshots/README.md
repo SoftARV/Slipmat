@@ -12,7 +12,7 @@ What the top-level README expects to find here, and what each shot should show.
 
 ```bash
 rsvg-convert -w 128 -h 128 \
-  data/icons/hicolor/scalable/apps/dev.miguelrincon.Tonearm.svg \
+  data/icons/hicolor/scalable/apps/dev.miguelrincon.Slipmat.svg \
   -o docs/screenshots/icon.png
 ```
 

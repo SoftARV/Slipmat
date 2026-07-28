@@ -6,7 +6,7 @@
 //! **State, not cache and not a preference.** It cannot be recomputed, so it
 //! does not belong in the cache directory next to `unplayable.json`, which can;
 //! and it is not something anybody chose, so it does not belong in
-//! `settings.ini` next to the theme. `$XDG_STATE_HOME/tonearm/session.json`,
+//! `settings.ini` next to the theme. `$XDG_STATE_HOME/slipmat/session.json`,
 //! which is exactly what that directory is for.
 //!
 //! Catalog ids are not secrets, so rule 7 is not engaged — there is nothing
@@ -35,7 +35,7 @@ fn path() -> Option<PathBuf> {
         Ok(x) if !x.is_empty() => PathBuf::from(x),
         _ => PathBuf::from(std::env::var("HOME").ok()?).join(".local/state"),
     };
-    Some(base.join("tonearm/session.json"))
+    Some(base.join("slipmat/session.json"))
 }
 
 /// What was playing last time, if anything.

@@ -196,17 +196,17 @@ pub(super) fn icon(name: &'static str) -> &'static str {
 
 pub(super) fn show_about(parent: &adw::ApplicationWindow) {
     let about = adw::AboutDialog::builder()
-        .application_name("Tonearm")
+        .application_name("Slipmat")
         .application_icon(crate::APP_ID)
         .developer_name("Miguel Rincon")
         .version(env!("CARGO_PKG_VERSION"))
         .license_type(gtk::License::Gpl30)
-        .website("https://github.com/SoftARV/Tonearm")
-        .issue_url("https://github.com/SoftARV/Tonearm/issues")
+        .website("https://github.com/SoftARV/Slipmat")
+        .issue_url("https://github.com/SoftARV/Slipmat/issues")
         .comments(
             "A native GNOME client for Apple Music.\n\n\
              Playback runs through Apple's own MusicKit player using Google's \
-             Widevine CDM, in a hidden helper process. Tonearm is a native \
+             Widevine CDM, in a hidden helper process. Slipmat is a native \
              front-end for a licensed session — it requires an active Apple \
              Music subscription and an internet connection.",
         )
@@ -266,9 +266,9 @@ impl AppModel {
     ) -> adw::Dialog {
         let page = adw::StatusPage::builder()
             .icon_name(crate::APP_ID)
-            .title("Welcome to Tonearm")
+            .title("Welcome to Slipmat")
             .description(
-                "Tonearm plays your Apple Music library natively on GNOME. \
+                "Slipmat plays your Apple Music library natively on GNOME. \
                  It needs an active Apple Music subscription.",
             )
             .build();
@@ -285,7 +285,7 @@ impl AppModel {
 
         // Said before the button is pressed, not after. A browser window
         // opening out of a native app is alarming when it is a surprise, and
-        // this is the one moment Tonearm cannot hide the web engine.
+        // this is the one moment Slipmat cannot hide the web engine.
         let note = gtk::Label::builder()
             .label(
                 "Apple's own sign-in page opens in a separate window, including \
@@ -399,7 +399,7 @@ impl AppModel {
         let dialog = adw::AlertDialog::new(
             Some("Sign out of Apple Music?"),
             Some(
-                "Tonearm will forget this session. Signing back in opens Apple's \
+                "Slipmat will forget this session. Signing back in opens Apple's \
                  login window again.",
             ),
         );
@@ -461,11 +461,11 @@ impl AppModel {
 
         let notifications = adw::PreferencesGroup::builder()
             .title("Notifications")
-            .description("Notifications only appear once Tonearm is installed — see the README.")
+            .description("Notifications only appear once Slipmat is installed — see the README.")
             .build();
         let notify = adw::SwitchRow::builder()
             .title("Notify on track change")
-            .subtitle("When a new song starts and Tonearm is not in focus")
+            .subtitle("When a new song starts and Slipmat is not in focus")
             .active(self.settings.notify_track_change)
             .build();
         {

@@ -60,7 +60,7 @@ impl AppModel {
     /// **Nothing is sent while the window has focus.** The Now Playing bar is
     /// already on screen saying the same thing, so a banner over it is the app
     /// telling you what you are looking at. Notifications earn their place when
-    /// Tonearm is behind something else or has no window at all — which, since
+    /// Slipmat is behind something else or has no window at all — which, since
     /// #32, is a state it can be in for hours.
     ///
     /// Checked here rather than in `maybe_notify` because the artwork path

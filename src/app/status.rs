@@ -184,7 +184,7 @@ impl AppModel {
             Stage::Starting => "Starting the playback engine".into(),
             Stage::InstallingWidevine => "Preparing playback".into(),
             Stage::Connecting => "Connecting to Apple Music".into(),
-            Stage::SignedOut => "Welcome to Tonearm".into(),
+            Stage::SignedOut => "Welcome to Slipmat".into(),
             Stage::Restarting(n) => format!("Reconnecting (attempt {n})"),
             Stage::Broken(_) => "Playback unavailable".into(),
             Stage::Ready => self
@@ -205,9 +205,9 @@ impl AppModel {
             }
             // The onboarding proper. Two things a first-time reader needs and
             // cannot find out by clicking: that a subscription is required —
-            // Tonearm is a front-end, not a source — and that everything after
+            // Slipmat is a front-end, not a source — and that everything after
             // sign-in happens here rather than in a browser.
-            Stage::SignedOut => "Tonearm plays your Apple Music library natively on GNOME. \
+            Stage::SignedOut => "Slipmat plays your Apple Music library natively on GNOME. \
                  It needs an active Apple Music subscription."
                 .into(),
             Stage::Broken(why) => why.clone(),

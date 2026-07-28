@@ -1,13 +1,13 @@
 {
-  "name": "tonearm-sidecar",
+  "name": "slipmat-sidecar",
   "version": "0.1.0",
   "private": true,
-  "description": "Invisible DRM playback engine for Tonearm. Never rendered.",
+  "description": "Invisible DRM playback engine for Slipmat. Never rendered.",
   "license": "GPL-3.0-or-later",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "debug": "TONEARM_SHOW_SIDECAR=1 electron ."
+    "debug": "SLIPMAT_SHOW_SIDECAR=1 electron ."
   },
   "devDependencies": {
     "electron": "https://github.com/castlabs/electron-releases#v43.0.0+wvcus"

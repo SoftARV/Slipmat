@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Miguel Rincon
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The hook. This is the ONE fragile surface in Tonearm (CLAUDE.md rule 4):
+// The hook. This is the ONE fragile surface in Slipmat (CLAUDE.md rule 4):
 // it reaches into a page Apple can change without warning.
 //
 // Rules for editing this file:
@@ -19,7 +19,7 @@ const READY_POLL_MS = 250
 let music = null
 let tokenTimer = null
 
-const emit = (event, payload) => ipcRenderer.send('tonearm:event', { event, ...payload })
+const emit = (event, payload) => ipcRenderer.send('slipmat:event', { event, ...payload })
 
 // Proof-of-life, sent before anything can go wrong. If Rust sees no
 // `hook-boot` at all, the preload is not running and no amount of debugging
@@ -52,7 +52,7 @@ function getInstance() {
 
 /// Is MusicKit up? Called BY THE MAIN PROCESS via executeJavaScript, because a
 /// timer in here cannot be trusted to run (see the wiring note below).
-window.__tonearmReady = () => {
+window.__slipmatReady = () => {
   try {
     return !!(window.MusicKit && window.MusicKit.getInstance())
   } catch {
@@ -164,7 +164,7 @@ function on(name, fn) {
   } catch {
     // An event this MusicKit version doesn't know about is survivable; a
     // missing *critical* one shows up as a player that never updates.
-    ipcRenderer.send('tonearm:event', { event: 'hook-warning', detail: `no event ${name}` })
+    ipcRenderer.send('slipmat:event', { event: 'hook-warning', detail: `no event ${name}` })
   }
 }
 
@@ -408,7 +408,7 @@ const commands = {
   refreshTokens: () => pushTokens(),
 }
 
-ipcRenderer.on('tonearm:command', async (_e, msg) => {
+ipcRenderer.on('slipmat:command', async (_e, msg) => {
   // Report arrival BEFORE doing anything. If Rust sends a command and no
   // `cmd-recv` comes back, the renderer never ran the handler at all — which
   // is a completely different problem from the command failing, and the two
@@ -445,8 +445,8 @@ ipcRenderer.on('tonearm:command', async (_e, msg) => {
 // then went silent for 90 seconds — no hook-ready and no hook-failed, because
 // the loop that would have reported either had itself frozen.
 //
-// So main.js polls window.__tonearmReady() over executeJavaScript, which runs
-// regardless of renderer timer state, and sends `tonearm:wire` when MusicKit is
+// So main.js polls window.__slipmatReady() over executeJavaScript, which runs
+// regardless of renderer timer state, and sends `slipmat:wire` when MusicKit is
 // up. Everything after that point is event-driven, and Chromium does not freeze
 // a page that is playing audio — so once playback starts the renderer stays
 // awake on its own.
@@ -474,13 +474,13 @@ function wire(trigger) {
 //
 //   1. The renderer self-poll below. Works when the page is live, and is what
 //      succeeds on a normal desktop session.
-//   2. main.js probing window.__tonearmReady() over executeJavaScript, which
+//   2. main.js probing window.__slipmatReady() over executeJavaScript, which
 //      keeps working in situations where the renderer's own timers stall.
 //
 // Whichever wins calls wire(); the `if (music) return` guard makes the loser a
 // no-op. Belt and braces on purpose — this handshake failing silently is the
 // worst failure mode the sidecar has.
-ipcRenderer.on('tonearm:wire', () => {
+ipcRenderer.on('slipmat:wire', () => {
   if (!wire('main-probe') && !music) {
     emit('hook-failed', { detail: 'MusicKit vanished between probe and wire' })
   }

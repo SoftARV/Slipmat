@@ -4,22 +4,22 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
 <p align="center">
-  <img src="docs/screenshots/icon.png" width="128" alt="Tonearm icon">
+  <img src="docs/screenshots/icon.png" width="128" alt="Slipmat icon">
 </p>
 
-# Tonearm
+# Slipmat
 
 A native GNOME client for Apple Music.
 
 Every other Apple Music option on Linux is `music.apple.com` in a costume —
 Electron wrapped around the website, with the website's scroll behaviour and the
-website's search field. Tonearm is the first one where the interface is actually
+website's search field. Slipmat is the first one where the interface is actually
 native: GTK4 and libadwaita, written in Rust, with real libadwaita lists, real
 GNOME search, and MPRIS that works in both directions.
 
 The web engine is still there. You just never see it.
 
-![Tonearm showing a library of songs, each starred as a favourite, with a menu
+![Slipmat showing a library of songs, each starred as a favourite, with a menu
 button on every row and the Now Playing bar along the bottom — the playing
 track's cover behind it, and its progress as a thin line across the
 top](docs/screenshots/library.webp)
@@ -27,7 +27,7 @@ top](docs/screenshots/library.webp)
 ## What it does
 
 **Gapless playback.** The feature the whole architecture exists to protect, and
-the one every wrapper gets wrong. Tonearm hands MusicKit the entire queue in one
+the one every wrapper gets wrong. Slipmat hands MusicKit the entire queue in one
 call and then keeps its hands off it, so a segued album crosses its boundaries
 the way it was mastered to. This is measured, not hoped for — see
 [Gapless, verified](#gapless-verified) below.
@@ -62,7 +62,7 @@ track that is playing. Jump to any track, remove any track, without disturbing
 playback. Right-click any row — or use its menu button — to play it next, add
 it to the queue, save it to your library or favourite it.
 
-**MPRIS, properly.** `org.mpris.MediaPlayer2.Tonearm`, bidirectional. The GNOME
+**MPRIS, properly.** `org.mpris.MediaPlayer2.Slipmat`, bidirectional. The GNOME
 Shell applet and the lock screen show correct metadata and artwork, and their
 controls reach the player. Hardware media keys work. Half-working MPRIS is the
 most common failure of the wrappers; this one is tested over `busctl`.
@@ -74,7 +74,7 @@ opt-in track-change notifications, a proper app icon and `.desktop` entry.
 
 Verified 2026-07-26 across four consecutive boundaries of a segued album:
 
-- Every transition happened **unprompted** — Tonearm sent nothing at any
+- Every transition happened **unprompted** — Slipmat sent nothing at any
   boundary. MusicKit advanced a queue it already held, which is the only way the
   transition can be seamless.
 - Wall-clock between transitions matched each track's length to the second, so
@@ -83,7 +83,7 @@ Verified 2026-07-26 across four consecutive boundaries of a segued album:
   survived all four boundaries, which means the decoder ran continuously.
 - No audible gap.
 
-You can re-run it: `make gapless` in one terminal, `RUST_LOG=tonearm=info cargo
+You can re-run it: `make gapless` in one terminal, `RUST_LOG=slipmat=info cargo
 run` in another. The procedure is in [CLAUDE.md](CLAUDE.md).
 
 ## How it works, honestly
@@ -93,11 +93,11 @@ CDM that exists is the one Google ships inside Chromium. There is no way around
 that — WebKitGTK has no CDM, and GStreamer cannot decrypt the stream. **A 100%
 native Apple Music player cannot be built.**
 
-So Tonearm splits the problem:
+So Slipmat splits the problem:
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  Tonearm — Rust · relm4 · libadwaita             │  ← everything you see
+│  Slipmat — Rust · relm4 · libadwaita             │  ← everything you see
 │  library · search · queue · Now Playing          │
 │  MPRIS · notifications · media keys · artwork    │
 │  HTTPS ─────────────────► api.music.apple.com    │
@@ -116,7 +116,7 @@ Chromium window with `show: false`, displayed exactly once for Apple's own
 sign-in and then never again. It is never rendered, it does not appear in the
 dash, and it does not publish an MPRIS player of its own.
 
-Tonearm plays through Apple's own MusicKit player with Google's official CDM. It
+Slipmat plays through Apple's own MusicKit player with Google's official CDM. It
 is a native front-end and a remote control for a licensed session. It does not
 strip DRM, does not use extracted CDMs, and does not download anything.
 
@@ -143,12 +143,12 @@ sudo pacman -S --needed base-devel pkgconf rust gtk4 libadwaita librsvg nodejs n
 ### Flatpak — any distribution
 
 The Flatpak bundles the GNOME 49 runtime, so your system's libadwaita does not
-matter. This is the route for anything that cannot build Tonearm, which today is
+matter. This is the route for anything that cannot build Slipmat, which today is
 most things.
 
 ```bash
-flatpak install ./Tonearm.flatpak
-flatpak run dev.miguelrincon.Tonearm
+flatpak install ./Slipmat.flatpak
+flatpak run dev.miguelrincon.Slipmat
 ```
 
 It is **not on Flathub** and is not intended to be. Build one yourself with
@@ -157,8 +157,8 @@ minutes; see [`packaging/flatpak/README.md`](packaging/flatpak/README.md).
 
 ### Arch and derivatives
 
-PKGBUILDs live in [`packaging/aur/`](packaging/aur/) — `tonearm` for the latest
-release, `tonearm-git` to track `main`.
+PKGBUILDs live in [`packaging/aur/`](packaging/aur/) — `slipmat` for the latest
+release, `slipmat-git` to track `main`.
 
 ### From source
 
@@ -166,7 +166,7 @@ release, `tonearm-git` to track `main`.
 make install     # build + install to ~/.local, no sudo
 ```
 
-Then launch **Tonearm** from the app grid, or run `tonearm`. If that command is
+Then launch **Slipmat** from the app grid, or run `slipmat`. If that command is
 not found, `~/.local/bin` is not on your `PATH` — most shells add it, some do
 not.
 
@@ -182,7 +182,7 @@ need a fresh login so the shell picks up the new `.desktop` entry and icon.
 **No token is ever written to disk.** Both the developer token and the Music
 User Token are re-harvested from the running MusicKit instance on every launch;
 what persists your login is the sidecar's own session cookie, exactly as it
-would in a browser. If Apple rotates a token, Tonearm follows automatically, and
+would in a browser. If Apple rotates a token, Slipmat follows automatically, and
 there is nothing cached for anyone to find.
 
 ## Limitations
@@ -191,24 +191,24 @@ These are properties of the platform, not a to-do list:
 
 - **No offline or downloaded playback.** Linux's Widevine CDM does not support
   persistent licences (it reports `PLATFORM_UNVERIFIED`), so every track must be
-  licensed live. Tonearm cannot work on a plane.
+  licensed live. Slipmat cannot work on a plane.
 - **~200 MB on disk for the sidecar.** It is a full Chromium. That is the cost
   of the only CDM that exists.
 - **x86_64 only.** No ARM Widevine on Linux.
 - **Apple can change `music.apple.com`.** The hook that drives MusicKit is small
   and defensive, but it is the one surface outside our control. If Apple moves
-  something, Tonearm says so rather than silently spinning.
+  something, Slipmat says so rather than silently spinning.
 - **A few library tracks may be unplayable.** Apple delists tracks while leaving
-  them in your library. Tonearm finds them on first attempt, remembers them
+  them in your library. Slipmat finds them on first attempt, remembers them
   across sessions, and dims them rather than letting one break a queue.
 
-Known bugs live in [the issue tracker](https://github.com/SoftARV/Tonearm/issues).
+Known bugs live in [the issue tracker](https://github.com/SoftARV/Slipmat/issues).
 
 ## Development
 
 ```bash
 cargo run                                    # dev
-RUST_LOG=tonearm=debug cargo run             # trace the sidecar protocol
+RUST_LOG=slipmat=debug cargo run             # trace the sidecar protocol
 make sidecar-run                             # sidecar alone, window VISIBLE
 make gapless                                 # watch the audio stream across a boundary
 cargo clippy --all-targets -- -D warnings    # the bar
@@ -223,10 +223,10 @@ follows, and the traps that cost real debugging time.
 
 ## Related
 
-Tonearm is the third in a series of native GNOME apps: **Dockyard** (Docker) and
+Slipmat is the third in a series of native GNOME apps: **Dockyard** (Docker) and
 **Pitwall** (GitHub Actions).
 
-Prior art worth crediting — both take the wrapper approach Tonearm is reacting
+Prior art worth crediting — both take the wrapper approach Slipmat is reacting
 to, and both worked out the castLabs Electron path first:
 [Sidra](https://github.com/wimpysworld/sidra) and
 [Cider](https://cider.sh).
