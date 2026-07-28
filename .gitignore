@@ -19,4 +19,7 @@ flatpak-repo/
 
 # fetched on demand by packaging/flatpak/generate-sources.sh
 packaging/flatpak/.flatpak-cargo-generator.py
-Slipmat.flatpak
+# Any bundle, not one spelled-out name. A named entry was renamed along with
+# the app once, which un-ignored the 94 MB artefact it had been protecting and
+# a `git add -A` committed it on the spot.
+*.flatpak
