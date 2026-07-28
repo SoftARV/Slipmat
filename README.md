@@ -55,28 +55,32 @@ starts making noise because you opened it is a hostile one.
 
 <table>
   <tr>
-    <td width="33%" valign="top">
+    <td colspan="2" width="33%">
       <img src="docs/screenshots/albums.webp" alt="The Albums grid with the sidebar collapsed, covers loading as tiles scroll into view">
-      <p align="center"><sub>Albums, with the sidebar collapsed</sub></p>
     </td>
-    <td width="33%" valign="top">
+    <td colspan="2" width="33%">
       <img src="docs/screenshots/artists.webp" alt="The Artists grid: round portraits, each pulled from the artist's catalogue twin, with their genre beneath">
-      <p align="center"><sub>Artists, portraits from the catalogue</sub></p>
     </td>
-    <td width="33%" valign="top">
+    <td colspan="2" width="33%">
       <img src="docs/screenshots/playlist.webp" alt="A playlist page: the four-up cover Slipmat composes from the first four tracks, the song count, Play and Shuffle, and the tracks below">
-      <p align="center"><sub>A playlist — cover built from its tracks</sub></p>
     </td>
   </tr>
   <tr>
-    <td colspan="2" valign="top">
+    <td colspan="2" align="center"><sub>Albums, sidebar collapsed</sub></td>
+    <td colspan="2" align="center"><sub>Artists, portraits from the catalogue</sub></td>
+    <td colspan="2" align="center"><sub>A playlist — cover built from its tracks</sub></td>
+  </tr>
+  <tr>
+    <td colspan="3" width="50%">
       <img src="docs/screenshots/player.webp" alt="The expanded player: large artwork, transport beneath it, a 522-track queue alongside, and the cover blurred behind the whole surface">
-      <p align="center"><sub>The player opened out, queue alongside</sub></p>
     </td>
-    <td valign="top">
+    <td colspan="3" width="50%">
       <img src="docs/screenshots/search.webp" alt="A catalogue search for the Beatles: artists, Apple Music playlists, albums and songs in one list, each opening a page of its own">
-      <p align="center"><sub>Searching the whole catalogue</sub></p>
     </td>
+  </tr>
+  <tr>
+    <td colspan="3" align="center"><sub>The player opened out, queue alongside</sub></td>
+    <td colspan="3" align="center"><sub>Searching the whole catalogue</sub></td>
   </tr>
 </table>
 
