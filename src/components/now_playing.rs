@@ -281,20 +281,14 @@ impl SimpleComponent for NowPlaying {
 
             // Deliberately **not** hexpand, and width-limited.
             //
-            // A GtkBox hands every child up to its *natural* width before any
-            // hexpand child gets a share of what's left, and an ellipsizing
-            // label's natural width is its whole untruncated string. So
-            // "Castlevania Sound Team — Akumajo Dracula Judgment Original
-            // Soundtrack" was claiming the space and squeezing the seek scale
-            // down to its 220px minimum. Capping `max_width_chars` caps the
-            // natural width.
+            // A GtkBox gives every child its *natural* width before any
+            // hexpand child sees what is left, and an ellipsizing label's
+            // natural width is the whole untruncated string — so one long
+            // album title squeezed the seek scale to its 220px minimum.
             //
-            // The two numbers do different jobs, which is the thing to hold on
-            // to: `max_width_chars` is the *natural* width — what the box asks
-            // for — and `width_chars` would be the *minimum*. Leaving the
-            // minimum unset is what lets the bar shrink far enough for the
-            // window to be tiled; setting the natural width is what stops it
-            // collapsing to "…" when it does not have to.
+            // `max_width_chars` caps the *natural* width; `width_chars` would
+            // set a *minimum*, and leaving that unset is what lets the bar
+            // shrink far enough for the window to be tiled.
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 set_valign: gtk::Align::Center,
@@ -394,18 +388,13 @@ impl SimpleComponent for NowPlaying {
                     },
                 },
             },
-            // --- elapsed / total -------------------------------------------
-            //
-            // One label beside the track rather than two in the middle of the
-            // bar. Centred, they read as a caption for nothing; here they
-            // belong to the thing they are timing.
+            // One label beside the track, not two centred in the bar,
+            // where they read as a caption for nothing.
             //
             // **No `width-chars`.** A fixed width would be a floor under the
-            // window, which is what the rest of this bar spent a commit
-            // getting rid of, and it is not needed: the metadata beside it is
-            // the hexpanding child, so when "9:59" becomes "10:00" the extra
-            // pixel comes out of the text's slack and the transport does not
-            // move.
+            // window, and it is not needed: the metadata beside it is the
+            // hexpanding child, so "9:59" becoming "10:00" comes out of that
+            // slack and the transport does not move.
             #[name = "time"]
             gtk::Label {
                 add_css_class: "numeric",
@@ -717,12 +706,6 @@ fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) ->
     }
 }
 
-/// Where the slider should sit, given the last real reading and how long ago it
-/// arrived.
-///
-/// A free function so the arithmetic can be tested without a clock. Three
-/// separate attempts at this shipped broken; the tests below are the reason a
-/// fourth one will not.
 /// Whether a `value-changed` from the volume button is a real move, or the
 /// echo of a value we just wrote into it ourselves.
 ///
@@ -734,6 +717,12 @@ fn volume_is_new(incoming: f64, held: f64) -> bool {
     (incoming - held).abs() >= f64::EPSILON
 }
 
+/// Where the slider should sit, given the last real reading and how long ago it
+/// arrived.
+///
+/// A free function so the arithmetic can be tested without a clock. Three
+/// separate attempts at this shipped broken; the tests below are the reason a
+/// fourth one will not.
 fn advance(base_ms: u64, ahead_ms: u64, duration_ms: u64, last_shown_ms: u64) -> u64 {
     // Only clamp against a duration we actually have. It is 0 until the first
     // metadata arrives, and clamping to that pins the position at the base —

@@ -230,7 +230,6 @@ pub struct AppModel {
     /// The sort popover's two actions, kept so the menu can be re-pointed at
     /// another section's choice when the view changes.
     sort_actions: Option<(gtk::gio::SimpleAction, gtk::gio::SimpleAction)>,
-    /// Whether the user flipped the sort's natural direction.
     /// The user's library albums and artists, loaded on first visit rather than
     /// at startup — launching should not wait on three collections.
     albums: Vec<Album>,
@@ -594,10 +593,10 @@ pub enum CommandMsg {
     LibraryAlbums(Result<Vec<Album>, String>),
     LibraryArtists(Result<Vec<Artist>, String>),
     LibraryPlaylists(Result<Vec<Playlist>, String>),
-    /// A library write came back. `Ok` means Apple **accepted** it, not that
-    /// it is done — see `Client::add_to_library`.
     /// Whether the Background portal agreed to list us. Advisory only.
     BackgroundPortal(Result<(), String>),
+    /// A library write came back. `Ok` means Apple **accepted** it, not that
+    /// it is done — see `Client::add_to_library`.
     LibraryWritten {
         catalog_id: String,
         action: LibraryAction,
@@ -2567,11 +2566,6 @@ impl AppModel {
 }
 
 impl AppModel {
-    /// Tracks matching the current query, in library order.
-    ///
-    /// Filtering reads `all_tracks`, never the factory, so clearing a search
-    /// restores everything rather than whatever survived the last narrowing.
-    /// The query for whichever scope is showing.
     /// Which set of music the search box is searching, derived from the
     /// section. Not stored: see [`View`].
     fn scope(&self) -> SearchScope {

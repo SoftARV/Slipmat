@@ -429,43 +429,18 @@ impl Component for QueueView {
                 return;
             }
             QueueViewInput::Sync { entries, playing } => {
-                // Moving the marker no longer touches the model, so the only
-                // thing left that can disturb the scroll is a real structural
-                // change — a removal, or a new queue. Capture the offset only
-                // for those, and only restore it when one actually happened.
-                //
-                // (An earlier version restored on every sync, including marker
-                // changes, and re-asserting an offset against an `upper` that
-                // was still settling is what made the list twitch.)
-                // **Nothing is restored here, deliberately.**
-                //
-                // Measured across a removal (#6): after the edit `value` stayed
-                // exactly where it was and `upper` shrank by one row, as it
-                // should. The list only ever jumped because of what this code
-                // did next — `topmost_visible` named the row at position 0
-                // while the user was 3553px down, and the re-anchor obeyed.
-                //
-                // So the queue's half of #6 was self-inflicted, and the fix is
-                // a deletion. The library's half is a different bug: there GTK
-                // really does assign `value = 0.0` after the edit, and
-                // `restore_scroll_after_edit` handles it. One symptom, two
-                // causes — which is what made porting the library's fix here
-                // both unnecessary and harmful.
                 // **The queue does not restore its scroll. See #6.**
                 //
-                // It has the same underlying fault as the library — measured,
-                // `value` holds for a millisecond and is 0.0 by 30ms while
-                // `upper` is healthy — but every attempt to correct it here was
-                // worse than the jump. Re-anchoring after the fact is a visible
-                // trip to the top and back; asserting it up front left the list
-                // rendering a single row until a hover; and neither landed on
-                // exactly the old position, because the anchor is derived from
-                // a pixel offset over a mean row height.
+                // Measured: `value` holds for a millisecond and is 0.0 by 30ms,
+                // the same fault the library list has — but every correction
+                // here was worse than the jump. Re-anchoring is a visible trip
+                // to the top and back; asserting the offset up front left the
+                // list rendering one row until a hover; and neither landed on
+                // the old position, because the anchor is a pixel offset over a
+                // mean row height.
                 //
                 // The library keeps its restore because there it is invisible
-                // and exact. Here it is neither, so the honest thing is to let
-                // the list jump rather than perform a worse animation on the
-                // way. Removing a track is rare; that scroll is not worth this.
+                // and exact. Here it is neither.
                 self.apply(entries, playing, sender.input_sender().clone());
             }
             QueueViewInput::ScrollToPlaying => {
