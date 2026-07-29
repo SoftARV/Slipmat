@@ -246,9 +246,19 @@ pub fn spawn() -> Result<(Handle, mpsc::UnboundedReceiver<Incoming>)> {
         .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // Chromium is loud. Let it inherit stderr so its noise shows up in the
-        // terminal next to our tracing output, and never on stdout.
-        .stderr(Stdio::inherit())
+        // **Piped, not inherited, and that is not about tidiness.**
+        //
+        // Inherited, Chromium holds the real terminal — and its children can
+        // outlive us by a few milliseconds. Bytes landing after the shell has
+        // taken the terminal back interleave with the shell's own setup: on
+        // fish 4.8 and ghostty that truncated the kitty-keyboard negotiation
+        // and left the terminal echoing `^[[27u` for every Escape and arrow
+        // key until it was cleared. Confirmed by `cargo run 2>&1 | cat`, which
+        // gives Chromium no terminal and does not break.
+        //
+        // Reading it ourselves also puts Chromium's noise behind `RUST_LOG`
+        // and gives it a timestamp, which inheriting never could.
+        .stderr(Stdio::piped())
         // Electron re-executes itself for its zygote/GPU processes; killing the
         // parent on drop keeps a crashed run from leaving Chromium behind.
         .kill_on_drop(true)
@@ -257,6 +267,24 @@ pub fn spawn() -> Result<(Handle, mpsc::UnboundedReceiver<Incoming>)> {
 
     let stdout = child.stdout.take().context("child stdout was not piped")?;
     let mut stdin = child.stdin.take().context("child stdin was not piped")?;
+    let stderr = child.stderr.take().context("child stderr was not piped")?;
+
+    // Logger task — owns stderr, and outlives nothing: when the pipe closes
+    // this ends, which is what keeps Chromium's parting words off a terminal
+    // somebody else now owns.
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            // Our own `log()` in main.js prefixes its lines; everything else is
+            // Chromium talking to itself. The first is worth seeing by default,
+            // the second only when something is being diagnosed.
+            match line.strip_prefix("[sidecar] ") {
+                Some(msg) => tracing::info!(%msg, "sidecar"),
+                None if line.trim().is_empty() => {}
+                None => tracing::debug!(%line, "chromium"),
+            }
+        }
+    });
 
     let (evt_tx, evt_rx) = mpsc::unbounded_channel();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
