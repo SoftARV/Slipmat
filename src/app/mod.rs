@@ -554,6 +554,8 @@ pub enum AppMsg {
     ShowPreferences,
     ShowShortcuts,
     ShowAbout,
+    /// Open the Ko-fi page in a browser.
+    OpenSupport,
     SetTheme(u32),
     SetAccent(crate::style::Accent),
     SetNotifyTrackChange(bool),
@@ -1491,6 +1493,20 @@ impl Component for AppModel {
         };
         let primary_menu = gtk::gio::Menu::new();
         {
+            // **First, in its own section.** It is the one item here that is
+            // not about running the app, and under Preferences and About it
+            // read as the least of them — the only thing in this menu that
+            // asks rather than does, buried under three that do.
+            //
+            // **No icon, and not for want of trying.** `gio::MenuItem` carries
+            // one and `GtkPopoverMenu` ignores it: GTK4 draws icons only for
+            // items in a section with a `display-hint`, which is for the
+            // little button rows, not for an ordinary entry. A heart was set
+            // here, resolved from the theme, and simply never appeared.
+            let support = gtk::gio::Menu::new();
+            support.append(Some("_Buy Me a Coffee"), Some("win.support"));
+            primary_menu.append_section(None, &support);
+
             let section = gtk::gio::Menu::new();
             section.append(Some("_Preferences"), Some("win.preferences"));
             section.append(Some("_Keyboard Shortcuts"), Some("win.shortcuts"));
@@ -1930,6 +1946,7 @@ impl AppModel {
             AppMsg::ShowPreferences => self.show_preferences(&sender, root),
             AppMsg::ShowShortcuts => show_shortcuts(root),
             AppMsg::ShowAbout => show_about(root),
+            AppMsg::OpenSupport => chrome::open_support(root),
             AppMsg::SetTheme(index) => {
                 self.settings.theme = Theme::from_index(index);
                 self.settings.apply_theme();

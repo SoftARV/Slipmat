@@ -19,7 +19,7 @@ and media controls that answer from the top bar and the lock screen.
 The web engine is still there. You just never see it.
 
 <p align="center">
-  <img src="docs/screenshots/library.webp" alt="Slipmat showing a library of songs: the playing track marked in red, one Apple cannot stream greyed out, a menu button on every row, and the Now Playing bar along the bottom with the playing track's cover behind it">
+  <img src="docs/screenshots/library.webp" alt="Slipmat showing a library of songs with the sidebar collapsed: the playing track marked in red, two Apple cannot stream greyed out, a menu button on every row, and the Now Playing bar along the bottom with the playing track's cover behind it">
 </p>
 
 ## What it does
@@ -54,10 +54,10 @@ starts making noise because you opened it is a hostile one.
 <table>
   <tr>
     <td colspan="2" width="33%">
-      <img src="docs/screenshots/albums.webp" alt="The Albums grid with the sidebar collapsed, covers loading as tiles scroll into view">
+      <img src="docs/screenshots/albums.webp" alt="The Albums grid in a dark theme: four covers to a row, each with its title and artist beneath, and the sidebar open alongside">
     </td>
     <td colspan="2" width="33%">
-      <img src="docs/screenshots/artists.webp" alt="The Artists grid: round portraits, each pulled from the artist's catalogue twin, with their genre beneath">
+      <img src="docs/screenshots/artists.webp" alt="An artist page for the Foo Fighters: a round portrait pulled from the catalogue, their genre, and their four albums listed below">
     </td>
     <td colspan="2" width="33%">
       <img src="docs/screenshots/playlist.webp" alt="A playlist page: the four-up cover Slipmat composes from the first four tracks, the song count, Play and Shuffle, and the tracks below">
