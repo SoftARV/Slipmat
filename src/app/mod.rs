@@ -1498,18 +1498,13 @@ impl Component for AppModel {
             // read as the least of them — the only thing in this menu that
             // asks rather than does, buried under three that do.
             //
-            // A `MenuItem` rather than `append`, because that is the only form
-            // that carries an icon, and the heart is what makes this a
-            // thank-you rather than one more dialog.
-            //
-            // `emote-love-symbolic`, checked against the theme rather than
-            // assumed: Adwaita has no `emblem-favorite-symbolic`, which is the
-            // obvious guess, and `icon()` would have quietly put a music note
-            // here instead.
+            // **No icon, and not for want of trying.** `gio::MenuItem` carries
+            // one and `GtkPopoverMenu` ignores it: GTK4 draws icons only for
+            // items in a section with a `display-hint`, which is for the
+            // little button rows, not for an ordinary entry. A heart was set
+            // here, resolved from the theme, and simply never appeared.
             let support = gtk::gio::Menu::new();
-            let item = gtk::gio::MenuItem::new(Some("_Buy Me a Coffee"), Some("win.support"));
-            item.set_icon(&gtk::gio::ThemedIcon::new(icon("emote-love-symbolic")));
-            support.append_item(&item);
+            support.append(Some("_Buy Me a Coffee"), Some("win.support"));
             primary_menu.append_section(None, &support);
 
             let section = gtk::gio::Menu::new();
