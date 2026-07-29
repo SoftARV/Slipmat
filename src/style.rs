@@ -151,6 +151,26 @@ pub fn init(accent: Accent) {
     });
 }
 
+/// How the cover is laid out on each surface. Static, so it lives here rather
+/// than in the provider that is replaced per track.
+///
+/// The bar takes `cover`: it is a wide strip, and a square scaled to its width
+/// already overflows its height many times over, so there is room to drift
+/// without asking for more.
+///
+/// The drawer asks for 150% because it is closer to square and would otherwise
+/// have none — but **on both axes, not one**. A single `150%` sets the width
+/// and lets the height follow the aspect ratio, so a square covered exactly
+/// 1.5w × 1.5w and stopped reaching the moment the drawer was taller than that.
+/// A narrow window makes it exactly that, and the cover sat in a band with bare
+/// surface above and below it.
+///
+/// Naming both stretches the square rather than fitting it, which would matter
+/// on a photograph and cannot be seen on a 256px image blurred and then put
+/// behind a veil.
+const COVER_LAYOUT: &str = ".np-bar { background-size: cover, cover; }
+         .np-sheet { background-size: cover, 150% 150%; }";
+
 /// Apply an accent, and the handful of rules that go with it.
 pub fn set_accent(accent: Accent) {
     let accent_rules = match accent.colors() {
@@ -195,16 +215,7 @@ pub fn set_accent(accent: Accent) {
          }}
          .np-progress > trough {{ background-color: alpha(currentColor, 0.13); }}
 
-         /* How the cover is laid out on each surface. Static, so it lives here
-            rather than in the provider that is replaced per track.
-
-            The bar takes `cover` and the drawer takes 150%. Both are square
-            images, but the bar is a wide strip — scaled to its width, a square
-            already overflows its height many times over, so there is room to
-            drift without asking for more. The drawer is closer to square and
-            would have none. */
-         .np-bar {{ background-size: cover, cover; }}
-         .np-sheet {{ background-size: cover, 150%; }}
+         {COVER_LAYOUT}
 
          /* A scroller wrapping a `view` widget paints the `view` background,
             which is a shade darker than the window. That was invisible while
@@ -472,6 +483,34 @@ mod tests {
         // cross-fade percentage outside the two covers it is between.
         assert_eq!(ease(-0.5), 0.0);
         assert_eq!(ease(2.0), 1.0);
+    }
+
+    #[test]
+    fn the_drawer_backdrop_covers_both_axes() {
+        // A single percentage is a *width*; the height follows the aspect
+        // ratio. The cover is square, so one number meant it reached 1.5w down
+        // the drawer and no further — bare surface above and below it as soon
+        // as the window was narrow enough to make the drawer taller than that.
+        let sheet = COVER_LAYOUT
+            .lines()
+            .find(|l| l.contains(".np-sheet"))
+            .expect("the drawer must have a layout rule");
+        let image = sheet
+            .split("background-size:")
+            .nth(1)
+            .and_then(|s| {
+                s.trim_end()
+                    .trim_end_matches(&['}', ';', ' '][..])
+                    .rsplit(',')
+                    .next()
+            })
+            .expect("a background-size with a layer for the image")
+            .trim()
+            .to_owned();
+        assert!(
+            image == "cover" || image.split_whitespace().count() == 2,
+            "the drawer's cover needs both axes or `cover`, got {image:?}"
+        );
     }
 
     #[test]
