@@ -227,6 +227,9 @@ pub struct AppModel {
     /// `sync_section_spinners` is what replaces it. Apple Music has no entry:
     /// it has nothing of its own to load.
     section_spinners: Vec<(View, adw::Spinner)>,
+    /// Whether the artwork cache has been swept this run. Once is enough: the
+    /// library does not change under us, and the sweep touches ~1000 files.
+    pruned: bool,
     /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
@@ -637,6 +640,9 @@ pub enum CommandMsg {
     LibraryAlbums(Result<Vec<Album>, String>),
     LibraryArtists(Result<Vec<Artist>, String>),
     LibraryPlaylists(Result<Vec<Playlist>, String>),
+    /// The artwork sweep finished. It logs its own numbers; this exists so the
+    /// work can be a command rather than something done on the GTK thread.
+    Pruned(crate::components::prune::Report),
     /// Whether the Background portal agreed to list us. Advisory only.
     BackgroundPortal(Result<(), String>),
     /// A library write came back. `Ok` means Apple **accepted** it, not that
@@ -1392,6 +1398,7 @@ impl Component for AppModel {
             focus_search: false,
             sync_entry: false,
             animated_shown: std::cell::Cell::new(None),
+            pruned: false,
             section_spinners: Vec::new(),
             marked_playing: None,
             library_icons: row_registry(),
@@ -2334,6 +2341,21 @@ impl AppModel {
                     }
                 }
             }
+            CommandMsg::Pruned(report) => {
+                // Reported here rather than inside the sweep, so the sweep
+                // stays a function that returns facts and can be tested as one.
+                // Silent when it found nothing, which is the ordinary case.
+                if report.removed > 0 {
+                    tracing::info!(
+                        removed = report.removed,
+                        freed_kb = report.freed / 1024,
+                        kept = report.kept,
+                        over_cap = report.over_cap,
+                        was_mb = report.total / 1_048_576,
+                        "swept the artwork cache"
+                    );
+                }
+            }
             CommandMsg::LibraryAlbums(result) => {
                 self.loading_albums = false;
                 match result {
@@ -2341,6 +2363,7 @@ impl AppModel {
                         let changed = albums != self.albums;
                         tracing::info!(albums = albums.len(), changed, "library albums loaded");
                         self.albums = albums;
+                        self.maybe_prune_artwork(&sender);
                         if changed {
                             self.built_albums = None;
                             self.rebuild_albums();
@@ -2360,6 +2383,7 @@ impl AppModel {
                         let changed = artists != self.artists;
                         tracing::info!(artists = artists.len(), changed, "library artists loaded");
                         self.artists = artists;
+                        self.maybe_prune_artwork(&sender);
                         if changed {
                             self.built_artists = None;
                             self.rebuild_artists();
@@ -2383,6 +2407,7 @@ impl AppModel {
                             "library playlists loaded"
                         );
                         self.playlists = playlists;
+                        self.maybe_prune_artwork(&sender);
                         if changed {
                             self.built_playlists = None;
                             self.rebuild_playlists();
@@ -2523,6 +2548,7 @@ impl AppModel {
                 let changed = tracks != self.all_tracks;
                 tracing::info!(tracks = tracks.len(), unplayable, changed, "library loaded");
                 self.all_tracks = tracks;
+                self.maybe_prune_artwork(&sender);
                 if changed {
                     self.built_rows = None;
                     self.rebuild_rows();

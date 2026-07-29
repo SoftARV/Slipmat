@@ -566,6 +566,57 @@ impl AppModel {
         }
     }
 
+    /// Every artwork the library can account for, as cache keys.
+    ///
+    /// Tracks are in it as well as the three grids: a playlist's mosaic is
+    /// drawn from its first four *tracks'* covers, so leaving them out would
+    /// make every mosaic evictable the moment the cache went over its cap.
+    fn artwork_keys(&self) -> std::collections::HashSet<String> {
+        let mut keys = std::collections::HashSet::new();
+        for art in self.all_tracks.iter().filter_map(|t| t.artwork.as_ref()) {
+            keys.insert(art.cache_key());
+        }
+        for art in self.albums.iter().filter_map(|a| a.artwork.as_ref()) {
+            keys.insert(art.cache_key());
+        }
+        for art in self.artists.iter().filter_map(|a| a.artwork.as_ref()) {
+            keys.insert(art.cache_key());
+        }
+        for art in self.playlists.iter().filter_map(|p| p.artwork.as_ref()) {
+            keys.insert(art.cache_key());
+        }
+        keys
+    }
+
+    /// Sweep the artwork cache, once a launch and only once every section has
+    /// reported.
+    ///
+    /// **All four, or the keep-set is a lie.** Pruning after the songs alone
+    /// would call every album and artist cover evictable, and the cache is what
+    /// makes the grids fast — #27 measured 520ms against 75ms on exactly that.
+    pub(super) fn maybe_prune_artwork(&mut self, sender: &ComponentSender<Self>) {
+        let all_reported = self.tried_library
+            && self.tried_albums
+            && self.tried_artists
+            && self.tried_playlists
+            && !self.loading_library
+            && !self.loading_albums
+            && !self.loading_artists
+            && !self.loading_playlists;
+        if self.pruned || !all_reported {
+            return;
+        }
+        self.pruned = true;
+        let keep = self.artwork_keys();
+        sender.oneshot_command(async move {
+            CommandMsg::Pruned(
+                relm4::spawn_blocking(move || crate::components::prune::run(&keep))
+                    .await
+                    .unwrap_or_default(),
+            )
+        });
+    }
+
     /// Write all four collections out, from whichever one of them changed.
     ///
     /// Called only when something *did* change: a refresh that found the same
