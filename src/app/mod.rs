@@ -982,6 +982,36 @@ impl Component for AppModel {
                                             connect_clicked => AppMsg::ToggleSidebar,
                                         },
 
+                                        // Beside the sidebar toggle rather than
+                                        // over on the right: both are doors to
+                                        // something the window is too narrow to
+                                        // show outright, and the end of a header
+                                        // is where the actions on what you are
+                                        // already looking at live.
+                                        //
+                                        // Narrow only: wide, the entry is always
+                                        // there and this would reveal nothing.
+                                        #[name = "search_button"]
+                                        pack_start = &gtk::ToggleButton {
+                                            set_icon_name: "system-search-symbolic",
+                                            set_tooltip_text: Some("Search"),
+                                            add_css_class: "flat",
+                                            #[watch]
+                                            set_visible: model.narrow_header,
+                                            #[watch]
+                                            set_sensitive: model.controls_live(),
+                                            // `set_active` plus a report back is
+                                            // the two-way binding from #37 —
+                                            // `ShowSearch` drops a value equal to
+                                            // the one held, which is what a
+                                            // programmatic set arrives as.
+                                            #[watch]
+                                            set_active: model.searching,
+                                            connect_toggled[sender] => move |button| {
+                                                sender.input(AppMsg::ShowSearch(button.is_active()));
+                                            },
+                                        },
+
                                         // When the queue is open it is the
                                         // rightmost pane, so the window
                                         // controls belong to its header, not
@@ -1052,29 +1082,6 @@ impl Component for AppModel {
                                                 "search"
                                             } else {
                                                 "title"
-                                            },
-                                        },
-
-                                        // Narrow only: wide, the entry is always
-                                        // there and this would reveal nothing.
-                                        #[name = "search_button"]
-                                        pack_end = &gtk::ToggleButton {
-                                            set_icon_name: "system-search-symbolic",
-                                            set_tooltip_text: Some("Search"),
-                                            add_css_class: "flat",
-                                            #[watch]
-                                            set_visible: model.narrow_header,
-                                            #[watch]
-                                            set_sensitive: model.controls_live(),
-                                            // `set_active` plus a report back is
-                                            // the two-way binding from #37 —
-                                            // `ShowSearch` drops a value equal to
-                                            // the one held, which is what a
-                                            // programmatic set arrives as.
-                                            #[watch]
-                                            set_active: model.searching,
-                                            connect_toggled[sender] => move |button| {
-                                                sender.input(AppMsg::ShowSearch(button.is_active()));
                                             },
                                         },
 
@@ -1991,8 +1998,17 @@ impl AppModel {
                 // deliberate enough to be a preference.
                 self.show_sidebar = shown;
             }
-            AppMsg::SidebarCollapsed(collapsed) => self.sidebar_collapsed = collapsed,
+            AppMsg::SidebarCollapsed(collapsed) => {
+                // Logged because getting the breakpoints wrong is *silent*.
+                // Only one applies at a time, so a narrow one that forgets to
+                // repeat a wide one's setter simply undoes it — and the sidebar
+                // stops collapsing at exactly the widths where it matters most.
+                // Nothing warns; the pane just comes back.
+                tracing::debug!(collapsed, narrow_header = self.narrow_header, "sidebar");
+                self.sidebar_collapsed = collapsed;
+            }
             AppMsg::NarrowHeader(narrow) => {
+                tracing::debug!(narrow, "header breakpoint");
                 self.narrow_header = narrow;
                 // Widening puts the entry back as the title, so the open flag
                 // stops meaning anything — and leaving it set would reopen the

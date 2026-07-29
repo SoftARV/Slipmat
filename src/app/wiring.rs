@@ -41,8 +41,7 @@ pub(super) fn connect(
     catalog_filter_menu(model, widgets, sender);
     open_on_last_section(model, widgets);
     catalog_pagination(widgets, sender);
-    window_breakpoint(root, widgets);
-    header_breakpoint(root, sender);
+    window_breakpoints(root, widgets, sender);
     library_list_properties(model, widgets);
     bottom_bar_inset(widgets);
 }
@@ -180,54 +179,72 @@ fn catalog_pagination(widgets: &Widgets, sender: &ComponentSender<AppModel>) {
     }
 }
 
-fn window_breakpoint(root: &adw::ApplicationWindow, widgets: &Widgets) {
-    // **The window has to be able to get narrow.** Without this the
-    // navigation sidebar holds 200px open at all times and the app cannot
-    // be tiled to half a screen — which is how it is actually used.
-    //
-    // `AdwOverlaySplitView` already knows how to be a summonable overlay
-    // rather than a fixed pane; it just has to be told when. This is the
-    // standard adaptive pattern and the app simply never had one.
-    if let Ok(condition) = adw::BreakpointCondition::parse("max-width: 700px") {
-        let breakpoint = adw::Breakpoint::new(condition);
+/// The two widths the window changes shape at.
+///
+/// **They are cumulative, and they have to be.** `AdwApplicationWindow` applies
+/// exactly one breakpoint at a time — `get_current_breakpoint` is singular — and
+/// it picks the last-added one whose condition holds, unapplying the rest. So
+/// the narrow one repeats the wide one's setter rather than adding to it.
+/// Written as two independent functions, this went wrong immediately: below
+/// 600px the header adapted and the sidebar *un*-collapsed, because the 700px
+/// breakpoint that had collapsed it was no longer the one in force.
+///
+/// The order of `add_breakpoint` is therefore the priority order, widest first.
+///
+/// Why two widths rather than one: a single number would change two things at
+/// once while the window is being dragged, where 100px apart they read as two
+/// deliberate steps. And only this way round works — the sidebar has to
+/// collapse *before* the header gives up its title, because that title is
+/// standing in for the sidebar row that would otherwise say which section you
+/// are in.
+///
+/// Neither number comes from a measurement. 700px is where the sidebar stops
+/// leaving room for a list; 600px is where GNOME's own adaptive guidance puts
+/// the threshold, and the entry still *fits* below it — what it stops fitting
+/// with is the room to read it.
+fn window_breakpoints(
+    root: &adw::ApplicationWindow,
+    widgets: &Widgets,
+    sender: &ComponentSender<AppModel>,
+) {
+    // **The window has to be able to get narrow.** Without this the navigation
+    // sidebar holds 200px open at all times and the app cannot be tiled to half
+    // a screen — which is how it is actually used. `AdwOverlaySplitView`
+    // already knows how to be a summonable overlay rather than a fixed pane; it
+    // just has to be told when.
+    let collapse_sidebar = |breakpoint: &adw::Breakpoint| {
         breakpoint.add_setter(&widgets.nav_split, "collapsed", Some(&true.to_value()));
-        root.add_breakpoint(breakpoint);
-    } else {
-        tracing::warn!("unparsable window breakpoint; the sidebar will not collapse");
+    };
+
+    match adw::BreakpointCondition::parse("max-width: 700px") {
+        Ok(condition) => {
+            let breakpoint = adw::Breakpoint::new(condition);
+            collapse_sidebar(&breakpoint);
+            root.add_breakpoint(breakpoint);
+        }
+        Err(_) => tracing::warn!("unparsable window breakpoint; the sidebar will not collapse"),
     }
-}
 
-/// Below this the header cannot usefully hold a search entry as its title.
-///
-/// **600px, and the sidebar's is 700px, deliberately.** One number for both
-/// would change two things at once as the window is dragged; two changes,
-/// 100px apart, each read as a single deliberate step. It is also the right
-/// order: the sidebar has to collapse *before* the header gives up its title,
-/// because the title is standing in for the sidebar row that would otherwise
-/// say which section you are in.
-///
-/// The width itself is where GNOME's own adaptive guidance puts the tablet
-/// threshold, and it is not chosen from a measurement — the entry still
-/// *fits* below 600px. What it stops fitting with is the room to read it.
-const NARROW_HEADER: &str = "max-width: 600px";
-
-fn header_breakpoint(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>) {
-    let Ok(condition) = adw::BreakpointCondition::parse(NARROW_HEADER) else {
+    match adw::BreakpointCondition::parse("max-width: 600px") {
+        Ok(condition) => {
+            let breakpoint = adw::Breakpoint::new(condition);
+            // Everything the wider one does, because this one replaces it.
+            collapse_sidebar(&breakpoint);
+            // Signals rather than a setter for the header, because what changes
+            // is model state — which widget is the title, and whether the
+            // button is on. A setter can only write a property, and writing the
+            // stack's child directly would put the decision somewhere the
+            // reducer cannot see.
+            let entering = sender.clone();
+            breakpoint.connect_apply(move |_| entering.input(AppMsg::NarrowHeader(true)));
+            let leaving = sender.clone();
+            breakpoint.connect_unapply(move |_| leaving.input(AppMsg::NarrowHeader(false)));
+            root.add_breakpoint(breakpoint);
+        }
         // Wide is the honest fallback: the entry stays in the title, which is
         // what every window did before this existed.
-        tracing::warn!("unparsable header breakpoint; search stays in the header");
-        return;
-    };
-    let breakpoint = adw::Breakpoint::new(condition);
-    // Signals rather than `add_setter`, because what changes is model state —
-    // which widget is the title, and whether the button is on. A setter can
-    // only write a property, and writing the stack's child directly would put
-    // the decision in two places, one of which the reducer cannot see.
-    let entering = sender.clone();
-    breakpoint.connect_apply(move |_| entering.input(AppMsg::NarrowHeader(true)));
-    let leaving = sender.clone();
-    breakpoint.connect_unapply(move |_| leaving.input(AppMsg::NarrowHeader(false)));
-    root.add_breakpoint(breakpoint);
+        Err(_) => tracing::warn!("unparsable header breakpoint; search stays in the header"),
+    }
 }
 
 fn library_list_properties(model: &AppModel, widgets: &Widgets) {
