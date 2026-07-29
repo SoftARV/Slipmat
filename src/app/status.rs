@@ -54,6 +54,14 @@ impl AppModel {
         }
     }
 
+    /// Is the search entry showing, rather than the section's name?
+    ///
+    /// Wide, the entry *is* the title and there is nothing a button could
+    /// reveal. Narrow, it takes the title's place only while asked for.
+    pub(super) fn search_showing(&self) -> bool {
+        !self.narrow_header || self.searching
+    }
+
     /// Is the section currently on screen fetching?
     ///
     /// The header's reload control swaps itself for a spinner on this. Feedback

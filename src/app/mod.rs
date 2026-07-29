@@ -199,6 +199,16 @@ pub struct AppModel {
     /// have to measure ourselves: the breakpoint already owns this decision,
     /// and two places computing it is two places to disagree.
     sidebar_collapsed: bool,
+    /// Whether the header is too narrow to hold a search entry as its title.
+    ///
+    /// Mirrored from its own breakpoint, the way `sidebar_collapsed` is
+    /// mirrored from the split view — a width we measured ourselves would be a
+    /// second opinion about a decision libadwaita has already made.
+    narrow_header: bool,
+    /// Whether the search entry is showing, on a narrow header where it is a
+    /// button until asked for. Meaningless while `narrow_header` is false: the
+    /// entry is simply the title then.
+    searching: bool,
     /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
@@ -505,6 +515,10 @@ pub enum AppMsg {
     SectionChosen,
     /// The breakpoint turned the sidebar into an overlay, or back into a pane.
     SidebarCollapsed(bool),
+    /// The header crossed its own breakpoint.
+    NarrowHeader(bool),
+    /// Open or close the search entry on a narrow header.
+    ShowSearch(bool),
     /// The results list is near its end; fetch the next page if there is one.
     LoadMoreCatalog,
     /// Re-fetch one library section. There is no section-less "reload": each
@@ -976,50 +990,103 @@ impl Component for AppModel {
                                         // this header is no longer at the edge.
                                         set_show_end_title_buttons: true,
 
+                                        // Narrow, the title is the section name
+                                        // and search is a button — the sidebar
+                                        // row that says where you are has
+                                        // collapsed to an overlay by then.
+                                        // Not homogeneous, unlike the reload
+                                        // stack: a short label and a field that
+                                        // should take the whole header.
                                         #[wrap(Some)]
-                                        #[name = "search_entry"]
-                                        set_title_widget = &gtk::SearchEntry {
-                                            // No fixed width. 320px here was a
-                                            // floor under the whole window: a
-                                            // header widget cannot be allowed a
-                                            // minimum the window has to honour,
-                                            // or the app cannot be tiled to
-                                            // half a screen.
+                                        set_title_widget = &gtk::Stack {
+                                            set_hhomogeneous: false,
                                             set_hexpand: true,
-                                            set_max_width_chars: 30,
-                                            // Typing here before the tokens
-                                            // arrive queries a catalog that
-                                            // cannot answer.
+
+                                            add_named[Some("title")] = &adw::WindowTitle {
+                                                #[watch]
+                                                set_title: model.view.title(),
+                                            },
+
+                                            #[name = "search_entry"]
+                                            add_named[Some("search")] = &gtk::SearchEntry {
+                                                // Never a fixed width: 320px here
+                                                // was a floor under the window and
+                                                // the app could not be tiled.
+                                                // `max-width-chars` is a ceiling,
+                                                // so it is safe — 60 fills a narrow
+                                                // header and stops short of absurd
+                                                // on a wide one.
+                                                set_hexpand: true,
+                                                set_max_width_chars: 60,
+                                                // Typing here before the tokens
+                                                // arrive queries a catalog that
+                                                // cannot answer.
+                                                #[watch]
+                                                set_sensitive: model.controls_live(),
+                                                #[watch]
+                                                set_placeholder_text: Some(match model.view {
+                                                    View::Songs => "Search your library",
+                                                    View::Albums => "Search albums",
+                                                    View::Artists => "Search artists",
+                                                    View::Playlists => "Search playlists",
+                                                    View::Search => "Search Apple Music",
+                                                }),
+                                                connect_search_changed[sender] => move |entry| {
+                                                    sender.input(AppMsg::SearchChanged(entry.text().into()));
+                                                },
+                                                // Escape, as it cancels every other
+                                                // search in GNOME. Both messages,
+                                                // because on a wide header the box
+                                                // is never "open" — `ShowSearch`
+                                                // would drop a value it already
+                                                // holds and Escape would do
+                                                // nothing at all.
+                                                connect_stop_search[sender] => move |_| {
+                                                    sender.input(AppMsg::SearchChanged(String::new()));
+                                                    sender.input(AppMsg::ShowSearch(false));
+                                                },
+                                            },
+
                                             #[watch]
-                                            set_sensitive: model.controls_live(),
-                                            #[watch]
-                                            set_placeholder_text: Some(match model.view {
-                                                View::Songs => "Search your library",
-                                                View::Albums => "Search albums",
-                                                View::Artists => "Search artists",
-                                                View::Playlists => "Search playlists",
-                                                View::Search => "Search Apple Music",
-                                            }),
-                                            connect_search_changed[sender] => move |entry| {
-                                                sender.input(AppMsg::SearchChanged(entry.text().into()));
+                                            set_visible_child_name: if model.search_showing() {
+                                                "search"
+                                            } else {
+                                                "title"
                                             },
                                         },
 
-                                        // Reload lives here rather than on the
-                                        // sidebar rows, where it used to. Those
-                                        // needed one button each, because a
-                                        // sidebar button cannot know which
-                                        // section you meant — but it is exactly
-                                        // that arrangement which put the only
-                                        // way to refresh behind the sidebar
-                                        // toggle. Collapsed, or on a narrow
-                                        // window where the breakpoint collapses
-                                        // it for you, reloading meant opening
-                                        // the sidebar first.
-                                        //
-                                        // In the header there is no ambiguity to
-                                        // resolve: it reloads what you are
-                                        // looking at.
+                                        // Narrow only: wide, the entry is always
+                                        // there and this would reveal nothing.
+                                        #[name = "search_button"]
+                                        pack_end = &gtk::ToggleButton {
+                                            set_icon_name: "system-search-symbolic",
+                                            set_tooltip_text: Some("Search"),
+                                            add_css_class: "flat",
+                                            #[watch]
+                                            set_visible: model.narrow_header,
+                                            #[watch]
+                                            set_sensitive: model.controls_live(),
+                                            // `set_active` plus a report back is
+                                            // the two-way binding from #37 —
+                                            // `ShowSearch` drops a value equal to
+                                            // the one held, which is what a
+                                            // programmatic set arrives as.
+                                            #[watch]
+                                            set_active: model.searching,
+                                            connect_toggled[sender] => move |button| {
+                                                sender.input(AppMsg::ShowSearch(button.is_active()));
+                                            },
+                                        },
+
+                                        // One button, not the four this used to
+                                        // be on the sidebar rows. A sidebar
+                                        // button cannot know which section you
+                                        // meant, so each row needed its own — and
+                                        // that put reload behind the sidebar
+                                        // toggle, which collapses on its own when
+                                        // the window is narrow. Here there is
+                                        // nothing to disambiguate: it reloads
+                                        // what you are looking at.
                                         //
                                         // A `Stack` rather than two widgets
                                         // swapping their own visibility, because
@@ -1403,6 +1470,8 @@ impl Component for AppModel {
             show_queue: false,
             show_sidebar: settings.show_sidebar,
             sidebar_collapsed: false,
+            narrow_header: false,
+            searching: false,
             animated_shown: std::cell::Cell::new(None),
             marked_playing: None,
             library_icons: row_registry(),
@@ -1794,6 +1863,13 @@ impl AppModel {
                 }
                 let switch_started = std::time::Instant::now();
                 self.view = view;
+                // On a narrow header the search box follows the section:
+                // Apple Music *is* a search and lands on a prompt to type one,
+                // so arriving with the field shut would be a screen asking for
+                // something it did not give you room to enter. Every other
+                // section closes it, because the query it held was about the
+                // list you just left.
+                self.searching = self.narrow_header && view == View::Search;
                 // Switching section means switching what the content pane is
                 // about, so any album or artist pushed on top of it is now
                 // showing the wrong thing sitting over the right thing.
@@ -1916,6 +1992,38 @@ impl AppModel {
                 self.show_sidebar = shown;
             }
             AppMsg::SidebarCollapsed(collapsed) => self.sidebar_collapsed = collapsed,
+            AppMsg::NarrowHeader(narrow) => {
+                self.narrow_header = narrow;
+                // Widening puts the entry back as the title, so the open flag
+                // stops meaning anything — and leaving it set would reopen the
+                // box the next time the window got narrow, which is not
+                // something the user asked for a window resize ago.
+                if !narrow {
+                    self.searching = false;
+                }
+            }
+            AppMsg::ShowSearch(show) => {
+                // The button reports its own state *and* is written from the
+                // model, which is the two-way binding that froze a desktop
+                // (#37). Adopting the value here is the half of the fix that
+                // stops the next `update_view` writing the old one back.
+                if self.searching == show {
+                    return;
+                }
+                self.searching = show;
+                // Closing is a request to stop filtering, not to hide a filter
+                // that is still in force. A narrowed list under a header that
+                // shows no query is a list nobody can explain.
+                //
+                // Below the guard on purpose, so *widening* keeps the query.
+                // `NarrowHeader` clears `searching` itself, which makes the
+                // button report a change that lands here holding the value we
+                // already have — and a window resize is not a request to
+                // abandon what you were looking for.
+                if !show && !self.query().is_empty() {
+                    sender.input(AppMsg::SearchChanged(String::new()));
+                }
+            }
             AppMsg::SectionChosen => {
                 if self.sidebar_collapsed {
                     self.show_sidebar = false;

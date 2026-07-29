@@ -42,6 +42,7 @@ pub(super) fn connect(
     open_on_last_section(model, widgets);
     catalog_pagination(widgets, sender);
     window_breakpoint(root, widgets);
+    header_breakpoint(root, sender);
     library_list_properties(model, widgets);
     bottom_bar_inset(widgets);
 }
@@ -194,6 +195,39 @@ fn window_breakpoint(root: &adw::ApplicationWindow, widgets: &Widgets) {
     } else {
         tracing::warn!("unparsable window breakpoint; the sidebar will not collapse");
     }
+}
+
+/// Below this the header cannot usefully hold a search entry as its title.
+///
+/// **600px, and the sidebar's is 700px, deliberately.** One number for both
+/// would change two things at once as the window is dragged; two changes,
+/// 100px apart, each read as a single deliberate step. It is also the right
+/// order: the sidebar has to collapse *before* the header gives up its title,
+/// because the title is standing in for the sidebar row that would otherwise
+/// say which section you are in.
+///
+/// The width itself is where GNOME's own adaptive guidance puts the tablet
+/// threshold, and it is not chosen from a measurement — the entry still
+/// *fits* below 600px. What it stops fitting with is the room to read it.
+const NARROW_HEADER: &str = "max-width: 600px";
+
+fn header_breakpoint(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>) {
+    let Ok(condition) = adw::BreakpointCondition::parse(NARROW_HEADER) else {
+        // Wide is the honest fallback: the entry stays in the title, which is
+        // what every window did before this existed.
+        tracing::warn!("unparsable header breakpoint; search stays in the header");
+        return;
+    };
+    let breakpoint = adw::Breakpoint::new(condition);
+    // Signals rather than `add_setter`, because what changes is model state —
+    // which widget is the title, and whether the button is on. A setter can
+    // only write a property, and writing the stack's child directly would put
+    // the decision in two places, one of which the reducer cannot see.
+    let entering = sender.clone();
+    breakpoint.connect_apply(move |_| entering.input(AppMsg::NarrowHeader(true)));
+    let leaving = sender.clone();
+    breakpoint.connect_unapply(move |_| leaving.input(AppMsg::NarrowHeader(false)));
+    root.add_breakpoint(breakpoint);
 }
 
 fn library_list_properties(model: &AppModel, widgets: &Widgets) {

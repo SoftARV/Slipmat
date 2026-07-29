@@ -58,6 +58,21 @@ impl View {
             _ => SearchScope::Library,
         }
     }
+
+    /// What the header says it is showing.
+    ///
+    /// Only ever read on a narrow window, where it stands in for the search
+    /// entry — and where the sidebar has already collapsed to an overlay, so
+    /// the selected row that normally answers "where am I" is off screen.
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Self::Search => "Apple Music",
+            Self::Songs => "Songs",
+            Self::Albums => "Albums",
+            Self::Artists => "Artists",
+            Self::Playlists => "Playlists",
+        }
+    }
 }
 
 impl From<Section> for View {
