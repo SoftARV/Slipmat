@@ -294,3 +294,79 @@ impl AppModel {
         }
     }
 }
+
+/// How far into a track "Previous" restarts it rather than going back one.
+///
+/// Three seconds is the convention every mainstream player follows, and it is
+/// a convention rather than a guess: past it, a listener pressing Previous
+/// almost always means "play that again", and before it they mean "I overshot".
+const RESTART_BEFORE_MS: u64 = 3_000;
+
+/// What a press of Previous should actually do.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Previous {
+    /// Back to the start of what is playing.
+    Restart,
+    /// Back one track in the queue.
+    Track,
+}
+
+impl AppModel {
+    /// Handle a press of Previous, from wherever it came — the bar, the drawer,
+    /// the shell, or a media key. All four arrive as one message, so the rule
+    /// lives here once.
+    ///
+    /// **First press restarts, second goes back.** The convention every
+    /// mainstream player follows, and Slipmat did not: it jumped to the
+    /// previous track immediately, so overshooting a song you were enjoying
+    /// meant seeking back by hand.
+    ///
+    /// No timer, and no "was that a double press" state to keep. Restarting
+    /// puts the position at zero, which is already the case that means *go back
+    /// one* — so the second press falls into it by itself.
+    pub(super) fn go_previous(&self) {
+        match previous_means(self.player.interpolated_position_ms()) {
+            Previous::Restart => {
+                self.send(Command::Seek { position_ms: 0 });
+                // Same reasoning as `AppMsg::Seek`: a discontinuous move has to
+                // be announced, or controllers keep extrapolating from the old
+                // position and their progress bars drift.
+                self.mpris.seeked(0);
+            }
+            Previous::Track => self.send(Command::Previous),
+        }
+    }
+}
+
+/// Which of the two a press means, from how far into the track it lands.
+///
+/// Pure and separate from the reducer so the rule can be tested without a
+/// player: the whole feature is this one comparison, and it is the sort of
+/// thing that is easy to get backwards.
+pub(super) fn previous_means(position_ms: u64) -> Previous {
+    if position_ms >= RESTART_BEFORE_MS {
+        Previous::Restart
+    } else {
+        Previous::Track
+    }
+}
+
+#[cfg(test)]
+mod previous_tests {
+    use super::*;
+
+    #[test]
+    fn a_press_early_in_a_track_goes_back_one() {
+        // The overshoot case: you meant the track before this one.
+        assert_eq!(previous_means(0), Previous::Track);
+        assert_eq!(previous_means(2_999), Previous::Track);
+    }
+
+    #[test]
+    fn a_press_later_in_a_track_restarts_it() {
+        // And pressing again immediately lands in the case above, which is how
+        // the second press reaches the previous track — no timer, no state.
+        assert_eq!(previous_means(3_000), Previous::Restart);
+        assert_eq!(previous_means(120_000), Previous::Restart);
+    }
+}

@@ -1927,7 +1927,7 @@ impl AppModel {
             AppMsg::Play => self.send(Command::Play),
             AppMsg::Pause => self.send(Command::Pause),
             AppMsg::Next => self.send(Command::Next),
-            AppMsg::Previous => self.send(Command::Previous),
+            AppMsg::Previous => self.go_previous(),
             AppMsg::Seek(position_ms) => {
                 self.send(Command::Seek { position_ms });
                 // Announce the jump straight away rather than waiting for the
