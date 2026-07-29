@@ -83,6 +83,18 @@ const DRAWER_CHROME_H: i32 = 302;
 /// record and starts reading as an icon.
 const ART_FLOOR: i32 = 96;
 
+/// The drawer height at which the queue stops having room for the cover beside
+/// it, and the cover goes.
+///
+/// Measured with the queue open: at 420px the queue gets four rows *with* the
+/// thumbnail, and below that it falls to three and then to one. The thumbnail
+/// is 72px and its whole job is saying which record this is — which the blurred
+/// backdrop, the title and the artist all still do, and the queue's own list
+/// does as well. So below this it is worth more as another row.
+///
+/// Only ever asked with the queue open. Stacked, the cover *is* the view.
+const QUEUE_NEEDS_ROOM: i32 = 420;
+
 /// How much of the window the open drawer claims.
 const WINDOW_FRACTION: f64 = 0.7;
 
@@ -771,11 +783,18 @@ impl PlayerView {
         // what the layout was designed around, and floored so it never becomes
         // an icon. Beside the queue it is a thumbnail regardless: it is there
         // to say which record this is, not to be looked at.
-        self.resize_cover(if self.stacked() {
-            (self.room_for - DRAWER_CHROME_H).clamp(ART_FLOOR, ART_LARGE)
-        } else {
-            ART_THUMB
-        });
+        // Beside the queue on a short drawer the cover goes entirely: its 72px
+        // buys a row and a bit, and nothing that matters is lost — the sleeve is
+        // still the backdrop behind all of this, and the title still names it.
+        let room_for_cover = self.stacked() || self.room_for >= QUEUE_NEEDS_ROOM;
+        self.cover.set_shown(room_for_cover);
+        if room_for_cover {
+            self.resize_cover(if self.stacked() {
+                (self.room_for - DRAWER_CHROME_H).clamp(ART_FLOOR, ART_LARGE)
+            } else {
+                ART_THUMB
+            });
+        }
 
         // One control at a time: the transport's button opens the queue, the
         // queue's own header closes it. Two buttons, but never both on screen,

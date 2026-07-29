@@ -142,6 +142,11 @@ impl Cover {
         parent.prepend(&self.stack);
     }
 
+    /// Show or hide the whole picture, whichever face it is wearing.
+    pub fn set_shown(&self, shown: bool) {
+        self.stack.set_visible(shown);
+    }
+
     /// An empty sleeve: the case, with a disc sitting inside it.
     ///
     /// `.np-cover-empty` is the same rule the bar uses, so the two states
