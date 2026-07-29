@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      2865  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      2880  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole.
                                           # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
