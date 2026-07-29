@@ -40,14 +40,33 @@ Nothing here has been pushed to the AUR yet.
 ## Publishing, when the time comes
 
 ```bash
-git clone ssh://aur@aur.archlinux.org/slipmat.git aur-slipmat
-cp packaging/aur/slipmat/PKGBUILD aur-slipmat/
+git -c init.defaultBranch=master clone ssh://aur@aur.archlinux.org/slipmat.git aur-slipmat
+cp packaging/aur/slipmat/{PKGBUILD,LICENSE} aur-slipmat/
 cd aur-slipmat && makepkg --printsrcinfo > .SRCINFO
-git commit -am "…" && git push
+git add PKGBUILD .SRCINFO LICENSE
+git commit -m "…" && git push
 ```
 
-`.SRCINFO` is generated, never hand-written, and the AUR rejects a push without
-one.
+Four things the guidelines require that are easy to get wrong here:
+
+- **`.SRCINFO` is generated, never hand-written**, and must be regenerated
+  whenever PKGBUILD metadata changes — including `pkgver()`. Without it the AUR
+  shows a stale version, and a push with no `.SRCINFO` at all is rejected.
+- **The AUR only accepts pushes to `master`.** This repository's default branch
+  is `main`, so the clone above pins `master` explicitly; a local branch under
+  any other name has to be renamed before it will push.
+- **Do not commit bare `pkgver` bumps to `slipmat-git`.** A VCS package is not
+  considered out of date when upstream gains commits — its `pkgver()` computes
+  the version at build time. Commit only when something else changes, such as
+  the build steps.
+- **Commits are authored with your global git identity**, and are very hard to
+  change once pushed (FS#45425). Set `git config user.name`/`user.email` inside
+  the AUR clone first if that is not what you want.
+
+The `LICENSE` is **0BSD, and it covers the PKGBUILD rather than Slipmat** — the
+app stays GPL-3. The guidelines ask for a licence on the submission itself, and
+note that a package without one, or under anything other than 0BSD, is not
+eligible for promotion to the official repositories.
 
 ## Things that are true of these builds
 
