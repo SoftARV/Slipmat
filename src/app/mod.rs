@@ -230,6 +230,14 @@ pub struct AppModel {
     /// Whether the current track has already been reloaded to recover a
     /// playback that would not start. One attempt; a second failure is real.
     healed: bool,
+    /// The reorder in flight, so it can be undone if the sidecar refuses it.
+    ///
+    /// An optimistic edit needs a way back or the list quietly stops matching
+    /// what is playing — which is what a stale sidecar produced: fourteen
+    /// `unknown-command` errors, fourteen rows left where they were dropped,
+    /// and a queue that reverted the moment anything asked MusicKit for the
+    /// next track.
+    pending_move: Option<(usize, usize)>,
     /// Where to seek back to once a reloaded track becomes current.
     resume_at: Option<u64>,
     /// Whether the artwork cache has been swept this run. Once is enough: the
@@ -1412,6 +1420,7 @@ impl Component for AppModel {
             sync_entry: false,
             animated_shown: std::cell::Cell::new(None),
             healed: false,
+            pending_move: None,
             resume_at: None,
             pruned: false,
             section_spinners: Vec::new(),
@@ -2149,6 +2158,7 @@ impl AppModel {
                     return;
                 }
                 tracing::info!(from, to, "reordering the queue");
+                self.pending_move = Some((from, to));
                 self.send(Command::MoveInQueue { from, to });
                 // `push_snapshot` re-syncs the queue view from the projection,
                 // so the row is already in its new place before the echo.

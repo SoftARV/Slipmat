@@ -151,6 +151,11 @@ impl AppModel {
                 // signature of a decrypt session that did not survive a
                 // suspend — see `playback::play_did_nothing`.
                 self.play_did_nothing(cmd);
+                // Confirmed. Forget the way back, or an unrelated failure
+                // later would undo a move that actually happened.
+                if cmd == "moveInQueue" {
+                    self.pending_move = None;
+                }
                 // Deliberately does **not** settle library writes: `cmd-done`
                 // carries only the command name, and this dispatch is async, so
                 // two removals can finish out of order. `Event::LibraryWrite`
@@ -206,6 +211,9 @@ impl AppModel {
             }
             Event::Error { code, detail } => {
                 tracing::warn!(%code, %detail, "sidecar error");
+                if detail == "moveInQueue" && self.undo_move() {
+                    return;
+                }
                 // A refused library write has to put the row back before
                 // anything else looks at it, and it words its own toast — the
                 // raw detail is a command name, which means nothing to anyone.
