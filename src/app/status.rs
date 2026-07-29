@@ -69,7 +69,13 @@ impl AppModel {
     /// spinners are not on screen, and a reload over a list that stays up — which
     /// is deliberate, see `page` — would otherwise look like nothing happened.
     pub(super) fn loading_section(&self) -> bool {
-        match self.view {
+        self.loading_in(self.view)
+    }
+
+    /// As [`AppModel::loading_section`], for a section that is not on screen —
+    /// which is every one of them, from the sidebar's point of view.
+    pub(super) fn loading_in(&self, view: View) -> bool {
+        match view {
             View::Albums => self.loading_albums,
             View::Artists => self.loading_artists,
             View::Playlists => self.loading_playlists,
