@@ -210,6 +210,14 @@ pub struct AppModel {
     /// `update_with_view` the moment it does, because it is a one-shot request
     /// rather than a state anything can be derived from.
     focus_search: bool,
+    /// Set when the query changed from somewhere that is not the entry, so the
+    /// entry has to be told.
+    ///
+    /// It is normally the *source* of the query and nothing writes back to it —
+    /// a binding there would be the two-way loop from #37. The cost of that is
+    /// this flag: clear the query without it and the words stay in the field
+    /// over a list that is no longer filtered.
+    sync_entry: bool,
     /// Whether the search entry is showing, on a narrow header where it is a
     /// button until asked for. Meaningless while `narrow_header` is false: the
     /// entry is simply the title then.
@@ -1075,13 +1083,28 @@ impl Component for AppModel {
                                                     sender.input(AppMsg::SearchChanged(entry.text().into()));
                                                 },
                                                 // Escape, as it cancels every other
-                                                // search in GNOME. Both messages,
-                                                // because on a wide header the box
-                                                // is never "open" — `ShowSearch`
-                                                // would drop a value it already
-                                                // holds and Escape would do
-                                                // nothing at all.
-                                                connect_stop_search[sender] => move |_| {
+                                                // search in GNOME.
+                                                //
+                                                // The entry is emptied here rather
+                                                // than left to the reducer: it is
+                                                // the *source* of the query, so
+                                                // nothing writes back to it, and
+                                                // clearing only the model left the
+                                                // words sitting in a field over an
+                                                // unfiltered list.
+                                                //
+                                                // `SearchChanged` as well, because
+                                                // `search-changed` is delayed and
+                                                // the list should stop filtering
+                                                // now; it returns early when the
+                                                // delayed one arrives after it.
+                                                // And `ShowSearch`, because on a
+                                                // wide header the box is never
+                                                // "open" — that message would drop
+                                                // a value it already holds and
+                                                // Escape would close nothing.
+                                                connect_stop_search[sender] => move |entry| {
+                                                    entry.set_text("");
                                                     sender.input(AppMsg::SearchChanged(String::new()));
                                                     sender.input(AppMsg::ShowSearch(false));
                                                 },
@@ -1490,6 +1513,7 @@ impl Component for AppModel {
             narrow_header: false,
             searching: false,
             focus_search: false,
+            sync_entry: false,
             animated_shown: std::cell::Cell::new(None),
             marked_playing: None,
             library_icons: row_registry(),
@@ -1674,8 +1698,10 @@ impl Component for AppModel {
         // for the section title — an unmapped widget cannot take the caret, and
         // that is the whole reason this is a flag rather than a `grab_focus`
         // at the call site.
-        if std::mem::take(&mut self.focus_search) {
+        if std::mem::take(&mut self.sync_entry) {
             widgets.search_entry.set_text(self.query());
+        }
+        if std::mem::take(&mut self.focus_search) {
             widgets.search_entry.grab_focus();
             // Typing appends, so the caret belongs after what is already there.
             // `grab_focus` on an entry selects all of it, and the next
@@ -2060,11 +2086,18 @@ impl AppModel {
                 // button report a change that lands here holding the value we
                 // already have — and a window resize is not a request to
                 // abandon what you were looking for.
-                if !show && !self.query().is_empty() {
-                    sender.input(AppMsg::SearchChanged(String::new()));
+                if !show {
+                    // Inline rather than `sender.input`, so the query is empty
+                    // *before* `sync_entry` is read. Queued, the flag would be
+                    // consumed a pass early and write the words back in.
+                    self.handle(AppMsg::SearchChanged(String::new()), &sender, root);
+                    self.sync_entry = true;
                 }
             }
+            // Both openers set `sync_entry` too: the entry may hold text from
+            // a query that was cleared while it was hidden.
             AppMsg::FocusSearch => {
+                self.sync_entry = true;
                 // The box has to exist before it can be focused: on a narrow
                 // header it is a hidden stack page until now, and a widget that
                 // is not mapped cannot take the caret.
@@ -2074,6 +2107,7 @@ impl AppModel {
             AppMsg::TypeAhead(text) => {
                 self.searching = true;
                 self.focus_search = true;
+                self.sync_entry = true;
                 let mut query = self.query().to_owned();
                 query.push_str(&text);
                 // Straight through the ordinary path, so filtering, the
