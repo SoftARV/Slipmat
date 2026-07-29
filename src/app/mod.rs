@@ -2160,6 +2160,13 @@ impl AppModel {
                 tracing::info!(from, to, "reordering the queue");
                 self.pending_move = Some((from, to));
                 self.send(Command::MoveInQueue { from, to });
+                // **And where the playing track went.** MusicKit does not
+                // re-index its own position after a splice, so `next` would
+                // advance from a stale number and play the wrong track — the
+                // queue looking correct the whole time.
+                self.send(Command::SyncQueuePosition {
+                    index: self.player.queue_position,
+                });
                 // `push_snapshot` re-syncs the queue view from the projection,
                 // so the row is already in its new place before the echo.
                 self.push_snapshot();

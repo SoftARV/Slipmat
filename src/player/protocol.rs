@@ -72,6 +72,11 @@ pub enum Command {
     #[serde(rename = "moveInQueue")]
     MoveInQueue { from: usize, to: usize },
 
+    /// Tell MusicKit which index the current track is at, after an edit moved
+    /// it. MusicKit does not work this out for itself.
+    #[serde(rename = "syncQueuePosition")]
+    SyncQueuePosition { index: usize },
+
     /// Insert songs into the queue MusicKit already holds — right after the
     /// current track, or at the end.
     ///
@@ -158,6 +163,7 @@ impl Command {
             Self::Previous => "previous",
             Self::ChangeToIndex { .. } => "changeToIndex",
             Self::MoveInQueue { .. } => "moveInQueue",
+            Self::SyncQueuePosition { .. } => "syncQueuePosition",
             Self::PlayNext { .. } => "playNext",
             Self::PlayLater { .. } => "playLater",
             Self::RemoveFromQueue { .. } => "removeFromQueue",
