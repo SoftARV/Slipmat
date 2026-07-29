@@ -40,9 +40,12 @@ src/app/view.rs                      680  # which section is showing, and how ea
                                           # comments so nobody re-guesses it.
 src/app/library.rs                   760  # four collections and the catalog search, all landing in
                                           # the same list.
-src/player/protocol.rs               650  # the whole sidecar contract in one file, deliberately
+src/player/protocol.rs               740  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
+                                          # 650 -> 740 for #89: a shared `ms` deserializer that
+                                          # floors MusicKit's negative sentinels, and four tests
+                                          # built from the exact lines it rejected.
 src/components/player_view/mod.rs    790  # the model, `view!` and the reducer. The transport
                                           # moved to a child module — see its header for why a
                                           # child and not a sibling. 870 before the split; this

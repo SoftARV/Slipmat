@@ -245,7 +245,12 @@ pub enum Event {
     NowPlaying { item: Option<Item>, queue: Queue },
 
     #[serde(rename = "position", rename_all = "camelCase")]
-    Position { position_ms: u64, duration_ms: u64 },
+    Position {
+        #[serde(deserialize_with = "ms")]
+        position_ms: u64,
+        #[serde(deserialize_with = "ms")]
+        duration_ms: u64,
+    },
 
     #[serde(rename = "queue")]
     Queue(Queue),
@@ -391,6 +396,32 @@ pub struct Queue {
     pub items: Vec<Item>,
 }
 
+/// Milliseconds from MusicKit, floored at zero.
+///
+/// **MusicKit uses negative numbers as sentinels**, and a bare `u64` turns that
+/// into a rejected line rather than a value. [`Queue::position`] already carries
+/// this lesson — it reports `-1` before anything is current — and it recurred on
+/// a different field: at a track boundary MusicKit reports a negative position,
+///
+/// ```text
+/// {"event":"position","positionMs":-544000,"durationMs":266000}
+/// ```
+///
+/// and serde rejected the whole event, so the position was dropped with a
+/// warning at every transition (#89).
+///
+/// Read as `f64` rather than `i64` so a fractional millisecond is tolerated as
+/// well. The wire has only ever carried integers, but a rejected line is a worse
+/// failure than a rounded one — which is the whole point of this function.
+fn ms<'de, D: serde::Deserializer<'de>>(de: D) -> Result<u64, D::Error> {
+    let raw = f64::deserialize(de)?;
+    Ok(if raw.is_finite() && raw > 0.0 {
+        raw.round() as u64
+    } else {
+        0
+    })
+}
+
 fn no_position() -> i64 {
     -1
 }
@@ -417,7 +448,7 @@ pub struct Item {
     pub artist: String,
     #[serde(default)]
     pub album: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "ms")]
     pub duration_ms: u64,
     #[serde(default)]
     pub track_number: u32,
@@ -460,6 +491,58 @@ mod tests {
         // The position rides in the descriptor. A seek afterwards cannot work:
         // there is no current item to seek within until something plays.
         assert!(json.contains(r#""startTimeMs":42000"#), "{json}");
+    }
+
+    #[test]
+    fn a_negative_position_is_read_as_zero_not_rejected() {
+        // The exact lines from the log in #89, twice at a track boundary. As a
+        // `u64` these were rejected whole and the position was dropped.
+        for line in [
+            r#"{"event":"position","positionMs":-544000,"durationMs":266000}"#,
+            r#"{"event":"position","positionMs":-298000,"durationMs":232000}"#,
+        ] {
+            match serde_json::from_str::<Event>(line).expect("must parse") {
+                Event::Position {
+                    position_ms,
+                    duration_ms,
+                } => {
+                    assert_eq!(position_ms, 0, "negative should floor at zero");
+                    assert!(duration_ms > 0, "duration should survive: {line}");
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_ordinary_position_is_untouched() {
+        let line = r#"{"event":"position","positionMs":30000,"durationMs":266000}"#;
+        match serde_json::from_str::<Event>(line).unwrap() {
+            Event::Position {
+                position_ms,
+                duration_ms,
+            } => assert_eq!((position_ms, duration_ms), (30_000, 266_000)),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fractional_millisecond_rounds_rather_than_failing() {
+        // Not seen on the wire, but the point of reading `f64` is that a shape
+        // we have not seen costs a rounded value rather than a dropped event.
+        let line = r#"{"event":"position","positionMs":1500.6,"durationMs":266000}"#;
+        match serde_json::from_str::<Event>(line).unwrap() {
+            Event::Position { position_ms, .. } => assert_eq!(position_ms, 1501),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_negative_track_duration_is_floored_too() {
+        // `Item::duration_ms` comes from the same source and had the same gap.
+        let item: Item =
+            serde_json::from_str(r#"{"title":"x","durationMs":-1}"#).expect("must parse");
+        assert_eq!(item.duration_ms, 0);
     }
 
     #[test]
