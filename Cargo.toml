@@ -1,6 +1,6 @@
 [package]
 name = "slipmat"
-version = "0.6.0"
+version = "0.7.0-dev"
 edition = "2024"
 description = "A native GNOME client for Apple Music"
 license = "GPL-3.0-or-later"
