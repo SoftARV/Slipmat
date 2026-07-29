@@ -1029,15 +1029,12 @@ impl Component for AppModel {
                                         // homogeneous by default, so it holds the
                                         // button's width whichever child shows.
                                         pack_end = &gtk::Stack {
-                                            #[watch]
-                                            set_visible: model.view != View::Search,
-                                            #[watch]
-                                            set_visible_child_name: if model.loading_section() {
-                                                "busy"
-                                            } else {
-                                                "reload"
-                                            },
-
+                                            // Children first. `view!` assigns in
+                                            // the order written, so naming a
+                                            // child above the `add_named` that
+                                            // creates it is `Gtk-WARNING: Child
+                                            // name 'reload' not found in
+                                            // GtkStack` on every launch.
                                             add_named[Some("reload")] = &gtk::Button {
                                                 set_icon_name: "view-refresh-symbolic",
                                                 set_tooltip_text: Some("Reload"),
@@ -1056,6 +1053,15 @@ impl Component for AppModel {
                                                 set_size_request: (16, 16),
                                                 set_valign: gtk::Align::Center,
                                                 set_halign: gtk::Align::Center,
+                                            },
+
+                                            #[watch]
+                                            set_visible: model.view != View::Search,
+                                            #[watch]
+                                            set_visible_child_name: if model.loading_section() {
+                                                "busy"
+                                            } else {
+                                                "reload"
                                             },
                                         },
 
