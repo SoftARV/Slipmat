@@ -554,6 +554,8 @@ pub enum AppMsg {
     ShowPreferences,
     ShowShortcuts,
     ShowAbout,
+    /// Open the Ko-fi page in a browser.
+    OpenSupport,
     SetTheme(u32),
     SetAccent(crate::style::Accent),
     SetNotifyTrackChange(bool),
@@ -1497,6 +1499,24 @@ impl Component for AppModel {
             section.append(Some("_About Slipmat"), Some("win.about"));
             primary_menu.append_section(None, &section);
 
+            // Its own section, and above the account one. It is neither app
+            // furniture nor something that touches your music, and a link that
+            // leaves the app entirely should not sit in the same group as the
+            // dialogs that do not.
+            //
+            // A `MenuItem` rather than `append`, because that is the only form
+            // that carries an icon — and the heart is the whole reason this
+            // reads as a thank-you rather than another dialog.
+            let support = gtk::gio::Menu::new();
+            //
+            // `emote-love-symbolic`, checked against the theme rather than
+            // assumed: Adwaita has no `emblem-favorite-symbolic`, the obvious
+            // guess, and `icon()` would have quietly put a music note here.
+            let item = gtk::gio::MenuItem::new(Some("_Buy Me a Coffee"), Some("win.support"));
+            item.set_icon(&gtk::gio::ThemedIcon::new(icon("emote-love-symbolic")));
+            support.append_item(&item);
+            primary_menu.append_section(None, &support);
+
             // Its own section: signing out is an account action, not app
             // furniture, and it should not sit next to About.
             let account = gtk::gio::Menu::new();
@@ -1930,6 +1950,7 @@ impl AppModel {
             AppMsg::ShowPreferences => self.show_preferences(&sender, root),
             AppMsg::ShowShortcuts => show_shortcuts(root),
             AppMsg::ShowAbout => show_about(root),
+            AppMsg::OpenSupport => chrome::open_support(root),
             AppMsg::SetTheme(index) => {
                 self.settings.theme = Theme::from_index(index);
                 self.settings.apply_theme();

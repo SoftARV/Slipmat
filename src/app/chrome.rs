@@ -79,6 +79,7 @@ relm4::new_stateless_action!(ToggleQueueAction, AppMenuActionGroup, "toggle-queu
 relm4::new_stateless_action!(ToggleSidebarAction, AppMenuActionGroup, "toggle-sidebar");
 relm4::new_stateless_action!(SignOutAction, AppMenuActionGroup, "sign-out");
 relm4::new_stateless_action!(FocusSearchAction, AppMenuActionGroup, "focus-search");
+relm4::new_stateless_action!(SupportAction, AppMenuActionGroup, "support");
 
 /// Wire the primary menu's actions to messages, with their accelerators.
 pub(super) fn register_actions(
@@ -165,6 +166,10 @@ pub(super) fn register_actions(
     group.add_action(RelmAction::<FocusSearchAction>::new_stateless(move |_| {
         s.input(AppMsg::FocusSearch)
     }));
+    let s = sender.clone();
+    group.add_action(RelmAction::<SupportAction>::new_stateless(move |_| {
+        s.input(AppMsg::OpenSupport)
+    }));
 
     app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
     app.set_accelerators_for_action::<ShortcutsAction>(&["<Control>question"]);
@@ -209,6 +214,9 @@ pub(super) fn show_about(parent: &adw::ApplicationWindow) {
         .license_type(gtk::License::Gpl30)
         .website("https://github.com/SoftARV/Slipmat")
         .issue_url("https://github.com/SoftARV/Slipmat/issues")
+        // The primary menu carries this too. Both, because the menu is where
+        // it is *seen* and About is where somebody goes looking for it.
+        .support_url(SUPPORT_URL)
         .comments(
             "A native GNOME client for Apple Music.\n\n\
              Playback runs through Apple's own MusicKit player using Google's \
@@ -218,6 +226,29 @@ pub(super) fn show_about(parent: &adw::ApplicationWindow) {
         )
         .build();
     about.present(Some(parent));
+}
+
+/// Where to say thank you.
+pub(super) const SUPPORT_URL: &str = "https://ko-fi.com/miguelrincon";
+
+/// Open the support page in the user's browser.
+///
+/// `GtkUriLauncher` rather than `gio::AppInfo`: inside a Flatpak it goes
+/// through the OpenURI portal, which is the only route out of the sandbox —
+/// and it is the same call whether sandboxed or not, so there is nothing to
+/// branch on.
+pub(super) fn open_support(parent: &adw::ApplicationWindow) {
+    gtk::UriLauncher::new(SUPPORT_URL).launch(
+        Some(parent),
+        gtk::gio::Cancellable::NONE,
+        |result| {
+            // Nothing to recover: if no browser answered, a toast telling them
+            // so would be one more thing that cannot open a browser either.
+            if let Err(err) = result {
+                tracing::warn!(?err, "could not open the support page");
+            }
+        },
+    );
 }
 
 pub(super) fn show_shortcuts(parent: &adw::ApplicationWindow) {
