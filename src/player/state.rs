@@ -95,7 +95,8 @@ impl PlayerState {
         // `None` (MusicKit's -1) means a queue is loaded but nothing is current
         // yet. Treat that as position 0 for display, but keep `has_previous`
         // honest via the same value — you cannot go back from "not started".
-        self.queue_position = queue.index().unwrap_or(0);
+        let reported = queue.index().unwrap_or(0);
+        self.queue_position = corrected_position(reported, &self.queue, self.now_playing.as_ref());
     }
 
     /// Position interpolated to *now*, clamped to the track length.
@@ -137,9 +138,140 @@ impl PlayerState {
     }
 }
 
+/// Which index the playing track is *actually* at.
+///
+/// **MusicKit does not re-index its own position when the queue is edited.**
+/// Measured: with index 32 playing, removing index 30 leaves the audio alone
+/// and shifts the track to 31 — while `position` still reports 32, which now
+/// names a different song. Moving an item across the current track does the
+/// same. Verified against a real queue for both a removal and a splice.
+///
+/// So the reported index is a hint, and `now_playing` is the fact. Everything
+/// downstream reads this: the row marker, the saved session's start index, and
+/// the reload that recovers a dead playback — each of which would otherwise
+/// name the wrong track after any edit above the one playing.
+///
+/// **The queue may hold the same track twice**, which is what Play Next and
+/// Add to Queue are for (#88). So a search picks the candidate *nearest* the
+/// reported index rather than the first: an edit shifts indices by a little,
+/// never across the whole queue.
+fn corrected_position(reported: usize, queue: &[Item], playing: Option<&Item>) -> usize {
+    let id_of = |item: &Item| item.catalog_id.clone().or_else(|| item.id.clone());
+    // Nothing to check against, or the report already agrees.
+    let Some(wanted) = playing.and_then(id_of) else {
+        return reported;
+    };
+    if queue.get(reported).and_then(id_of) == Some(wanted.clone()) {
+        return reported;
+    }
+    queue
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| id_of(item) == Some(wanted.clone()))
+        .min_by_key(|(i, _)| i.abs_diff(reported))
+        .map(|(i, _)| i)
+        // Not in the queue at all — a race between the edit and the event.
+        // Keeping the report is no worse than inventing a number.
+        .unwrap_or(reported)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn q(titles: &[&str]) -> Vec<Item> {
+        titles
+            .iter()
+            .map(|t| Item {
+                id: Some((*t).to_owned()),
+                title: (*t).to_owned(),
+                ..Item::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_projection_re_finds_the_playing_track_after_an_edit() {
+        // The measured bug, end to end through `apply` rather than against the
+        // helper — so this fails if the correction is ever unwired, which
+        // testing `corrected_position` alone would not catch.
+        let mut s = PlayerState::new();
+        let items = q(&["a", "b", "c", "d"]);
+        s.apply(&Event::NowPlaying {
+            item: Some(items[2].clone()),
+            queue: Queue {
+                position: 2,
+                items: items.clone(),
+            },
+        });
+        assert_eq!(s.queue_position, 2, "baseline");
+
+        // "a" is removed. MusicKit shifts the items and does *not* re-index:
+        // it still says 2, which now names "d".
+        s.apply(&Event::Queue(Queue {
+            position: 2,
+            items: q(&["b", "c", "d"]),
+        }));
+        assert_eq!(
+            s.queue_position, 1,
+            "the playing track moved to 1; a stale report said 2"
+        );
+    }
+
+    #[test]
+    fn a_report_that_agrees_is_taken_as_it_stands() {
+        let items = q(&["a", "b", "c"]);
+        let playing = items[1].clone();
+        assert_eq!(corrected_position(1, &items, Some(&playing)), 1);
+    }
+
+    #[test]
+    fn removing_a_track_above_the_playing_one_is_corrected() {
+        // The measured bug: playing index 2, something above it is removed, and
+        // MusicKit still reports 2 while the track is now at 1.
+        let items = q(&["a", "c", "d"]);
+        let playing = Item {
+            id: Some("c".into()),
+            title: "c".into(),
+            ..Item::default()
+        };
+        assert_eq!(corrected_position(2, &items, Some(&playing)), 1);
+    }
+
+    #[test]
+    fn a_duplicate_track_resolves_to_the_nearest_copy() {
+        // Play Next and Add to Queue both put the same song in twice (#88), so
+        // the first match is the wrong answer — an edit shifts an index by a
+        // little, never across the whole queue.
+        let items = q(&["x", "dup", "y", "z", "dup"]);
+        let playing = Item {
+            id: Some("dup".into()),
+            title: "dup".into(),
+            ..Item::default()
+        };
+        assert_eq!(corrected_position(4, &items, Some(&playing)), 4);
+        assert_eq!(corrected_position(2, &items, Some(&playing)), 1);
+    }
+
+    #[test]
+    fn nothing_playing_leaves_the_report_alone() {
+        // Restoring a session loads a queue with no current item; there is
+        // nothing to check against and no reason to distrust the report.
+        assert_eq!(corrected_position(7, &q(&["a", "b"]), None), 7);
+    }
+
+    #[test]
+    fn a_track_that_has_left_the_queue_keeps_the_report() {
+        // A race between the edit and the event. Inventing a number would be
+        // worse than keeping the one we were given.
+        let items = q(&["a", "b"]);
+        let gone = Item {
+            id: Some("vanished".into()),
+            title: "vanished".into(),
+            ..Item::default()
+        };
+        assert_eq!(corrected_position(1, &items, Some(&gone)), 1);
+    }
 
     fn item(title: &str, duration_ms: u64) -> Item {
         Item {
