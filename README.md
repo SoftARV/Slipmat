@@ -149,6 +149,15 @@ Apple's own sign-in window opens once, and hides for good after you
 authenticate. Notifications need the app to be installed — running from a build
 tree, the shell has no `.desktop` entry to attach them to.
 
+## Support
+
+Slipmat is free, GPL-3, and stays that way. It is also a spare-time project for
+one Linux laptop that other people happen to find useful.
+
+If it earns a place on yours:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/miguelrincon)
+
 ## Limitations
 
 These are properties of the platform, not a to-do list:
