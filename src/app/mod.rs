@@ -496,8 +496,6 @@ pub enum AppMsg {
     ShowRowMenu(RowMenuRequest),
     /// Empty the queue and stop.
     ClearQueue,
-    /// Show or hide the queue pane inside the expanded player.
-    ShowQueuePane(bool),
     /// Grow the queue MusicKit already holds, without rebuilding it.
     Enqueue {
         catalog_id: String,
@@ -1330,7 +1328,6 @@ impl Component for AppModel {
                 QueueViewOutput::Jump { at, id } => AppMsg::JumpTo { at, id },
                 QueueViewOutput::Remove { at, id } => AppMsg::RemoveFromQueue { at, id },
                 QueueViewOutput::Clear => AppMsg::ClearQueue,
-                QueueViewOutput::Hide => AppMsg::ShowQueuePane(false),
                 QueueViewOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
                 QueueViewOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
             });
@@ -1956,6 +1953,10 @@ impl AppModel {
             AppMsg::NarrowHeader(narrow) => {
                 tracing::debug!(narrow, "header breakpoint");
                 self.narrow_header = narrow;
+                // The bar reads this off the snapshot to decide whether it has
+                // room for shuffle, repeat and volume, and nothing else pushes
+                // one when only the window changed.
+                self.push_snapshot();
                 // Widening puts the entry back as the title, so the open flag
                 // stops meaning anything — and leaving it set would reopen the
                 // box the next time the window got narrow, which is not
@@ -2099,13 +2100,6 @@ impl AppModel {
                 // sequential mode, which is not what pressing Shuffle means.
                 self.send(Command::SetShuffle { shuffle });
                 self.play_entries(&entries, 0);
-            }
-            AppMsg::ShowQueuePane(shown) => {
-                // The player view owns this — it is a layout decision, not
-                // player state — so this only forwards. It arrives from the
-                // queue's own close button, which cannot reach a sibling
-                // component directly.
-                self.player_view.emit(PlayerViewInput::SetQueueShown(shown));
             }
             AppMsg::ClearQueue => {
                 tracing::info!("clearing the queue");

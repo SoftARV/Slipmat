@@ -270,10 +270,6 @@ pub enum QueueViewOutput {
     /// are requests.
     SetShuffle(bool),
     SetRepeat(Repeat),
-    /// Close the queue pane. The player view owns whether it is showing, so
-    /// this is a request rather than a fact — the same shape as every other
-    /// output here.
-    Hide,
 }
 
 #[relm4::component(pub)]
@@ -356,16 +352,6 @@ impl Component for QueueView {
                     },
                 },
 
-                // Closing the queue belongs to the queue, not to a button
-                // hovering above it. The transport carries the way back in.
-                pack_end = &gtk::Button {
-                    set_icon_name: "view-list-symbolic",
-                    set_tooltip_text: Some("Hide the queue"),
-                    add_css_class: "flat",
-                    connect_clicked[sender] => move |_| {
-                        let _ = sender.output(QueueViewOutput::Hide);
-                    },
-                },
             },
 
             #[wrap(Some)]

@@ -73,6 +73,14 @@ pub struct Snapshot {
     /// 0.0–1.0. The volume button follows this rather than owning it, so a
     /// change from the keyboard or from MPRIS moves the widget too.
     pub volume: f64,
+    /// The window is too narrow to carry the whole bar.
+    ///
+    /// Set from the same breakpoint that turns the header's search entry into a
+    /// button. The bar answers by standing down shuffle, repeat and volume —
+    /// all three of which the open drawer still has, so nothing becomes
+    /// unreachable, it just stops being reachable from a strip with no room
+    /// for it.
+    pub narrow: bool,
 }
 
 impl Default for Snapshot {
@@ -85,6 +93,7 @@ impl Default for Snapshot {
     /// itself on launch.
     fn default() -> Self {
         Self {
+            narrow: false,
             title: String::new(),
             artist: String::new(),
             album: String::new(),
@@ -316,6 +325,14 @@ impl SimpleComponent for NowPlaying {
                     set_transition_type: gtk::StackTransitionType::Crossfade,
                     set_transition_duration: SWAP_MS,
                     set_valign: gtk::Align::Center,
+                    // **A `GtkStack` measures its widest child, showing or
+                    // not.** So the skeleton below set the bar's minimum width
+                    // even with a track playing — 140px the labels never asked
+                    // for, and they ellipsize while it cannot. That was the
+                    // largest single contribution to a bar that would not go
+                    // under 506px, which is why the window clipped its own
+                    // content when tiled narrow.
+                    set_hhomogeneous: false,
 
                     // Two grey bars where the title and artist go.
                     //
@@ -336,14 +353,18 @@ impl SimpleComponent for NowPlaying {
                         // length whatever these numbers said. Once the
                         // metadata column became the hexpanding child, that
                         // width was most of the bar.
+                        // 140/92 before. They are a *minimum*, so on an empty
+                        // bar they are also the window's — and two grey bars
+                        // are a hint about where the title goes, not something
+                        // that needs to be title-sized to read as one.
                         gtk::Box {
                             set_halign: gtk::Align::Start,
-                            set_size_request: (140, 11),
+                            set_size_request: (80, 11),
                             add_css_class: "np-skeleton",
                         },
                         gtk::Box {
                             set_halign: gtk::Align::Start,
-                            set_size_request: (92, 9),
+                            set_size_request: (52, 9),
                             add_css_class: "np-skeleton",
                         },
                     },
@@ -424,6 +445,12 @@ impl SimpleComponent for NowPlaying {
                     set_tooltip_text: Some("Shuffle"),
                     add_css_class: "flat",
                     add_css_class: "circular",
+                    // Stands down on a narrow window. The drawer carries all
+                    // three, so this is a control moving rather than one being
+                    // taken away — and three round buttons is 102px of a bar
+                    // that would not go under 506.
+                    #[watch]
+                    set_visible: !model.snap.narrow,
                     #[watch]
                     set_opacity: mode_opacity(model.snap.shuffle),
                     #[watch]
@@ -480,6 +507,8 @@ impl SimpleComponent for NowPlaying {
                     set_opacity: mode_opacity(model.snap.repeat != Repeat::Off),
                     #[watch]
                     set_sensitive: model.snap.active,
+                    #[watch]
+                    set_visible: !model.snap.narrow,
                     connect_clicked => NowPlayingInput::RepeatCycled,
                 },
 
@@ -506,6 +535,8 @@ impl SimpleComponent for NowPlaying {
                     ],
                     set_tooltip_text: Some("Volume"),
                     add_css_class: "flat",
+                    #[watch]
+                    set_visible: !model.snap.narrow,
                     // ScaleButton is not a Range, so it takes an Adjustment
                     // rather than set_range. Page increment 0.1 makes scroll
                     // wheel steps feel right.
@@ -713,7 +744,7 @@ fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) ->
 /// what it is given without rounding it (measured against GTK 4.22), so an
 /// echo carries bit-identical the value that produced it. A tolerance would
 /// instead start swallowing small deliberate moves.
-fn volume_is_new(incoming: f64, held: f64) -> bool {
+pub(crate) fn volume_is_new(incoming: f64, held: f64) -> bool {
     (incoming - held).abs() >= f64::EPSILON
 }
 

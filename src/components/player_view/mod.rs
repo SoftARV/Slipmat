@@ -199,6 +199,7 @@ pub enum PlayerViewInput {
     ShuffleClicked,
     /// Cycle repeat, for the same reason.
     RepeatClicked,
+    VolumeChanged(f64),
 }
 
 #[relm4::component(pub)]
@@ -624,6 +625,15 @@ impl SimpleComponent for PlayerView {
             }
             PlayerViewInput::RepeatClicked => {
                 let _ = sender.output(NowPlayingOutput::SetRepeat(self.snap.repeat.next()));
+            }
+            PlayerViewInput::VolumeChanged(v) => {
+                // Same guard as the bar's: `set_value` and a drag are
+                // indistinguishable to GTK, so a value equal to the one held is
+                // the echo of our own write and must not go back out.
+                if crate::components::now_playing::volume_is_new(v, self.snap.volume) {
+                    self.snap.volume = v;
+                    let _ = sender.output(NowPlayingOutput::SetVolume(v));
+                }
             }
         }
     }

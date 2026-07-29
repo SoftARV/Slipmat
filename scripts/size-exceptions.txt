@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      2800  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      2810  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole.
                                           # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
@@ -32,7 +32,7 @@ src/app/mod.rs                      2800  # the model, the messages, `view!` and
                                           # down for the fourth time.
                                           # Lowering a number as a file shrinks is the ratchet working;
                                           # this is the third time it has gone down.
-src/components/now_playing.rs       1020  # one component, and the one whose seek arithmetic took
+src/components/now_playing.rs       1040  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
                                           # 1220 -> 1240: `mode_opacity`, shared with the drawer
@@ -41,6 +41,9 @@ src/components/now_playing.rs       1020  # one component, and the one whose see
                                           # 1240 -> 960: the bar's scale became a read-only line, so the
                                           # whole seek-hold apparatus went with it. Lowering a number as a
                                           # file shrinks is the ratchet working.
+                                          # 1020 -> 1040: shuffle, repeat and volume stand down on a
+                                          # narrow window, and the comment on why a hidden stack child
+                                          # was setting the whole window's minimum width.
 src/music/client.rs                  980  # one endpoint per method against one API. Long because
                                           # Apple is, and each method is short.
 src/music/types.rs                   900  # the JSON boundary (rule 9). Wire types and our types
