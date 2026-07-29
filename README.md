@@ -154,10 +154,9 @@ tree, the shell has no `.desktop` entry to attach them to.
 Slipmat is free, GPL-3, and stays that way. It is also a spare-time project for
 one Linux laptop that other people happen to find useful.
 
-If it earns a place on yours, you can
-[buy me a coffee](https://ko-fi.com/miguelrincon). There is nothing behind it —
-no features held back, no nag, and the link lives in the app's own menu because
-that is where it can be ignored most easily.
+If it earns a place on yours:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/R6R31Y4KF0)
 
 ## Limitations
 
