@@ -11,11 +11,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 A native GNOME client for Apple Music.
 
-Every other Apple Music option on Linux is `music.apple.com` in a costume —
-Electron wrapped around the website, with the website's scroll behaviour and the
-website's search field. Slipmat is the first one where the interface is actually
-native: GTK4 and libadwaita, written in Rust, with real lists, real GNOME
-search, and media controls that answer from the top bar and the lock screen.
+Apple ships no Linux client, and the DRM makes a fully native one impossible —
+so Slipmat draws its own interface in GTK4 and libadwaita, written in Rust, and
+keeps the web engine strictly for decoding audio. Real lists, real GNOME search,
+and media controls that answer from the top bar and the lock screen.
 
 The web engine is still there. You just never see it.
 
@@ -25,19 +24,18 @@ The web engine is still there. You just never see it.
 
 ## What it does
 
-**A native GNOME app, not a browser in a costume.** GTK4 and libadwaita, written
-in Rust — real lists, real keyboard navigation, a window that tiles to half a
-screen. There is a web layer, because Apple's DRM leaves no choice, but it is
-one hidden process that decodes audio and nothing else. You never see a web
-page.
+**A native GNOME app.** GTK4 and libadwaita, written in Rust — real lists, real
+keyboard navigation, a window that tiles to half a screen. There is a web layer,
+because Apple's DRM leaves no choice, but it is one hidden process that decodes
+audio and nothing else. You never see a web page.
 
 **Your library.** Songs, albums, artists and playlists, each with type-to-find
 filtering and its own sorting. Click anything and the list you are looking at
 becomes the queue.
 
-**A player worth the name.** Gapless, with
-a full-size view you can pull up, the queue beside it, and the cover behind it.
-[Measured, not hoped for](#gapless-verified).
+**A player worth the name.** Gapless, with a full-size view you can pull up, the
+queue beside it, and the cover behind it. [Measured, not
+hoped for](#gapless-verified).
 
 **Controls where you already look.** Play, pause and skip from the GNOME top
 bar, from the lock screen, or with your keyboard's media keys — cover and title
@@ -84,18 +82,91 @@ starts making noise because you opened it is a hostile one.
   </tr>
 </table>
 
-## Gapless, verified
+## Install
 
-Verified 2026-07-26 across four consecutive boundaries of a segued album:
+You need an **active Apple Music subscription**, an **x86_64** machine (Widevine
+on Linux is x86_64 only), and **a network connection every time you play** —
+that last one is permanent, not a limitation we intend to lift. See
+[Limitations](#limitations).
 
-- Every transition happened **unprompted** — Slipmat sent nothing at any
-  boundary. MusicKit advanced a queue it already held, which is the only way the
-  transition can be seamless.
-- Wall-clock between transitions matched each track's length to the second, so
-  no track was cut short.
-- The PipeWire stream was **created once and never torn down**. One sink-input
-  survived all four boundaries, which means the decoder ran continuously.
-- No audible gap.
+Every route fetches castLabs Electron once — **about 200 MB of Chromium**. That
+is the Widevine boundary and there is no smaller version of it.
+
+### Arch and derivatives
+
+Both packages are on the AUR:
+
+```bash
+yay -S slipmat        # the latest release
+yay -S slipmat-git    # tracks main
+```
+
+They conflict with each other, as the convention requires. `slipmat-git`
+rebuilds from whatever is on `main`, so it picks up unreleased work — including
+anything half-finished.
+
+### Flatpak — any distribution
+
+Slipmat needs libadwaita ≥ 1.8 and GTK ≥ 4.20, which rules out Debian stable,
+Ubuntu 24.04 and Fedora ≤ 42. **The Flatpak carries the GNOME 49 runtime with
+it, so your system's libadwaita stops mattering** — verified from nothing on a
+stock Ubuntu 25.10, which cannot build Slipmat at all.
+
+Download `Slipmat.flatpak` from the [latest
+release](https://github.com/SoftARV/Slipmat/releases/latest), then:
+
+```bash
+flatpak install ./Slipmat.flatpak
+flatpak run dev.miguelrincon.Slipmat
+```
+
+A bundle carries the app and **not** the runtime it sits on, so the install
+offers to fetch GNOME 49 from Flathub the first time. Answer yes, or it stops
+with *"requires the runtime org.gnome.Platform/x86_64/49 which was not found"*.
+If your machine has no Flathub remote at all:
+
+```bash
+flatpak remote-add --if-not-exists --user flathub \
+  https://dl.flathub.org/repo/flathub.flatpakrepo
+```
+
+It is **not on Flathub** and is not intended to be.
+
+### From source
+
+```bash
+sudo pacman -S --needed base-devel pkgconf rust gtk4 libadwaita librsvg nodejs npm
+make install     # build + install to ~/.local, no sudo
+```
+
+Also needs Rust ≥ 1.93 (relm4 0.11's MSRV) and Node — verified on Node 26. Then
+launch **Slipmat** from the app grid, or run `slipmat`. If that command is not
+found, `~/.local/bin` is not on your `PATH`.
+
+### First run
+
+Apple's own sign-in window opens once, and hides for good after you
+authenticate. Notifications need the app to be installed — running from a build
+tree, the shell has no `.desktop` entry to attach them to.
+
+## Limitations
+
+These are properties of the platform, not a to-do list:
+
+- **No offline or downloaded playback.** Linux's Widevine CDM does not support
+  persistent licences (it reports `PLATFORM_UNVERIFIED`), so every track must be
+  licensed live. Slipmat cannot work on a plane.
+- **~200 MB on disk for the sidecar.** It is a full Chromium. That is the cost
+  of the only CDM that exists.
+- **x86_64 only.** No ARM Widevine on Linux.
+- **Apple can change `music.apple.com`.** The hook that drives MusicKit is small
+  and defensive, but it is the one surface outside our control. If Apple moves
+  something, Slipmat says so rather than silently spinning.
+- **A few library tracks may be unplayable.** Apple delists tracks while leaving
+  them in your library. Slipmat finds them on first attempt, remembers them
+  across sessions, and dims them rather than letting one break a queue.
+
+Known bugs live in [the issue tracker](https://github.com/SoftARV/Slipmat/issues).
 
 ## How it works, honestly
 
@@ -131,99 +202,18 @@ Slipmat plays through Apple's own MusicKit player with Google's official CDM. It
 is a native front-end and a remote control for a licensed session. It does not
 strip DRM, does not use extracted CDMs, and does not download anything.
 
-## Requirements
+## Gapless, verified
 
-- An **active Apple Music subscription**
-- x86_64 (Widevine on Linux is x86_64 only)
-- **A network connection, always** — see Limitations
+Verified 2026-07-26 across four consecutive boundaries of a segued album:
 
-To *build* it you also need GTK ≥ 4.20, libadwaita ≥ 1.8 and Rust ≥ 1.93
-(relm4 0.11's MSRV), plus Node and npm — verified on Node 26. That floor is
-recent enough to rule out most distributions today: Debian stable, Ubuntu 24.04
-and Fedora ≤ 42 ship an older libadwaita and cannot build it.
-
-**The Flatpak carries its own runtime, so none of that applies to running it.**
-
-```bash
-# CachyOS / Arch — for building from source
-sudo pacman -S --needed base-devel pkgconf rust gtk4 libadwaita librsvg nodejs npm
-```
-
-## Install
-
-### Flatpak — any distribution
-
-The Flatpak bundles the GNOME 49 runtime, so your system's libadwaita does not
-matter. This is the route for anything that cannot build Slipmat, which today is
-most things.
-
-```bash
-flatpak install ./Slipmat.flatpak
-flatpak run dev.miguelrincon.Slipmat
-```
-
-A bundle carries the app and **not** the GNOME 49 runtime it sits on, so the
-install offers to fetch that from Flathub the first time. Answer yes, or it
-stops with *"requires the runtime org.gnome.Platform/x86_64/49 which was not
-found"*. If your machine has no Flathub remote at all:
-
-```bash
-flatpak remote-add --if-not-exists --user flathub \
-  https://dl.flathub.org/repo/flathub.flatpakrepo
-```
-
-It is **not on Flathub** and is not intended to be. Build one yourself with
-`make flatpak-bundle`, which needs `org.flatpak.Builder` and takes a few
-minutes; see [`packaging/flatpak/README.md`](packaging/flatpak/README.md).
-
-### Arch and derivatives
-
-PKGBUILDs live in [`packaging/aur/`](packaging/aur/) — `slipmat` for the latest
-release, `slipmat-git` to track `main`.
-
-### From source
-
-```bash
-make install     # build + install to ~/.local, no sudo
-```
-
-Then launch **Slipmat** from the app grid, or run `slipmat`. If that command is
-not found, `~/.local/bin` is not on your `PATH` — most shells add it, some do
-not.
-
-Every route fetches castLabs Electron — **about 200 MB of Chromium**, once.
-That is the Widevine boundary and there is no smaller version of it; see
-[Limitations](#limitations). From source, `make sidecar` does that step on its
-own if you want it separately.
-
-On first run, Apple's sign-in window opens once; after you authenticate it hides
-for good. Notifications need the app to be installed, and the first time may
-need a fresh login so the shell picks up the new `.desktop` entry and icon.
-
-**No token is ever written to disk.** Both the developer token and the Music
-User Token are re-harvested from the running MusicKit instance on every launch;
-what persists your login is the sidecar's own session cookie, exactly as it
-would in a browser. If Apple rotates a token, Slipmat follows automatically, and
-there is nothing cached for anyone to find.
-
-## Limitations
-
-These are properties of the platform, not a to-do list:
-
-- **No offline or downloaded playback.** Linux's Widevine CDM does not support
-  persistent licences (it reports `PLATFORM_UNVERIFIED`), so every track must be
-  licensed live. Slipmat cannot work on a plane.
-- **~200 MB on disk for the sidecar.** It is a full Chromium. That is the cost
-  of the only CDM that exists.
-- **x86_64 only.** No ARM Widevine on Linux.
-- **Apple can change `music.apple.com`.** The hook that drives MusicKit is small
-  and defensive, but it is the one surface outside our control. If Apple moves
-  something, Slipmat says so rather than silently spinning.
-- **A few library tracks may be unplayable.** Apple delists tracks while leaving
-  them in your library. Slipmat finds them on first attempt, remembers them
-  across sessions, and dims them rather than letting one break a queue.
-
-Known bugs live in [the issue tracker](https://github.com/SoftARV/Slipmat/issues).
+- Every transition happened **unprompted** — Slipmat sent nothing at any
+  boundary. MusicKit advanced a queue it already held, which is the only way the
+  transition can be seamless.
+- Wall-clock between transitions matched each track's length to the second, so
+  no track was cut short.
+- The PipeWire stream was **created once and never torn down**. One sink-input
+  survived all four boundaries, which means the decoder ran continuously.
+- No audible gap.
 
 ## Development
 
@@ -247,10 +237,10 @@ follows, and the traps that cost real debugging time.
 Slipmat is the third in a series of native GNOME apps: **Dockyard** (Docker) and
 **Pitwall** (GitHub Actions).
 
-Prior art worth crediting — both take the wrapper approach Slipmat is reacting
-to, and both worked out the castLabs Electron path first:
-[Sidra](https://github.com/wimpysworld/sidra) and
-[Cider](https://cider.sh).
+Prior art worth crediting: [Sidra](https://github.com/wimpysworld/sidra) and
+[Cider](https://cider.sh) worked out the castLabs Electron path first, which is
+what makes any of this possible on Linux. They take a different approach to the
+interface; Slipmat would not exist without the groundwork.
 
 ## Licence
 
