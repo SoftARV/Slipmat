@@ -1218,6 +1218,33 @@ Debugging, in order — always isolate the layer first:
 - `sidecar/node_modules` is **never** committed — it is ~200 MB of Chromium,
   fetched by `make sidecar`.
 
+### Comments earn their place
+
+The code says *what*. A comment says **why**, and only when the why is not
+evident from the code beside it.
+
+- **One explanation per fact.** When a decision changes, *edit* the comment that
+  is already there. Never stack a new paragraph beside the old one.
+- **Measured facts and traps stay.** They cost real debugging and they are the
+  reason this codebase is worth reading. State them once, in the fewest lines
+  that carry the number.
+- **History belongs in git and CLAUDE.md.** "This used to do X" earns a line
+  only when X is likely to be retried — otherwise the commit message has it.
+- Past roughly **six inline lines** it is usually two explanations, or one that
+  belongs in the module header instead.
+
+The failure mode this exists against is sediment, not length.
+`components/queue_view.rs` reached **thirty-seven lines** saying one thing three
+times, because three separate changes each added a paragraph rather than editing
+the one in front of them — and the first ten lines described behaviour that no
+longer existed. A reader had to reach line twenty to learn the opening was
+obsolete.
+
+A long comment is fine when it is one explanation that is genuinely worth it:
+the `#[watch]` binding bug, the edge-versus-level rule, `AdwClampScrollable`.
+Those are single ideas that took a desktop freeze or a core dump to learn. The
+test is whether a reader needs all of it, not how many lines it runs to.
+
 ### The README is not a feature list
 
 `## What it does` says **six** things, and that is the whole budget:

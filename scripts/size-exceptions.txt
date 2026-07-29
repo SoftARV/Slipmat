@@ -6,21 +6,16 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      2910  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      2760  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
-                                          # reducer stays whole. Split once at 3085 and grew back;
-                                          # ~200 lines of `init` wiring and session helpers could
-                                          # still leave.
-                                          # 2540 -> 2580 for #32: close and show hooks in `view!`, two
-                                          # messages, two reducer arms and the portal result. All
-                                          # of them are the kinds of thing that belong here; the
-                                          # handler they call lives in `background.rs`.
-                                          # 2580 -> 2650 for #18: the bottom sheet replacing the
-                                          # queue sidebar in `view!`. The expanded player itself is
-                                          # a component in `components/player_view.rs`.
-                                          # 2650 -> 2680: the window breakpoint that lets the
-                                          # navigation sidebar collapse, without which the app
-                                          # cannot be tiled to half a screen.
+                                          # reducer stays whole.
+                                          # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
+                                          # `wiring.rs`. Stateful menu actions, a breakpoint, a scroll
+                                          # handler, a property `view!` cannot set on a `#[local_ref]`
+                                          # — none of it the model, the messages or the reducer, which
+                                          # is the rule this file is meant to follow.
+                                          # Lowering a number as a file shrinks is the ratchet working;
+                                          # this is the second time it has gone down.
 src/components/now_playing.rs       1020  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
