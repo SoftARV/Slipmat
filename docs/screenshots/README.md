@@ -20,10 +20,10 @@ rsvg-convert -w 128 -h 128 \
 
 | File | Shows |
 | --- | --- |
-| `library.webp` | Songs — the play marker, an unplayable track, row menus |
+| `library.webp` | Songs — the play marker, unplayable tracks, row menus |
 | `search.webp` | A catalogue search: artists, playlists, albums and songs mixed |
-| `albums.webp` | The Albums grid, sidebar collapsed |
-| `artists.webp` | The Artists grid — round portraits from the catalogue twin |
+| `albums.webp` | The Albums grid, four to a row |
+| `artists.webp` | An artist page — the round portrait from the catalogue twin, and their albums |
 | `playlist.webp` | A playlist page: the composed mosaic, Play and Shuffle, tracks |
 | `player.webp` | The expanded player: artwork, transport, queue |
 
