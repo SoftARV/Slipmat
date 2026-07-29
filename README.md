@@ -156,7 +156,7 @@ one Linux laptop that other people happen to find useful.
 
 If it earns a place on yours:
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/R6R31Y4KF0)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/miguelrincon)
 
 ## Limitations
 
