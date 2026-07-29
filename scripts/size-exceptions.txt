@@ -53,11 +53,14 @@ src/music/types.rs                   900  # the JSON boundary (rule 9). Wire typ
                                           # round trip keeps an artwork's cache key (or every cover
                                           # re-downloads) and that `Track`'s new `PartialEq` sees a
                                           # star change (or a refresh skips the rebuild it needed).
-src/components/queue_view.rs         670  # the list, its rows, and now shuffle and repeat in the
+src/components/queue_view.rs         700  # the list, its rows, and now shuffle and repeat in the
                                           # header — they act on the queue, so this is where they
                                           # belong. Most of the growth is the comment explaining
                                           # why the shuffle button is not a `#[watch]`: that is the
                                           # bug that froze a desktop, and it is worth the lines.
+                                          # 670 -> 700: drag-to-reorder — a drag source and a drop
+                                          # target per row, and their handlers replaced on bind like
+                                          # every other per-row handler in this file.
 src/app/view.rs                      730  # which section is showing, and how each one is sorted.
                                           # 680 -> 730 for #100: `SIDEBAR`, the array the sidebar rows
                                           # are built from, and a test pinning its order to `row()`.

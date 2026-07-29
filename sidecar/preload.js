@@ -314,6 +314,34 @@ const commands = {
   next: () => music.skipToNextItem(),
   previous: () => music.skipToPreviousItem(),
   changeToIndex: ({ index }) => music.changeToMediaAtIndex(index),
+  // Move one item within the queue MusicKit already holds.
+  //
+  // `splice` is undocumented — feature-detected rather than assumed, like
+  // `remove` beside it. Its own source gives away the shape:
+  //
+  //     splice(e, n, d = []) {
+  //       return toMediaItems(this.spliceQueueItems(e, n, toQueueItems(d)))
+  //     }
+  //
+  // so it is `Array.prototype.splice` semantics, and the removed items come
+  // back as media items ready to be handed straight to the insert.
+  moveInQueue: ({ from, to }) => {
+    if (typeof music.queue?.splice !== 'function') {
+      throw new Error('this MusicKit build cannot reorder the queue')
+    }
+    const len = music.queue.items?.length ?? 0
+    for (const [name, i] of [['from', from], ['to', to]]) {
+      if (!Number.isInteger(i) || i < 0 || i >= len) {
+        throw new Error(`queue index ${name}=${i} out of range (queue holds ${len})`)
+      }
+    }
+    if (from === to) return
+    const moved = music.queue.splice(from, 1)
+    if (!moved || moved.length !== 1) {
+      throw new Error(`splice removed ${moved ? moved.length : 0} items, expected 1`)
+    }
+    music.queue.splice(to, 0, moved)
+  },
   removeFromQueue: ({ index }) => {
     // `queue.remove` is not in MusicKit's documented surface, so treat it as
     // load-bearing-but-unowned: check it exists rather than throwing a

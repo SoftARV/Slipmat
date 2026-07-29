@@ -64,6 +64,14 @@ pub enum Command {
     #[serde(rename = "changeToIndex")]
     ChangeToIndex { index: usize },
 
+    /// Move one item within the queue MusicKit already holds.
+    ///
+    /// `Array.prototype.splice` indices: `to` is where the item lands **after**
+    /// it has been taken out, which is what the sidecar's two-call
+    /// remove-then-insert produces and what a drag naturally means.
+    #[serde(rename = "moveInQueue")]
+    MoveInQueue { from: usize, to: usize },
+
     /// Insert songs into the queue MusicKit already holds — right after the
     /// current track, or at the end.
     ///
@@ -149,6 +157,7 @@ impl Command {
             Self::Next => "next",
             Self::Previous => "previous",
             Self::ChangeToIndex { .. } => "changeToIndex",
+            Self::MoveInQueue { .. } => "moveInQueue",
             Self::PlayNext { .. } => "playNext",
             Self::PlayLater { .. } => "playLater",
             Self::RemoveFromQueue { .. } => "removeFromQueue",

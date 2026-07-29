@@ -504,6 +504,11 @@ pub enum AppMsg {
     ShowRowMenu(RowMenuRequest),
     /// Empty the queue and stop.
     ClearQueue,
+    /// Reorder the queue. `to` is where the item lands.
+    MoveQueueItem {
+        from: usize,
+        to: usize,
+    },
     /// Grow the queue MusicKit already holds, without rebuilding it.
     Enqueue {
         catalog_id: String,
@@ -1341,6 +1346,7 @@ impl Component for AppModel {
                 QueueViewOutput::Jump { at, id } => AppMsg::JumpTo { at, id },
                 QueueViewOutput::Remove { at, id } => AppMsg::RemoveFromQueue { at, id },
                 QueueViewOutput::Clear => AppMsg::ClearQueue,
+                QueueViewOutput::Move { from, to } => AppMsg::MoveQueueItem { from, to },
                 QueueViewOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
                 QueueViewOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
             });
@@ -2132,6 +2138,21 @@ impl AppModel {
                 // sequential mode, which is not what pressing Shuffle means.
                 self.send(Command::SetShuffle { shuffle });
                 self.play_entries(&entries, 0);
+            }
+            AppMsg::MoveQueueItem { from, to } => {
+                // **Optimistic.** The row is already where the user dropped it,
+                // so the projection moves now and MusicKit's echo confirms it —
+                // the same shape as a library write, and for the same reason: a
+                // drop that visibly springs back while a command is in flight
+                // reads as a failure even when it worked.
+                if !self.player.move_item(from, to) {
+                    return;
+                }
+                tracing::info!(from, to, "reordering the queue");
+                self.send(Command::MoveInQueue { from, to });
+                // `push_snapshot` re-syncs the queue view from the projection,
+                // so the row is already in its new place before the echo.
+                self.push_snapshot();
             }
             AppMsg::ClearQueue => {
                 tracing::info!("clearing the queue");
