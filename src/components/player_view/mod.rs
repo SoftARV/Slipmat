@@ -371,15 +371,20 @@ impl SimpleComponent for PlayerView {
                                 gtk::Stack {
                                     set_transition_type: gtk::StackTransitionType::Crossfade,
                                     set_transition_duration: SWAP_MS,
-                                    // **A stack measures its widest child,
-                                    // showing or not.** The same trap the bar's
-                                    // stack had: the skeleton below was setting
-                                    // the drawer's minimum width even with a
-                                    // track playing, and the drawer is what
-                                    // `AdwBreakpointBin` complained about
-                                    // exceeding — 376px asked for against 360
-                                    // available.
+                                    // **A stack measures its largest child,
+                                    // showing or not — on both axes.** Across,
+                                    // the skeleton was setting the drawer's
+                                    // minimum width with a track playing, which
+                                    // is what `AdwBreakpointBin` complained
+                                    // about: 376px asked for against 360.
+                                    //
+                                    // Down, it was pinning this block to the
+                                    // skeleton's own 50px, so shrinking the
+                                    // title beside the queue bought 6px of the
+                                    // 26 it should have. Both, or neither is
+                                    // worth setting.
                                     set_hhomogeneous: false,
+                                    set_vhomogeneous: false,
 
                                     // They differ in **length**, not in weight:
                                     // a title runs long and an artist is
@@ -427,22 +432,41 @@ impl SimpleComponent for PlayerView {
                                         set_spacing: 2,
                                         set_valign: gtk::Align::Center,
 
+                                        // **Two sizes, because it is doing two
+                                        // jobs.** Stacked, this is the caption
+                                        // under a large cover and the largest
+                                        // type in the app is right. Beside the
+                                        // queue it is a label on a strip, and
+                                        // `title-1` over `title-4` was 56px of
+                                        // heading in a drawer with room for one
+                                        // queue row — the block that ate the
+                                        // 72px hiding the thumbnail was meant
+                                        // to free.
                                         gtk::Label {
-                                            add_css_class: "title-1",
                                             set_ellipsize: gtk::pango::EllipsizeMode::End,
                                             set_max_width_chars: 28,
                                             set_use_markup: false,
+                                            #[watch]
+                                            set_css_classes: if model.stacked() {
+                                                &["title-1"]
+                                            } else {
+                                                &["title-4"]
+                                            },
                                             #[watch]
                                             set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
                                             #[watch]
                                             set_label: &model.snap.title,
                                         },
                                         gtk::Label {
-                                            add_css_class: "title-4",
-                                            add_css_class: "dim-label",
                                             set_ellipsize: gtk::pango::EllipsizeMode::End,
                                             set_max_width_chars: 34,
                                             set_use_markup: false,
+                                            #[watch]
+                                            set_css_classes: if model.stacked() {
+                                                &["title-4", "dim-label"]
+                                            } else {
+                                                &["caption", "dim-label"]
+                                            },
                                             #[watch]
                                             set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
                                             #[watch]
