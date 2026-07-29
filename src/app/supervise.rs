@@ -147,6 +147,10 @@ impl AppModel {
                 queue_len,
             } => {
                 tracing::debug!(%cmd, state, queue_len, "sidecar finished command");
+                // A `play` that completed and left us not playing is the
+                // signature of a decrypt session that did not survive a
+                // suspend — see `playback::play_did_nothing`.
+                self.play_did_nothing(cmd);
                 // Deliberately does **not** settle library writes: `cmd-done`
                 // carries only the command name, and this dispatch is async, so
                 // two removals can finish out of order. `Event::LibraryWrite`
@@ -269,6 +273,13 @@ impl AppModel {
             let artwork_in_flight = self.sync_artwork(sender);
             self.mark_now_playing();
             self.maybe_notify(artwork_in_flight);
+        }
+        // **Once it is actually playing, not merely current.** A reloaded item
+        // is `Loading` for a beat after `nowPlayingItemDidChange`, and a seek
+        // sent then is dropped — measured: the track restarted at zero and ran
+        // on from there while the log said the position had been restored.
+        if self.player.state.is_playing() {
+            self.resume_position();
         }
         self.sync_tick(sender);
         self.push_snapshot();

@@ -241,6 +241,76 @@ impl AppModel {
     /// `glib::SourceId` must be removed exactly once — holding it in an
     /// `Option` and `take()`ing is what makes that safe, since removing an
     /// already-removed source aborts.
+    /// Reload the track we are on, at the position we were at.
+    ///
+    /// **The only way back from a dead decrypt session.** Linux Widevine keeps
+    /// no persistent licences, so a suspend leaves MusicKit holding an item it
+    /// can never play again — `play()` on it resolves and makes no sound.
+    /// `changeToMediaAtIndex` loads it afresh, licence and all, which is what
+    /// makes changing track by hand appear to "fix" it.
+    ///
+    /// Rule 3 is intact: this moves within the queue MusicKit already holds and
+    /// never sends a fresh `setQueue`.
+    fn reseat_current(&mut self, why: &str) {
+        // `queue_position` is already the reconciled, non-negative index —
+        // `Queue::index` did the signed-sentinel filtering on the way in.
+        let index = self.player.queue_position;
+        if self.player.queue.is_empty() || index >= self.player.queue.len() {
+            return;
+        }
+        // Read before the reload, which resets it to zero.
+        let position_ms = self.player.interpolated_position_ms();
+        tracing::info!(why, index, position_ms, "reloading the current track");
+        self.send(Command::ChangeToIndex { index });
+        // **Not sent yet.** A seek needs a current item to seek within, and the
+        // reload has not produced one — the two commands are dispatched
+        // independently and the seek won a race in testing, landing on the item
+        // being replaced. `nowPlayingItemDidChange` is when there is something
+        // to seek in; `resume_position` sends it then.
+        self.resume_at = (position_ms > 0).then_some(position_ms);
+    }
+
+    /// Put the position back once the reloaded track is actually current.
+    ///
+    /// Called from the now-playing change, which is the first moment MusicKit
+    /// has an item to seek within.
+    pub(super) fn resume_position(&mut self) {
+        let Some(position_ms) = self.resume_at.take() else {
+            return;
+        };
+        tracing::info!(position_ms, "restoring the position after a reload");
+        self.send(Command::Seek { position_ms });
+    }
+
+    /// A `play` that completed and produced no playing.
+    ///
+    /// The sidecar reports the state it ended in, so this is the difference
+    /// between a command that failed — which would have errored — and one that
+    /// worked on something that cannot make sound. Only the second is worth
+    /// recovering from, and only once: a second attempt that also does nothing
+    /// is a real failure and should look like one rather than looping.
+    pub(super) fn play_did_nothing(&mut self, cmd: &str) {
+        if !matches!(cmd, "play" | "playPause") || self.player.state.is_playing() {
+            self.healed = false;
+            return;
+        }
+        if self.healed {
+            tracing::warn!("play still produced no playback after reloading the track");
+            return;
+        }
+        self.healed = true;
+        self.reseat_current("play produced no playback");
+    }
+
+    /// The machine was asleep. Whatever was loaded cannot be resumed.
+    pub(super) fn woke_up(&mut self, slept: std::time::Duration) {
+        // Only reachable from the position tick, which exists only while
+        // playing — so this can never start music that was deliberately paused.
+        tracing::info!(slept_s = slept.as_secs(), "woke from suspend");
+        self.healed = true;
+        self.reseat_current("woke from suspend");
+    }
+
     pub(super) fn sync_tick(&mut self, sender: &ComponentSender<Self>) {
         let want = self.player.state.is_playing();
         match (want, self.tick.is_some()) {
