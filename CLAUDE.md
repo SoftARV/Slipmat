@@ -513,12 +513,13 @@ request per artless playlist, because a tile knows no tracks.
 
 ### Restoring the last session
 
-Three files, three homes, and the distinction is not pedantry:
+Four files, three homes, and the distinction is not pedantry:
 
 | What | Where | Why |
 | --- | --- | --- |
 | Preferences | `~/.config/slipmat/settings.ini` | somebody chose them |
-| Unplayable ids | `~/.cache/slipmat/` | rederivable — Apple will tell us again |
+| Unplayable ids | `~/.cache/slipmat/unplayable.json` | rederivable — Apple will tell us again |
+| The library | `~/.cache/slipmat/library.json` | likewise, and 430 KB of it |
 | The last queue | `$XDG_STATE_HOME/slipmat/session.json` | neither chosen nor rederivable |
 
 Two rules the restore follows:
@@ -542,6 +543,48 @@ nothing at all.
 same reason. Rendering that faithfully left the Now Playing bar empty beside a
 full queue, so `showing()` falls back to the queue's own current entry — which
 is the honest answer to "what is this player on".
+
+### Opening on the library rather than on a spinner
+
+`library_cache.rs` writes all four collections to `~/.cache/slipmat/` and `init`
+seeds the model from them before the sidecar is even spawned. **163 ms to a full
+library, measured, against 3.2 s.**
+
+The 3.2 s is the number that mattered, and the issue had it as 1.9 s because it
+timed the fetch alone. Two halves, and only one of them was the library:
+
+| | before | after |
+| --- | --- | --- |
+| sidecar boot → `Ready` | 1.5–2.2 s | unchanged, and now behind content |
+| library fetch | 1.3–1.9 s | behind content |
+| **content on screen** | **2.9–3.7 s** | **~0.19 s** |
+
+Three things make it work, and each is load-bearing:
+
+- **`showing_library()` is not gated on `Stage::Ready`.** It was, and that gate
+  alone would have held cached content back for the whole sidecar boot —
+  cache or no cache. Content restored from disk is real content; the sidecar
+  being half-booted is a fact about the transport. `controls_live()` still
+  gates the sidebar, search and sort, so nothing can be *fetched* with no token.
+- **A refresh that changed nothing must not rebuild.** `Track` gained
+  `PartialEq` for exactly this: `fetched != self.all_tracks` is the whole test,
+  and when it is false the widgets, the scroll position and the file on disk are
+  all already correct. Measured over a real library, all four come back
+  `changed=false` on an ordinary launch.
+- **The loaders' guard is `tried_*` alone.** It used to be `tried_* || !collection.is_empty()`,
+  which said the same thing while a fetch was the only way to fill a collection.
+  Seeded from disk, that second clause would have refused to ever refresh.
+
+**All four refresh at startup now, not songs plus whichever section you opened
+into.** That ordering made sense when a fetch was the only way to fill a
+section — the wait was paid where it was asked for. With the cache the sections
+are already on screen, so one left unrefreshed shows last launch's answer until
+you press reload. Measured: four concurrent loads finish in 2.0 s against 1.5 s
+for songs alone, and Apple did not rate-limit 24 concurrent paginated requests.
+
+The write is 430 KB in 3 ms on the GTK thread, at most once per collection per
+launch. It is skipped entirely when nothing changed — four unconditional writes
+was 1.7 MB per launch to say nothing.
 
 **Clearing the queue is not one documented call.** `clearQueue`,
 `queue.splice` and `setQueue({songs: []})` are all plausible depending on the
@@ -655,6 +698,7 @@ src/
     writes.rs        # library writes: the optimistic row change, and taking it back
   settings.rs        # glib::KeyFile → ~/.config/slipmat/settings.ini. NEVER tokens.
   session.rs         # what was playing, → $XDG_STATE_HOME/slipmat/session.json
+  library_cache.rs   # the four collections, → ~/.cache/slipmat/library.json
   style.rs           # accent colour + the cover behind the player. The only CSS.
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)
@@ -902,8 +946,9 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   it drops Apple's session and getting back in means the login window and
   whatever two-factor prompt that involves. It then forgets *everything* that
   belonged to that account: library, grids, catalog results, pushed pages,
-  queue, the bar. The unplayable-id cache stays, because that is a fact about
-  Apple's catalog rather than about the user.
+  queue, the bar — **and `library.json`**, which is the same music written down.
+  The unplayable-id cache stays, because that is a fact about Apple's catalog
+  rather than about the user.
 - Sidecar restarting, no subscription, offline, no results: distinct
   `adw::StatusPage`s. Errors: `adw::Toast`.
 

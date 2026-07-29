@@ -41,7 +41,8 @@ pub(super) fn connect(
     catalog_filter_menu(model, widgets, sender);
     open_on_last_section(model, widgets);
     catalog_pagination(widgets, sender);
-    window_breakpoint(root, widgets);
+    window_breakpoints(root, widgets, sender);
+    type_to_search(root, sender);
     library_list_properties(model, widgets);
     bottom_bar_inset(widgets);
 }
@@ -179,20 +180,123 @@ fn catalog_pagination(widgets: &Widgets, sender: &ComponentSender<AppModel>) {
     }
 }
 
-fn window_breakpoint(root: &adw::ApplicationWindow, widgets: &Widgets) {
-    // **The window has to be able to get narrow.** Without this the
-    // navigation sidebar holds 200px open at all times and the app cannot
-    // be tiled to half a screen — which is how it is actually used.
-    //
-    // `AdwOverlaySplitView` already knows how to be a summonable overlay
-    // rather than a fixed pane; it just has to be told when. This is the
-    // standard adaptive pattern and the app simply never had one.
-    if let Ok(condition) = adw::BreakpointCondition::parse("max-width: 700px") {
-        let breakpoint = adw::Breakpoint::new(condition);
+/// Start searching by typing, the way every list-shaped GNOME app does.
+///
+/// `GtkSearchBar` would give this for free through `key-capture-widget`, but
+/// the entry is a header title rather than a revealer strip, so the capture is
+/// ours. What it costs is the four guards below, each of which is a way to
+/// break something that already works.
+fn type_to_search(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>) {
+    let controller = gtk::EventControllerKey::new();
+    // Capture, so it is seen on the way *down* — a list or a button would
+    // otherwise consume Space and the arrow keys before this ever ran. The
+    // guards are what stop that being a problem.
+    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let sender = sender.clone();
+    controller.connect_key_pressed(move |controller, key, _code, state| {
+        // Anything with a modifier is somebody's accelerator, including every
+        // one this app registers. Shift is the exception: it is how capitals
+        // are typed.
+        if state.difference(gtk::gdk::ModifierType::SHIFT_MASK) != gtk::gdk::ModifierType::empty() {
+            return gtk::glib::Propagation::Proceed;
+        }
+        // Only characters. `to_unicode` rejects Escape, Tab, the arrows and
+        // the function keys on its own; Space is rejected here as well,
+        // because it is how a focused row is activated and a search that
+        // begins with a space is nobody's intent.
+        let Some(ch) = key.to_unicode().filter(|c| !c.is_control() && *c != ' ') else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        let Some(window) = controller.widget().and_downcast::<adw::ApplicationWindow>() else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        // An `AdwDialog` is presented *into* this window rather than into one
+        // of its own, so this controller sees its keystrokes too. Preferences,
+        // About, the sign-out confirmation and the first-run gate would each
+        // otherwise be typing into a search box behind them.
+        if window.visible_dialog().is_some() {
+            return gtk::glib::Propagation::Proceed;
+        }
+        // Somewhere that already wants the key — the search entry itself most
+        // of all, which is where the caret lands the moment this fires once.
+        if GtkWindowExt::focus(&window)
+            .is_some_and(|widget| widget.is::<gtk::Editable>() || widget.is::<gtk::Text>())
+        {
+            return gtk::glib::Propagation::Proceed;
+        }
+        sender.input(AppMsg::TypeAhead(ch.to_string()));
+        // Stopped, or the character arrives twice — once here and once in the
+        // entry that is about to take the focus.
+        gtk::glib::Propagation::Stop
+    });
+    root.add_controller(controller);
+}
+
+/// The two widths the window changes shape at.
+///
+/// **They are cumulative, and they have to be.** `AdwApplicationWindow` applies
+/// exactly one breakpoint at a time — `get_current_breakpoint` is singular — and
+/// it picks the last-added one whose condition holds, unapplying the rest. So
+/// the narrow one repeats the wide one's setter rather than adding to it.
+/// Written as two independent functions, this went wrong immediately: below
+/// 600px the header adapted and the sidebar *un*-collapsed, because the 700px
+/// breakpoint that had collapsed it was no longer the one in force.
+///
+/// The order of `add_breakpoint` is therefore the priority order, widest first.
+///
+/// Why two widths rather than one: a single number would change two things at
+/// once while the window is being dragged, where 100px apart they read as two
+/// deliberate steps. And only this way round works — the sidebar has to
+/// collapse *before* the header gives up its title, because that title is
+/// standing in for the sidebar row that would otherwise say which section you
+/// are in.
+///
+/// Neither number comes from a measurement. 700px is where the sidebar stops
+/// leaving room for a list; 600px is where GNOME's own adaptive guidance puts
+/// the threshold, and the entry still *fits* below it — what it stops fitting
+/// with is the room to read it.
+fn window_breakpoints(
+    root: &adw::ApplicationWindow,
+    widgets: &Widgets,
+    sender: &ComponentSender<AppModel>,
+) {
+    // **The window has to be able to get narrow.** Without this the navigation
+    // sidebar holds 200px open at all times and the app cannot be tiled to half
+    // a screen — which is how it is actually used. `AdwOverlaySplitView`
+    // already knows how to be a summonable overlay rather than a fixed pane; it
+    // just has to be told when.
+    let collapse_sidebar = |breakpoint: &adw::Breakpoint| {
         breakpoint.add_setter(&widgets.nav_split, "collapsed", Some(&true.to_value()));
-        root.add_breakpoint(breakpoint);
-    } else {
-        tracing::warn!("unparsable window breakpoint; the sidebar will not collapse");
+    };
+
+    match adw::BreakpointCondition::parse("max-width: 700px") {
+        Ok(condition) => {
+            let breakpoint = adw::Breakpoint::new(condition);
+            collapse_sidebar(&breakpoint);
+            root.add_breakpoint(breakpoint);
+        }
+        Err(_) => tracing::warn!("unparsable window breakpoint; the sidebar will not collapse"),
+    }
+
+    match adw::BreakpointCondition::parse("max-width: 600px") {
+        Ok(condition) => {
+            let breakpoint = adw::Breakpoint::new(condition);
+            // Everything the wider one does, because this one replaces it.
+            collapse_sidebar(&breakpoint);
+            // Signals rather than a setter for the header, because what changes
+            // is model state — which widget is the title, and whether the
+            // button is on. A setter can only write a property, and writing the
+            // stack's child directly would put the decision somewhere the
+            // reducer cannot see.
+            let entering = sender.clone();
+            breakpoint.connect_apply(move |_| entering.input(AppMsg::NarrowHeader(true)));
+            let leaving = sender.clone();
+            breakpoint.connect_unapply(move |_| leaving.input(AppMsg::NarrowHeader(false)));
+            root.add_breakpoint(breakpoint);
+        }
+        // Wide is the honest fallback: the entry stays in the title, which is
+        // what every window did before this existed.
+        Err(_) => tracing::warn!("unparsable header breakpoint; search stays in the header"),
     }
 }
 

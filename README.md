@@ -46,9 +46,9 @@ music keeps going; it quits when you tell it to, not when you tidy your desktop.
 list, paginated as you scroll, each opening a page you can play from and drill
 through.
 
-**Quick, and out of the way.** A five-hundred-track library scrolls without
-stuttering, a section you have already opened comes back instantly, and whatever
-you were playing is waiting next launch — restored, never resumed. An app that
+**Quick, and out of the way.** It opens on your library rather than on a
+spinner, a five-hundred-track list scrolls without stuttering, and whatever you
+were playing is waiting next launch — restored, never resumed. An app that
 starts making noise because you opened it is a hostile one.
 
 <table>

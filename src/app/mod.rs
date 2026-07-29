@@ -199,6 +199,29 @@ pub struct AppModel {
     /// have to measure ourselves: the breakpoint already owns this decision,
     /// and two places computing it is two places to disagree.
     sidebar_collapsed: bool,
+    /// Whether the header is too narrow to hold a search entry as its title.
+    ///
+    /// Mirrored from its own breakpoint, the way `sidebar_collapsed` is
+    /// mirrored from the split view — a width we measured ourselves would be a
+    /// second opinion about a decision libadwaita has already made.
+    narrow_header: bool,
+    /// Set when something asked for the search box and the *widgets* have to
+    /// act on it — focus it, and put the caret after the text. Cleared by
+    /// `update_with_view` the moment it does, because it is a one-shot request
+    /// rather than a state anything can be derived from.
+    focus_search: bool,
+    /// Set when the query changed from somewhere that is not the entry, so the
+    /// entry has to be told.
+    ///
+    /// It is normally the *source* of the query and nothing writes back to it —
+    /// a binding there would be the two-way loop from #37. The cost of that is
+    /// this flag: clear the query without it and the words stay in the field
+    /// over a list that is no longer filtered.
+    sync_entry: bool,
+    /// Whether the search entry is showing, on a narrow header where it is a
+    /// button until asked for. Meaningless while `narrow_header` is false: the
+    /// entry is simply the title then.
+    searching: bool,
     /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
@@ -505,11 +528,23 @@ pub enum AppMsg {
     SectionChosen,
     /// The breakpoint turned the sidebar into an overlay, or back into a pane.
     SidebarCollapsed(bool),
+    /// The header crossed its own breakpoint.
+    NarrowHeader(bool),
+    /// Open or close the search entry on a narrow header.
+    ShowSearch(bool),
+    /// Put the caret in the search entry, opening it first if it is a button.
+    FocusSearch,
+    /// A printable key arrived with nothing focused that wanted it. Starts a
+    /// search with that character already in it.
+    TypeAhead(String),
     /// The results list is near its end; fetch the next page if there is one.
     LoadMoreCatalog,
     /// Re-fetch one library section. There is no section-less "reload": each
     /// is fetched separately, so a single one could not know which you meant.
-    ReloadSection(View),
+    /// Fetch the section on screen again. Carries no payload on purpose: the
+    /// only sender is a header button, which cannot read the model from inside
+    /// its click handler, and the reducer already knows which view is showing.
+    ReloadCurrentSection,
     ShowPreferences,
     ShowShortcuts,
     ShowAbout,
@@ -838,14 +873,17 @@ impl Component for AppModel {
                                                             set_xalign: 0.0,
                                                         },
 
-                                                        // The library loads on
-                                                        // startup whichever
-                                                        // section you are in.
-                                                        // Say so here, next to
+                                                        // Every section refreshes
+                                                        // at startup, so this
+                                                        // says which one is
+                                                        // still going — next to
                                                         // the thing that is
-                                                        // loading, rather than
-                                                        // across the whole
-                                                        // window.
+                                                        // loading rather than
+                                                        // across the window. The
+                                                        // reload *control* is in
+                                                        // the header, where it
+                                                        // is reachable with the
+                                                        // sidebar shut.
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
                                                             set_valign: gtk::Align::Center,
@@ -853,35 +891,6 @@ impl Component for AppModel {
                                                             set_visible: model.loading_library,
                                                         },
 
-                                                        // Per section, because
-                                                        // each is fetched
-                                                        // separately and a
-                                                        // single "reload"
-                                                        // cannot know which one
-                                                        // you meant. Swaps with
-                                                        // the spinner rather
-                                                        // than sitting beside
-                                                        // it.
-                                                        gtk::Button {
-                                                            set_icon_name: "view-refresh-symbolic",
-                                                            set_tooltip_text: Some("Reload"),
-                                                            add_css_class: "flat",
-                                                            add_css_class: "circular",
-                                                            // Exactly the
-                                                            // spinner's 16px,
-                                                            // in the spinner's
-                                                            // place: the row
-                                                            // must not change
-                                                            // height depending
-                                                            // on whether it is
-                                                            // loading.
-                                                            add_css_class: "row-action",
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: !(model.loading_library),
-                                                            connect_clicked => AppMsg::ReloadSection(View::Songs),
-                                                        },
                                                     },
                                                 },
 
@@ -907,35 +916,6 @@ impl Component for AppModel {
                                                             set_visible: model.loading_albums,
                                                         },
 
-                                                        // Per section, because
-                                                        // each is fetched
-                                                        // separately and a
-                                                        // single "reload"
-                                                        // cannot know which one
-                                                        // you meant. Swaps with
-                                                        // the spinner rather
-                                                        // than sitting beside
-                                                        // it.
-                                                        gtk::Button {
-                                                            set_icon_name: "view-refresh-symbolic",
-                                                            set_tooltip_text: Some("Reload"),
-                                                            add_css_class: "flat",
-                                                            add_css_class: "circular",
-                                                            // Exactly the
-                                                            // spinner's 16px,
-                                                            // in the spinner's
-                                                            // place: the row
-                                                            // must not change
-                                                            // height depending
-                                                            // on whether it is
-                                                            // loading.
-                                                            add_css_class: "row-action",
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: !(model.loading_albums),
-                                                            connect_clicked => AppMsg::ReloadSection(View::Albums),
-                                                        },
                                                     },
                                                 },
 
@@ -961,35 +941,6 @@ impl Component for AppModel {
                                                             set_visible: model.loading_artists,
                                                         },
 
-                                                        // Per section, because
-                                                        // each is fetched
-                                                        // separately and a
-                                                        // single "reload"
-                                                        // cannot know which one
-                                                        // you meant. Swaps with
-                                                        // the spinner rather
-                                                        // than sitting beside
-                                                        // it.
-                                                        gtk::Button {
-                                                            set_icon_name: "view-refresh-symbolic",
-                                                            set_tooltip_text: Some("Reload"),
-                                                            add_css_class: "flat",
-                                                            add_css_class: "circular",
-                                                            // Exactly the
-                                                            // spinner's 16px,
-                                                            // in the spinner's
-                                                            // place: the row
-                                                            // must not change
-                                                            // height depending
-                                                            // on whether it is
-                                                            // loading.
-                                                            add_css_class: "row-action",
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: !(model.loading_artists),
-                                                            connect_clicked => AppMsg::ReloadSection(View::Artists),
-                                                        },
                                                     },
                                                 },
 
@@ -1015,35 +966,6 @@ impl Component for AppModel {
                                                             set_visible: model.loading_playlists,
                                                         },
 
-                                                        // Per section, because
-                                                        // each is fetched
-                                                        // separately and a
-                                                        // single "reload"
-                                                        // cannot know which one
-                                                        // you meant. Swaps with
-                                                        // the spinner rather
-                                                        // than sitting beside
-                                                        // it.
-                                                        gtk::Button {
-                                                            set_icon_name: "view-refresh-symbolic",
-                                                            set_tooltip_text: Some("Reload"),
-                                                            add_css_class: "flat",
-                                                            add_css_class: "circular",
-                                                            // Exactly the
-                                                            // spinner's 16px,
-                                                            // in the spinner's
-                                                            // place: the row
-                                                            // must not change
-                                                            // height depending
-                                                            // on whether it is
-                                                            // loading.
-                                                            add_css_class: "row-action",
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: !(model.loading_playlists),
-                                                            connect_clicked => AppMsg::ReloadSection(View::Playlists),
-                                                        },
                                                     },
                                                 },
                                             },
@@ -1078,6 +1000,36 @@ impl Component for AppModel {
                                             connect_clicked => AppMsg::ToggleSidebar,
                                         },
 
+                                        // Beside the sidebar toggle rather than
+                                        // over on the right: both are doors to
+                                        // something the window is too narrow to
+                                        // show outright, and the end of a header
+                                        // is where the actions on what you are
+                                        // already looking at live.
+                                        //
+                                        // Narrow only: wide, the entry is always
+                                        // there and this would reveal nothing.
+                                        #[name = "search_button"]
+                                        pack_start = &gtk::ToggleButton {
+                                            set_icon_name: "system-search-symbolic",
+                                            set_tooltip_text: Some("Search"),
+                                            add_css_class: "flat",
+                                            #[watch]
+                                            set_visible: model.narrow_header,
+                                            #[watch]
+                                            set_sensitive: model.controls_live(),
+                                            // `set_active` plus a report back is
+                                            // the two-way binding from #37 —
+                                            // `ShowSearch` drops a value equal to
+                                            // the one held, which is what a
+                                            // programmatic set arrives as.
+                                            #[watch]
+                                            set_active: model.searching,
+                                            connect_toggled[sender] => move |button| {
+                                                sender.input(AppMsg::ShowSearch(button.is_active()));
+                                            },
+                                        },
+
                                         // When the queue is open it is the
                                         // rightmost pane, so the window
                                         // controls belong to its header, not
@@ -1086,32 +1038,137 @@ impl Component for AppModel {
                                         // this header is no longer at the edge.
                                         set_show_end_title_buttons: true,
 
+                                        // Narrow, the title is the section name
+                                        // and search is a button — the sidebar
+                                        // row that says where you are has
+                                        // collapsed to an overlay by then.
+                                        // Not homogeneous, unlike the reload
+                                        // stack: a short label and a field that
+                                        // should take the whole header.
                                         #[wrap(Some)]
-                                        #[name = "search_entry"]
-                                        set_title_widget = &gtk::SearchEntry {
-                                            // No fixed width. 320px here was a
-                                            // floor under the whole window: a
-                                            // header widget cannot be allowed a
-                                            // minimum the window has to honour,
-                                            // or the app cannot be tiled to
-                                            // half a screen.
+                                        set_title_widget = &gtk::Stack {
+                                            set_hhomogeneous: false,
                                             set_hexpand: true,
-                                            set_max_width_chars: 30,
-                                            // Typing here before the tokens
-                                            // arrive queries a catalog that
-                                            // cannot answer.
+
+                                            add_named[Some("title")] = &adw::WindowTitle {
+                                                #[watch]
+                                                set_title: model.view.title(),
+                                            },
+
+                                            #[name = "search_entry"]
+                                            add_named[Some("search")] = &gtk::SearchEntry {
+                                                // Never a fixed width: 320px here
+                                                // was a floor under the window and
+                                                // the app could not be tiled.
+                                                // `max-width-chars` is a ceiling,
+                                                // so it is safe — 60 fills a narrow
+                                                // header and stops short of absurd
+                                                // on a wide one.
+                                                set_hexpand: true,
+                                                set_max_width_chars: 60,
+                                                // Typing here before the tokens
+                                                // arrive queries a catalog that
+                                                // cannot answer.
+                                                #[watch]
+                                                set_sensitive: model.controls_live(),
+                                                #[watch]
+                                                set_placeholder_text: Some(match model.view {
+                                                    View::Songs => "Search your library",
+                                                    View::Albums => "Search albums",
+                                                    View::Artists => "Search artists",
+                                                    View::Playlists => "Search playlists",
+                                                    View::Search => "Search Apple Music",
+                                                }),
+                                                connect_search_changed[sender] => move |entry| {
+                                                    sender.input(AppMsg::SearchChanged(entry.text().into()));
+                                                },
+                                                // Escape, as it cancels every other
+                                                // search in GNOME.
+                                                //
+                                                // The entry is emptied here rather
+                                                // than left to the reducer: it is
+                                                // the *source* of the query, so
+                                                // nothing writes back to it, and
+                                                // clearing only the model left the
+                                                // words sitting in a field over an
+                                                // unfiltered list.
+                                                //
+                                                // `SearchChanged` as well, because
+                                                // `search-changed` is delayed and
+                                                // the list should stop filtering
+                                                // now; it returns early when the
+                                                // delayed one arrives after it.
+                                                // And `ShowSearch`, because on a
+                                                // wide header the box is never
+                                                // "open" — that message would drop
+                                                // a value it already holds and
+                                                // Escape would close nothing.
+                                                connect_stop_search[sender] => move |entry| {
+                                                    entry.set_text("");
+                                                    sender.input(AppMsg::SearchChanged(String::new()));
+                                                    sender.input(AppMsg::ShowSearch(false));
+                                                },
+                                            },
+
                                             #[watch]
-                                            set_sensitive: model.controls_live(),
+                                            set_visible_child_name: if model.search_showing() {
+                                                "search"
+                                            } else {
+                                                "title"
+                                            },
+                                        },
+
+                                        // One button, not the four this used to
+                                        // be on the sidebar rows. A sidebar
+                                        // button cannot know which section you
+                                        // meant, so each row needed its own — and
+                                        // that put reload behind the sidebar
+                                        // toggle, which collapses on its own when
+                                        // the window is narrow. Here there is
+                                        // nothing to disambiguate: it reloads
+                                        // what you are looking at.
+                                        //
+                                        // A `Stack` rather than two widgets
+                                        // swapping their own visibility, because
+                                        // a spinner is smaller than a button and
+                                        // the header re-centred its search entry
+                                        // every time one started. A stack is
+                                        // homogeneous by default, so it holds the
+                                        // button's width whichever child shows.
+                                        pack_end = &gtk::Stack {
+                                            // Children first. `view!` assigns in
+                                            // the order written, so naming a
+                                            // child above the `add_named` that
+                                            // creates it is `Gtk-WARNING: Child
+                                            // name 'reload' not found in
+                                            // GtkStack` on every launch.
+                                            add_named[Some("reload")] = &gtk::Button {
+                                                set_icon_name: "view-refresh-symbolic",
+                                                set_tooltip_text: Some("Reload"),
+                                                add_css_class: "flat",
+                                                #[watch]
+                                                set_sensitive: model.controls_live(),
+                                                connect_clicked[sender] => move |_| {
+                                                    sender.input(AppMsg::ReloadCurrentSection);
+                                                },
+                                            },
+
+                                            // The only sign a reload is running,
+                                            // once the list stopped being taken
+                                            // away for one.
+                                            add_named[Some("busy")] = &adw::Spinner {
+                                                set_size_request: (16, 16),
+                                                set_valign: gtk::Align::Center,
+                                                set_halign: gtk::Align::Center,
+                                            },
+
                                             #[watch]
-                                            set_placeholder_text: Some(match model.view {
-                                                View::Songs => "Search your library",
-                                                View::Albums => "Search albums",
-                                                View::Artists => "Search artists",
-                                                View::Playlists => "Search playlists",
-                                                View::Search => "Search Apple Music",
-                                            }),
-                                            connect_search_changed[sender] => move |entry| {
-                                                sender.input(AppMsg::SearchChanged(entry.text().into()));
+                                            set_visible: model.view != View::Search,
+                                            #[watch]
+                                            set_visible_child_name: if model.loading_section() {
+                                                "busy"
+                                            } else {
+                                                "reload"
                                             },
                                         },
 
@@ -1453,6 +1510,10 @@ impl Component for AppModel {
             show_queue: false,
             show_sidebar: settings.show_sidebar,
             sidebar_collapsed: false,
+            narrow_header: false,
+            searching: false,
+            focus_search: false,
+            sync_entry: false,
             animated_shown: std::cell::Cell::new(None),
             marked_playing: None,
             library_icons: row_registry(),
@@ -1589,6 +1650,11 @@ impl Component for AppModel {
         // Rows read playability from here, so seed it before any are built.
         *model.dead_rows.borrow_mut() = model.dead_ids.clone();
 
+        // Open on last time's library rather than on a spinner. The refresh
+        // still runs the moment the sidecar is up; it lands quietly, or — far
+        // more often — finds nothing changed and does not even rebuild.
+        model.seed_from_cache();
+
         start_sidecar(&sender);
 
         ComponentParts { model, widgets }
@@ -1626,6 +1692,21 @@ impl Component for AppModel {
             // does by now, because `update` set it first. No loop.
             widgets.search_entry.set_text(self.query());
             self.sync_sort_menu(&widgets.sort_button);
+        }
+
+        // After `update`, so a narrow header has already swapped the entry in
+        // for the section title — an unmapped widget cannot take the caret, and
+        // that is the whole reason this is a flag rather than a `grab_focus`
+        // at the call site.
+        if std::mem::take(&mut self.sync_entry) {
+            widgets.search_entry.set_text(self.query());
+        }
+        if std::mem::take(&mut self.focus_search) {
+            widgets.search_entry.grab_focus();
+            // Typing appends, so the caret belongs after what is already there.
+            // `grab_focus` on an entry selects all of it, and the next
+            // keystroke would replace the character that opened the search.
+            widgets.search_entry.set_position(-1);
         }
 
         let painting = std::time::Instant::now();
@@ -1839,6 +1920,13 @@ impl AppModel {
                 }
                 let switch_started = std::time::Instant::now();
                 self.view = view;
+                // On a narrow header the search box follows the section:
+                // Apple Music *is* a search and lands on a prompt to type one,
+                // so arriving with the field shut would be a screen asking for
+                // something it did not give you room to enter. Every other
+                // section closes it, because the query it held was about the
+                // list you just left.
+                self.searching = self.narrow_header && view == View::Search;
                 // Switching section means switching what the content pane is
                 // about, so any album or artist pushed on top of it is now
                 // showing the wrong thing sitting over the right thing.
@@ -1937,7 +2025,7 @@ impl AppModel {
                     self.run_catalog_search(&sender, generation, offset);
                 }
             }
-            AppMsg::ReloadSection(view) => self.reload(view, &sender),
+            AppMsg::ReloadCurrentSection => self.reload(self.view, &sender),
             AppMsg::ShowPreferences => self.show_preferences(&sender, root),
             AppMsg::ShowShortcuts => show_shortcuts(root),
             AppMsg::ShowAbout => show_about(root),
@@ -1960,7 +2048,73 @@ impl AppModel {
                 // deliberate enough to be a preference.
                 self.show_sidebar = shown;
             }
-            AppMsg::SidebarCollapsed(collapsed) => self.sidebar_collapsed = collapsed,
+            AppMsg::SidebarCollapsed(collapsed) => {
+                // Logged because getting the breakpoints wrong is *silent*.
+                // Only one applies at a time, so a narrow one that forgets to
+                // repeat a wide one's setter simply undoes it — and the sidebar
+                // stops collapsing at exactly the widths where it matters most.
+                // Nothing warns; the pane just comes back.
+                tracing::debug!(collapsed, narrow_header = self.narrow_header, "sidebar");
+                self.sidebar_collapsed = collapsed;
+            }
+            AppMsg::NarrowHeader(narrow) => {
+                tracing::debug!(narrow, "header breakpoint");
+                self.narrow_header = narrow;
+                // Widening puts the entry back as the title, so the open flag
+                // stops meaning anything — and leaving it set would reopen the
+                // box the next time the window got narrow, which is not
+                // something the user asked for a window resize ago.
+                if !narrow {
+                    self.searching = false;
+                }
+            }
+            AppMsg::ShowSearch(show) => {
+                // The button reports its own state *and* is written from the
+                // model, which is the two-way binding that froze a desktop
+                // (#37). Adopting the value here is the half of the fix that
+                // stops the next `update_view` writing the old one back.
+                if self.searching == show {
+                    return;
+                }
+                self.searching = show;
+                // Closing is a request to stop filtering, not to hide a filter
+                // that is still in force. A narrowed list under a header that
+                // shows no query is a list nobody can explain.
+                //
+                // Below the guard on purpose, so *widening* keeps the query.
+                // `NarrowHeader` clears `searching` itself, which makes the
+                // button report a change that lands here holding the value we
+                // already have — and a window resize is not a request to
+                // abandon what you were looking for.
+                if !show {
+                    // Inline rather than `sender.input`, so the query is empty
+                    // *before* `sync_entry` is read. Queued, the flag would be
+                    // consumed a pass early and write the words back in.
+                    self.handle(AppMsg::SearchChanged(String::new()), &sender, root);
+                    self.sync_entry = true;
+                }
+            }
+            // Both openers set `sync_entry` too: the entry may hold text from
+            // a query that was cleared while it was hidden.
+            AppMsg::FocusSearch => {
+                self.sync_entry = true;
+                // The box has to exist before it can be focused: on a narrow
+                // header it is a hidden stack page until now, and a widget that
+                // is not mapped cannot take the caret.
+                self.searching = true;
+                self.focus_search = true;
+            }
+            AppMsg::TypeAhead(text) => {
+                self.searching = true;
+                self.focus_search = true;
+                self.sync_entry = true;
+                let mut query = self.query().to_owned();
+                query.push_str(&text);
+                // Straight through the ordinary path, so filtering, the
+                // rebuild and the per-scope query all behave exactly as they do
+                // when the character is typed into the entry directly.
+                self.handle(AppMsg::SearchChanged(query), &sender, root);
+            }
             AppMsg::SectionChosen => {
                 if self.sidebar_collapsed {
                     self.show_sidebar = false;
@@ -2293,10 +2447,14 @@ impl AppModel {
                 self.loading_albums = false;
                 match result {
                     Ok(albums) => {
-                        tracing::info!(albums = albums.len(), "library albums loaded");
+                        let changed = albums != self.albums;
+                        tracing::info!(albums = albums.len(), changed, "library albums loaded");
                         self.albums = albums;
-                        self.built_albums = None;
-                        self.rebuild_albums();
+                        if changed {
+                            self.built_albums = None;
+                            self.rebuild_albums();
+                            self.save_cache();
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(%err, "library albums failed");
@@ -2308,10 +2466,14 @@ impl AppModel {
                 self.loading_artists = false;
                 match result {
                     Ok(artists) => {
-                        tracing::info!(artists = artists.len(), "library artists loaded");
+                        let changed = artists != self.artists;
+                        tracing::info!(artists = artists.len(), changed, "library artists loaded");
                         self.artists = artists;
-                        self.built_artists = None;
-                        self.rebuild_artists();
+                        if changed {
+                            self.built_artists = None;
+                            self.rebuild_artists();
+                            self.save_cache();
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(%err, "library artists failed");
@@ -2323,10 +2485,18 @@ impl AppModel {
                 self.loading_playlists = false;
                 match result {
                     Ok(playlists) => {
-                        tracing::info!(playlists = playlists.len(), "library playlists loaded");
+                        let changed = playlists != self.playlists;
+                        tracing::info!(
+                            playlists = playlists.len(),
+                            changed,
+                            "library playlists loaded"
+                        );
                         self.playlists = playlists;
-                        self.built_playlists = None;
-                        self.rebuild_playlists();
+                        if changed {
+                            self.built_playlists = None;
+                            self.rebuild_playlists();
+                            self.save_cache();
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(%err, "library playlists failed");
@@ -2455,10 +2625,18 @@ impl AppModel {
             CommandMsg::Library(Ok(tracks)) => {
                 self.loading_library = false;
                 let unplayable = tracks.iter().filter(|t| !t.playable()).count();
-                tracing::info!(tracks = tracks.len(), unplayable, "library loaded");
+                // A refresh over a cached library usually finds nothing new,
+                // and a rebuild it did not need costs ~500ms of cover decoding
+                // *and* resets the scroll under whoever is reading. Equality is
+                // the whole test: same tracks, same order, same fields.
+                let changed = tracks != self.all_tracks;
+                tracing::info!(tracks = tracks.len(), unplayable, changed, "library loaded");
                 self.all_tracks = tracks;
-                self.built_rows = None;
-                self.rebuild_rows();
+                if changed {
+                    self.built_rows = None;
+                    self.rebuild_rows();
+                    self.save_cache();
+                }
             }
             CommandMsg::Catalog {
                 generation,
@@ -2578,11 +2756,18 @@ impl AppModel {
         self.view.scope()
     }
 
-    /// Throw away a section's cache and fetch it again.
+    /// Fetch a section again, over the top of what it is already showing.
     ///
-    /// Each loader returns early when it already holds data — that is what
-    /// makes revisiting a section instant — so a reload has to clear first or
-    /// it does nothing at all.
+    /// **Nothing is cleared first.** The three grids used to empty themselves
+    /// here, and had to: their guard was `tried || !collection.is_empty()`, so
+    /// clearing the flag alone left the loader returning early. The cost was
+    /// that `page()` saw an empty collection mid-fetch and took the grid away
+    /// for a full-pane spinner — a reload that interrupted whatever you were
+    /// looking at, and Songs never did it because Songs never cleared.
+    ///
+    /// The guard is `tried` alone now, so the clear is not only unnecessary but
+    /// the whole of that bug. All four sections keep their content up, and the
+    /// list changes only if the answer did.
     fn reload(&mut self, view: View, sender: &ComponentSender<Self>) {
         match view {
             View::Songs | View::Search => {
@@ -2590,17 +2775,14 @@ impl AppModel {
                 self.load_library(sender);
             }
             View::Albums => {
-                self.albums.clear();
                 self.tried_albums = false;
                 self.load_albums(sender);
             }
             View::Artists => {
-                self.artists.clear();
                 self.tried_artists = false;
                 self.load_artists(sender);
             }
             View::Playlists => {
-                self.playlists.clear();
                 self.tried_playlists = false;
                 self.load_playlists(sender);
             }
@@ -2647,6 +2829,7 @@ impl AppModel {
         self.last_queue = None;
         self.pending_start = None;
         crate::session::clear();
+        crate::library_cache::clear();
         crate::style::set_backdrop(None);
         self.push_snapshot();
     }

@@ -78,6 +78,7 @@ relm4::new_stateless_action!(CloseWindowAction, AppMenuActionGroup, "close-windo
 relm4::new_stateless_action!(ToggleQueueAction, AppMenuActionGroup, "toggle-queue");
 relm4::new_stateless_action!(ToggleSidebarAction, AppMenuActionGroup, "toggle-sidebar");
 relm4::new_stateless_action!(SignOutAction, AppMenuActionGroup, "sign-out");
+relm4::new_stateless_action!(FocusSearchAction, AppMenuActionGroup, "focus-search");
 
 /// Wire the primary menu's actions to messages, with their accelerators.
 pub(super) fn register_actions(
@@ -160,6 +161,10 @@ pub(super) fn register_actions(
     group.add_action(RelmAction::<ToggleSidebarAction>::new_stateless(
         move |_| s.input(AppMsg::ToggleSidebar),
     ));
+    let s = sender.clone();
+    group.add_action(RelmAction::<FocusSearchAction>::new_stateless(move |_| {
+        s.input(AppMsg::FocusSearch)
+    }));
 
     app.set_accelerators_for_action::<PreferencesAction>(&["<Control>comma"]);
     app.set_accelerators_for_action::<ShortcutsAction>(&["<Control>question"]);
@@ -173,6 +178,7 @@ pub(super) fn register_actions(
     app.set_accelerators_for_action::<ToggleQueueAction>(&["<Control>u"]);
     // F9 is the GNOME convention for showing and hiding a sidebar.
     app.set_accelerators_for_action::<ToggleSidebarAction>(&["F9"]);
+    app.set_accelerators_for_action::<FocusSearchAction>(&["<Control>f"]);
 
     group.register_for_widget(window);
 }
@@ -232,6 +238,7 @@ pub(super) fn show_shortcuts(parent: &adw::ApplicationWindow) {
 
     let general = adw::ShortcutsSection::new(Some("General"));
     for (title, accel) in [
+        ("Search", "<Control>f"),
         ("Close the window", "<Control>w"),
         ("Toggle the sidebar", "F9"),
         ("Toggle the queue", "<Control>u"),

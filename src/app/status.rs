@@ -38,14 +38,42 @@ impl AppModel {
     /// answer is how "Loading your library" ended up covering the Apple Music
     /// pane.
     pub(super) fn showing_library(&self) -> bool {
-        if !matches!(self.stage, Stage::Ready) {
-            return false;
-        }
+        // Deliberately **not** gated on `Stage::Ready`. Content restored from
+        // the cache is real content, and the sidecar being half-booted is a
+        // fact about the transport, not about whether there is a library. That
+        // gate was worth ~1.5s of spinner over a list we already had on disk.
+        //
+        // What is still gated is `controls_live`: the sidebar, search and sort
+        // stay insensitive until there is a session to ask, so the list can be
+        // read and scrolled before anything can be fetched with no token.
         match self.view {
             View::Albums => !self.albums.is_empty() || self.loading_albums,
             View::Artists => !self.artists.is_empty() || self.loading_artists,
             View::Playlists => !self.playlists.is_empty() || self.loading_playlists,
             _ => !self.all_tracks.is_empty(),
+        }
+    }
+
+    /// Is the search entry showing, rather than the section's name?
+    ///
+    /// Wide, the entry *is* the title and there is nothing a button could
+    /// reveal. Narrow, it takes the title's place only while asked for.
+    pub(super) fn search_showing(&self) -> bool {
+        !self.narrow_header || self.searching
+    }
+
+    /// Is the section currently on screen fetching?
+    ///
+    /// The header's reload control swaps itself for a spinner on this. Feedback
+    /// has to be where the click was: with the sidebar collapsed its per-section
+    /// spinners are not on screen, and a reload over a list that stays up — which
+    /// is deliberate, see `page` — would otherwise look like nothing happened.
+    pub(super) fn loading_section(&self) -> bool {
+        match self.view {
+            View::Albums => self.loading_albums,
+            View::Artists => self.loading_artists,
+            View::Playlists => self.loading_playlists,
+            View::Songs | View::Search => self.loading_library,
         }
     }
 
