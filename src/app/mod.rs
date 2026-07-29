@@ -227,6 +227,14 @@ pub struct AppModel {
     /// `sync_section_spinners` is what replaces it. Apple Music has no entry:
     /// it has nothing of its own to load.
     section_spinners: Vec<(View, adw::Spinner)>,
+    /// The two clocks at the last position tick, so the next one can tell
+    /// whether the machine slept in between. See `player::wake`.
+    last_tick_clocks: Option<crate::player::wake::Clocks>,
+    /// Whether the current track has already been reloaded to recover a
+    /// playback that would not start. One attempt; a second failure is real.
+    healed: bool,
+    /// Where to seek back to once a reloaded track becomes current.
+    resume_at: Option<u64>,
     /// Whether the artwork cache has been swept this run. Once is enough: the
     /// library does not change under us, and the sweep touches ~1000 files.
     pruned: bool,
@@ -1400,6 +1408,9 @@ impl Component for AppModel {
             focus_search: false,
             sync_entry: false,
             animated_shown: std::cell::Cell::new(None),
+            last_tick_clocks: None,
+            healed: false,
+            resume_at: None,
             pruned: false,
             section_spinners: Vec::new(),
             marked_playing: None,
@@ -1759,7 +1770,20 @@ impl AppModel {
             AppMsg::SetVolume(volume) => self.set_volume(volume),
             AppMsg::VolumeUp => self.set_volume(self.volume + VOLUME_STEP),
             AppMsg::VolumeDown => self.set_volume(self.volume - VOLUME_STEP),
-            AppMsg::Tick => self.push_snapshot(),
+            AppMsg::Tick => {
+                // The tick is the only regular event Slipmat has, so it is
+                // also the only place a suspend can be noticed — and it exists
+                // only while playing, which is why waking can never start
+                // music that was deliberately paused.
+                let now = crate::player::wake::Clocks::now();
+                if let Some(before) = self.last_tick_clocks
+                    && crate::player::wake::woke(&before, &now)
+                {
+                    self.woke_up(before.slept_since(&now));
+                }
+                self.last_tick_clocks = Some(now);
+                self.push_snapshot();
+            }
             AppMsg::SearchChanged(query) => {
                 if query == self.query() {
                     return;

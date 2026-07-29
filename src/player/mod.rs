@@ -7,6 +7,7 @@
 pub mod protocol;
 pub mod sidecar;
 pub mod state;
+pub mod wake;
 
 pub use sidecar::Incoming;
 pub use state::PlayerState;
