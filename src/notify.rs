@@ -83,5 +83,35 @@ pub fn track_changed(app: &gio::Application, title: &str, artist: &str, art: Opt
 /// Withdraw the now-playing notification — on quit, so it does not outlive the
 /// app that sent it.
 pub fn clear(app: &gio::Application) {
+    // **Withdrawing needs the bus, and by `shutdown` we are off it.**
+    // `withdraw_notification` reaches for the application's D-Bus connection,
+    // and relm4's shutdown hook runs after GApplication has unregistered — so
+    // every clean exit printed two GLib criticals and the notification was
+    // never actually withdrawn:
+    //
+    //     g_application_get_dbus_connection:
+    //         assertion 'application->priv->is_registered' failed
+    //     g_dbus_connection_call_internal:
+    //         assertion 'G_IS_DBUS_CONNECTION (connection)' failed
+    //
+    // So the real withdrawal happens on the way *out* — see `quit_cleanly` —
+    // and this stays as the backstop it was always meant to be, silent when it
+    // is too late to do anything.
+    if !app.is_registered() {
+        return;
+    }
     app.withdraw_notification("now-playing");
+}
+
+/// Leave, taking the now-playing notification with us.
+///
+/// **Every route out of the app goes through here**, and there are four of
+/// them — the close button with nothing loaded, the primary menu, the
+/// first-run gate's own Quit, and `Ctrl`+`Q`. Withdrawing has to happen while
+/// the application is still registered on the bus, and `shutdown` is after
+/// that, so the only place it can work is immediately before quitting.
+pub fn quit_cleanly() {
+    let app = relm4::main_application();
+    clear(app.upcast_ref::<gio::Application>());
+    app.quit();
 }

@@ -38,7 +38,7 @@ impl AppModel {
         // position for no reason.
         if self.player.queue.is_empty() {
             tracing::info!("closing: nothing loaded, quitting");
-            relm4::main_application().quit();
+            crate::notify::quit_cleanly();
             return;
         }
 
