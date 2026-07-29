@@ -77,11 +77,15 @@ src/player/protocol.rs               740  # the whole sidecar contract in one fi
                                           # 650 -> 740 for #89: a shared `ms` deserializer that
                                           # floors MusicKit's negative sentinels, and four tests
                                           # built from the exact lines it rejected.
-src/components/player_view/mod.rs    790  # the model, `view!` and the reducer. The transport
+src/components/player_view/mod.rs    830  # the model, `view!` and the reducer. The transport
                                           # moved to a child module — see its header for why a
                                           # child and not a sibling. 870 before the split; this
                                           # number comes down as the ratchet intends, and is the
                                           # first time it has.
+                                          # 790 -> 830: the drawer sizes its cover from the room it is
+                                          # given rather than a constant, which is what lets it fit a
+                                          # short window — plus the two constants that arithmetic is
+                                          # built on, both measured.
 src/app/queue.rs                     640  # click -> setQueue, healing a queue MusicKit rejected, and
                                           # resolving which row a click meant.
                                           # 600 -> 640 for #88: `index_at` and the three tests that

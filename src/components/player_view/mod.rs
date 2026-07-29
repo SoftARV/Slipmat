@@ -36,6 +36,10 @@ pub struct PlayerView {
     scrub_gen: u64,
     /// Enough width to put the artwork beside the controls rather than above.
     wide: bool,
+    /// How tall the drawer is, pushed in by [`fill_window`] because a widget
+    /// cannot ask how much room it is about to be given. Starts at the floor,
+    /// which is the honest answer before the window has been realised.
+    room_for: i32,
     /// Whether the queue is showing inside the drawer.
     queue_shown: bool,
     /// The transport, built once and moved between two slots.
@@ -67,12 +71,31 @@ struct Slots {
     transport_compact: gtk::Box,
 }
 
+/// Everything in the drawer that is not the artwork: the title, the scrubber,
+/// the transport, the queue row and the margins between them. **Measured at
+/// 302px** — the drawer's 562px minimum less a 260px cover.
+///
+/// It does not shrink, so it sets the arithmetic for how short the drawer can
+/// be: [`SHEET_MIN_H`] is this plus the smallest cover still worth drawing.
+const DRAWER_CHROME_H: i32 = 302;
+
+/// The smallest the artwork may be squeezed to before it stops reading as a
+/// record and starts reading as an icon.
+const ART_FLOOR: i32 = 96;
+
 /// How much of the window the open drawer claims.
 const WINDOW_FRACTION: f64 = 0.7;
 
-/// The shortest the drawer may ever be, in logical pixels. A floor low enough
-/// that it is never what stops the window from shrinking.
-const SHEET_MIN_H: i32 = 260;
+/// The shortest the drawer may ever be, in logical pixels.
+///
+/// **260 was a number the content could not reach.** The chrome alone is 302px
+/// and the cover cannot be nothing, so the drawer's real minimum was 562 —
+/// `AdwBreakpointBin` said so out loud once the window could get short:
+/// *requested 562 px, 405 px available*.
+///
+/// [`DRAWER_CHROME_H`] + [`ART_FLOOR`], so it is now what the content can
+/// actually do rather than what we would have liked.
+const SHEET_MIN_H: i32 = DRAWER_CHROME_H + ART_FLOOR;
 
 /// Tie the drawer's height to the window's, at [`WINDOW_FRACTION`].
 ///
@@ -104,9 +127,11 @@ pub fn fill_window(
     window: &adw::ApplicationWindow,
     sheet: &adw::BottomSheet,
     content: &gtk::Widget,
+    player: &relm4::Sender<PlayerViewInput>,
 ) {
     let apply: std::rc::Rc<dyn Fn()> = {
         let (window, sheet, content) = (window.clone(), sheet.clone(), content.clone());
+        let player = player.clone();
         std::rc::Rc::new(move || {
             let height = window.surface().map_or(0, |surface| surface.height());
             let target = if sheet.is_open() && height > 0 {
@@ -114,7 +139,14 @@ pub fn fill_window(
             } else {
                 SHEET_MIN_H
             };
-            content.set_height_request(target.max(SHEET_MIN_H));
+            let target = target.max(SHEET_MIN_H);
+            content.set_height_request(target);
+            // The artwork is the only part of the drawer that can give, so it
+            // is the only thing that can make a short window fit. Told the
+            // height rather than measuring it: this runs on exactly the two
+            // events that change it, and a widget cannot ask how much room it
+            // is about to be given.
+            let _ = player.send(PlayerViewInput::RoomFor(target));
         })
     };
 
@@ -200,6 +232,8 @@ pub enum PlayerViewInput {
     /// Cycle repeat, for the same reason.
     RepeatClicked,
     VolumeChanged(f64),
+    /// How tall the drawer is about to be. See [`fill_window`].
+    RoomFor(i32),
 }
 
 #[relm4::component(pub)]
@@ -484,6 +518,7 @@ impl SimpleComponent for PlayerView {
             scrubbing: false,
             scrub_gen: 0,
             wide: true,
+            room_for: SHEET_MIN_H,
             queue_shown: false,
             transport: gtk::Box::new(gtk::Orientation::Vertical, 12),
             slots: None,
@@ -637,6 +672,12 @@ impl SimpleComponent for PlayerView {
             PlayerViewInput::ShuffleClicked => {
                 let _ = sender.output(NowPlayingOutput::SetShuffle(!self.snap.shuffle));
             }
+            PlayerViewInput::RoomFor(height) => {
+                if self.room_for != height {
+                    self.room_for = height;
+                    self.relayout();
+                }
+            }
             PlayerViewInput::RepeatClicked => {
                 let _ = sender.output(NowPlayingOutput::SetRepeat(self.snap.repeat.next()));
             }
@@ -725,7 +766,16 @@ impl PlayerView {
         // The artwork is the elastic element: large when it is the subject,
         // a thumbnail once the queue needs the room — and it travels between
         // the two rather than cutting, so it reads as the same picture moving.
-        self.resize_cover(if self.stacked() { ART_LARGE } else { ART_THUMB });
+        // Stacked, the cover takes whatever the drawer has left over after the
+        // chrome — capped at `ART_LARGE` so a tall window does not grow it past
+        // what the layout was designed around, and floored so it never becomes
+        // an icon. Beside the queue it is a thumbnail regardless: it is there
+        // to say which record this is, not to be looked at.
+        self.resize_cover(if self.stacked() {
+            (self.room_for - DRAWER_CHROME_H).clamp(ART_FLOOR, ART_LARGE)
+        } else {
+            ART_THUMB
+        });
 
         // One control at a time: the transport's button opens the queue, the
         // queue's own header closes it. Two buttons, but never both on screen,

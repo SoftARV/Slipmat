@@ -1521,6 +1521,7 @@ impl Component for AppModel {
             &root,
             &widgets.player_sheet,
             model.player_view.widget().upcast_ref(),
+            model.player_view.sender(),
         );
 
         register_actions(&root, &sender);
