@@ -290,7 +290,19 @@ impl AppModel {
     /// recovering from, and only once: a second attempt that also does nothing
     /// is a real failure and should look like one rather than looping.
     pub(super) fn play_did_nothing(&mut self, cmd: &str) {
-        if !matches!(cmd, "play" | "playPause") || self.player.state.is_playing() {
+        if !matches!(cmd, "play" | "playPause") {
+            return;
+        }
+        // **Still working towards audio is not failure.** `Loading`, `Waiting`
+        // and `Stalled` are ordinary states a fraction of a second after a
+        // play, and judging them cost a real playback: a heal fired mid-load,
+        // which stopped the track, which produced another non-playing `play`,
+        // which healed again — `changeToIndex: The play() request was
+        // interrupted by a call to pause()`.
+        if self.player.state.is_busy() {
+            return;
+        }
+        if self.player.state.is_playing() {
             self.healed = false;
             return;
         }
@@ -300,15 +312,6 @@ impl AppModel {
         }
         self.healed = true;
         self.reseat_current("play produced no playback");
-    }
-
-    /// The machine was asleep. Whatever was loaded cannot be resumed.
-    pub(super) fn woke_up(&mut self, slept: std::time::Duration) {
-        // Only reachable from the position tick, which exists only while
-        // playing — so this can never start music that was deliberately paused.
-        tracing::info!(slept_s = slept.as_secs(), "woke from suspend");
-        self.healed = true;
-        self.reseat_current("woke from suspend");
     }
 
     pub(super) fn sync_tick(&mut self, sender: &ComponentSender<Self>) {
