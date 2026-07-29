@@ -36,6 +36,10 @@ pub struct PlayerView {
     scrub_gen: u64,
     /// Enough width to put the artwork beside the controls rather than above.
     wide: bool,
+    /// How tall the drawer is, pushed in by [`fill_window`] because a widget
+    /// cannot ask how much room it is about to be given. Starts at the floor,
+    /// which is the honest answer before the window has been realised.
+    room_for: i32,
     /// Whether the queue is showing inside the drawer.
     queue_shown: bool,
     /// The transport, built once and moved between two slots.
@@ -67,12 +71,43 @@ struct Slots {
     transport_compact: gtk::Box,
 }
 
+/// Everything in the drawer that is not the artwork: the title, the scrubber,
+/// the transport, the queue row and the margins between them. **Measured at
+/// 302px** — the drawer's 562px minimum less a 260px cover.
+///
+/// It does not shrink, so it sets the arithmetic for how short the drawer can
+/// be: [`SHEET_MIN_H`] is this plus the smallest cover still worth drawing.
+const DRAWER_CHROME_H: i32 = 302;
+
+/// The smallest the artwork may be squeezed to before it stops reading as a
+/// record and starts reading as an icon.
+const ART_FLOOR: i32 = 96;
+
+/// The drawer height at which the queue stops having room for the cover beside
+/// it, and the cover goes.
+///
+/// Measured with the queue open: at 420px the queue gets four rows *with* the
+/// thumbnail, and below that it falls to three and then to one. The thumbnail
+/// is 72px and its whole job is saying which record this is — which the blurred
+/// backdrop, the title and the artist all still do, and the queue's own list
+/// does as well. So below this it is worth more as another row.
+///
+/// Only ever asked with the queue open. Stacked, the cover *is* the view.
+const QUEUE_NEEDS_ROOM: i32 = 420;
+
 /// How much of the window the open drawer claims.
 const WINDOW_FRACTION: f64 = 0.7;
 
-/// The shortest the drawer may ever be, in logical pixels. A floor low enough
-/// that it is never what stops the window from shrinking.
-const SHEET_MIN_H: i32 = 260;
+/// The shortest the drawer may ever be, in logical pixels.
+///
+/// **260 was a number the content could not reach.** The chrome alone is 302px
+/// and the cover cannot be nothing, so the drawer's real minimum was 562 —
+/// `AdwBreakpointBin` said so out loud once the window could get short:
+/// *requested 562 px, 405 px available*.
+///
+/// [`DRAWER_CHROME_H`] + [`ART_FLOOR`], so it is now what the content can
+/// actually do rather than what we would have liked.
+const SHEET_MIN_H: i32 = DRAWER_CHROME_H + ART_FLOOR;
 
 /// Tie the drawer's height to the window's, at [`WINDOW_FRACTION`].
 ///
@@ -104,9 +139,11 @@ pub fn fill_window(
     window: &adw::ApplicationWindow,
     sheet: &adw::BottomSheet,
     content: &gtk::Widget,
+    player: &relm4::Sender<PlayerViewInput>,
 ) {
     let apply: std::rc::Rc<dyn Fn()> = {
         let (window, sheet, content) = (window.clone(), sheet.clone(), content.clone());
+        let player = player.clone();
         std::rc::Rc::new(move || {
             let height = window.surface().map_or(0, |surface| surface.height());
             let target = if sheet.is_open() && height > 0 {
@@ -114,7 +151,14 @@ pub fn fill_window(
             } else {
                 SHEET_MIN_H
             };
-            content.set_height_request(target.max(SHEET_MIN_H));
+            let target = target.max(SHEET_MIN_H);
+            content.set_height_request(target);
+            // The artwork is the only part of the drawer that can give, so it
+            // is the only thing that can make a short window fit. Told the
+            // height rather than measuring it: this runs on exactly the two
+            // events that change it, and a widget cannot ask how much room it
+            // is about to be given.
+            let _ = player.send(PlayerViewInput::RoomFor(target));
         })
     };
 
@@ -200,6 +244,8 @@ pub enum PlayerViewInput {
     /// Cycle repeat, for the same reason.
     RepeatClicked,
     VolumeChanged(f64),
+    /// How tall the drawer is about to be. See [`fill_window`].
+    RoomFor(i32),
 }
 
 #[relm4::component(pub)]
@@ -259,7 +305,11 @@ impl SimpleComponent for PlayerView {
                         // under it and, in the compact layout, the title is
                         // written straight through it.
                         set_margin_top: 24,
-                        set_margin_bottom: 24,
+                        // Generous under a full-height player, and pure gap when
+                        // the queue is immediately below it — the queue brings
+                        // its own header, which is separation enough.
+                        #[watch]
+                        set_margin_bottom: if model.stacked() { 24 } else { 8 },
                         // Centred in the drawer when it is a column, pinned to
                         // the top when the queue is below it and wants the rest.
                         #[watch]
@@ -325,6 +375,20 @@ impl SimpleComponent for PlayerView {
                                 gtk::Stack {
                                     set_transition_type: gtk::StackTransitionType::Crossfade,
                                     set_transition_duration: SWAP_MS,
+                                    // **A stack measures its largest child,
+                                    // showing or not — on both axes.** Across,
+                                    // the skeleton was setting the drawer's
+                                    // minimum width with a track playing, which
+                                    // is what `AdwBreakpointBin` complained
+                                    // about: 376px asked for against 360.
+                                    //
+                                    // Down, it was pinning this block to the
+                                    // skeleton's own 50px, so shrinking the
+                                    // title beside the queue bought 6px of the
+                                    // 26 it should have. Both, or neither is
+                                    // worth setting.
+                                    set_hhomogeneous: false,
+                                    set_vhomogeneous: false,
 
                                     // They differ in **length**, not in weight:
                                     // a title runs long and an artist is
@@ -347,7 +411,12 @@ impl SimpleComponent for PlayerView {
                                             } else {
                                                 gtk::Align::Start
                                             },
-                                            set_size_request: (240, 16),
+                                            // 240/120 before, which put a
+                                            // 240px floor under a drawer that
+                                            // has to fit a 360px window. Two
+                                            // grey bars say where the title
+                                            // goes; they need not be its width.
+                                            set_size_request: (150, 16),
                                             add_css_class: "np-skeleton",
                                         },
                                         gtk::Box {
@@ -357,7 +426,7 @@ impl SimpleComponent for PlayerView {
                                             } else {
                                                 gtk::Align::Start
                                             },
-                                            set_size_request: (120, 16),
+                                            set_size_request: (90, 16),
                                             add_css_class: "np-skeleton",
                                         },
                                     },
@@ -367,22 +436,41 @@ impl SimpleComponent for PlayerView {
                                         set_spacing: 2,
                                         set_valign: gtk::Align::Center,
 
+                                        // **Two sizes, because it is doing two
+                                        // jobs.** Stacked, this is the caption
+                                        // under a large cover and the largest
+                                        // type in the app is right. Beside the
+                                        // queue it is a label on a strip, and
+                                        // `title-1` over `title-4` was 56px of
+                                        // heading in a drawer with room for one
+                                        // queue row — the block that ate the
+                                        // 72px hiding the thumbnail was meant
+                                        // to free.
                                         gtk::Label {
-                                            add_css_class: "title-1",
                                             set_ellipsize: gtk::pango::EllipsizeMode::End,
                                             set_max_width_chars: 28,
                                             set_use_markup: false,
+                                            #[watch]
+                                            set_css_classes: if model.stacked() {
+                                                &["title-1"]
+                                            } else {
+                                                &["title-4"]
+                                            },
                                             #[watch]
                                             set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
                                             #[watch]
                                             set_label: &model.snap.title,
                                         },
                                         gtk::Label {
-                                            add_css_class: "title-4",
-                                            add_css_class: "dim-label",
                                             set_ellipsize: gtk::pango::EllipsizeMode::End,
                                             set_max_width_chars: 34,
                                             set_use_markup: false,
+                                            #[watch]
+                                            set_css_classes: if model.stacked() {
+                                                &["title-4", "dim-label"]
+                                            } else {
+                                                &["caption", "dim-label"]
+                                            },
                                             #[watch]
                                             set_xalign: if model.centred_text() { 0.5 } else { 0.0 },
                                             #[watch]
@@ -395,8 +483,18 @@ impl SimpleComponent for PlayerView {
 
                         // Where the transport lives whenever the artwork is
                         // above it, which is every layout but one.
+                        //
+                        // **Hidden when it is that one.** An empty box is still
+                        // a child, and a visible child takes its share of the
+                        // column's 16px spacing — 16px of nothing between the
+                        // title and the queue, which is where the queue could
+                        // have put a third of a row.
                         #[name = "transport_stacked"]
-                        gtk::Box { set_orientation: gtk::Orientation::Vertical },
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            #[watch]
+                            set_visible: model.stacked(),
+                        },
                     },
 
                     // Where the queue lives when it can be a column of its own.
@@ -470,6 +568,7 @@ impl SimpleComponent for PlayerView {
             scrubbing: false,
             scrub_gen: 0,
             wide: true,
+            room_for: SHEET_MIN_H,
             queue_shown: false,
             transport: gtk::Box::new(gtk::Orientation::Vertical, 12),
             slots: None,
@@ -623,6 +722,12 @@ impl SimpleComponent for PlayerView {
             PlayerViewInput::ShuffleClicked => {
                 let _ = sender.output(NowPlayingOutput::SetShuffle(!self.snap.shuffle));
             }
+            PlayerViewInput::RoomFor(height) => {
+                if self.room_for != height {
+                    self.room_for = height;
+                    self.relayout();
+                }
+            }
             PlayerViewInput::RepeatClicked => {
                 let _ = sender.output(NowPlayingOutput::SetRepeat(self.snap.repeat.next()));
             }
@@ -711,7 +816,23 @@ impl PlayerView {
         // The artwork is the elastic element: large when it is the subject,
         // a thumbnail once the queue needs the room — and it travels between
         // the two rather than cutting, so it reads as the same picture moving.
-        self.resize_cover(if self.stacked() { ART_LARGE } else { ART_THUMB });
+        // Stacked, the cover takes whatever the drawer has left over after the
+        // chrome — capped at `ART_LARGE` so a tall window does not grow it past
+        // what the layout was designed around, and floored so it never becomes
+        // an icon. Beside the queue it is a thumbnail regardless: it is there
+        // to say which record this is, not to be looked at.
+        // Beside the queue on a short drawer the cover goes entirely: its 72px
+        // buys a row and a bit, and nothing that matters is lost — the sleeve is
+        // still the backdrop behind all of this, and the title still names it.
+        let room_for_cover = self.stacked() || self.room_for >= QUEUE_NEEDS_ROOM;
+        self.cover.set_shown(room_for_cover);
+        if room_for_cover {
+            self.resize_cover(if self.stacked() {
+                (self.room_for - DRAWER_CHROME_H).clamp(ART_FLOOR, ART_LARGE)
+            } else {
+                ART_THUMB
+            });
+        }
 
         // One control at a time: the transport's button opens the queue, the
         // queue's own header closes it. Two buttons, but never both on screen,
