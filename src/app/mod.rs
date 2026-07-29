@@ -35,8 +35,7 @@ use std::path::PathBuf;
 
 use relm4::adw::prelude::*;
 use relm4::{
-    Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmWidgetExt,
-    adw, gtk,
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, adw, gtk,
 };
 
 use relm4::typed_view::grid::TypedGridView;
@@ -222,6 +221,12 @@ pub struct AppModel {
     /// button until asked for. Meaningless while `narrow_header` is false: the
     /// entry is simply the title then.
     searching: bool,
+    /// The sidebar's per-section spinners, built in `wiring::sidebar_rows`.
+    ///
+    /// Held because they are built outside `view!` and so get no `#[watch]` —
+    /// `sync_section_spinners` is what replaces it. Apple Music has no entry:
+    /// it has nothing of its own to load.
+    section_spinners: Vec<(View, adw::Spinner)>,
     /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
@@ -839,135 +844,10 @@ impl Component for AppModel {
                                                     sender.input(AppMsg::SectionChosen);
                                                 },
 
-                                                // Index 0 — Apple Music. The
-                                                // order is the contract that
-                                                // connect_row_selected reads.
-                                                gtk::ListBoxRow {
-                                                    #[wrap(Some)]
-                                                    set_child = &gtk::Box {
-                                                        set_spacing: 12,
-                                                        set_margin_all: 8,
-
-                                                        gtk::Image {
-                                                            set_icon_name: Some(icon("system-search-symbolic")),
-                                                        },
-                                                        gtk::Label {
-                                                            set_label: "Search",
-                                                        },
-                                                    },
-                                                },
-
-                                                // Index 1 — Library / Songs.
-                                                gtk::ListBoxRow {
-                                                    #[wrap(Some)]
-                                                    set_child = &gtk::Box {
-                                                        set_spacing: 12,
-                                                        set_margin_all: 8,
-
-                                                        gtk::Image {
-                                                            set_icon_name: Some(icon("folder-music-symbolic")),
-                                                        },
-                                                        gtk::Label {
-                                                            set_label: "Songs",
-                                                            set_hexpand: true,
-                                                            set_xalign: 0.0,
-                                                        },
-
-                                                        // Every section refreshes
-                                                        // at startup, so this
-                                                        // says which one is
-                                                        // still going — next to
-                                                        // the thing that is
-                                                        // loading rather than
-                                                        // across the window. The
-                                                        // reload *control* is in
-                                                        // the header, where it
-                                                        // is reachable with the
-                                                        // sidebar shut.
-                                                        adw::Spinner {
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: model.loading_library,
-                                                        },
-
-                                                    },
-                                                },
-
-                                                // Index 2 — Albums.
-                                                gtk::ListBoxRow {
-                                                    #[wrap(Some)]
-                                                    set_child = &gtk::Box {
-                                                        set_spacing: 12,
-                                                        set_margin_all: 8,
-
-                                                        gtk::Image {
-                                                            set_icon_name: Some(icon("media-optical-symbolic")),
-                                                        },
-                                                        gtk::Label {
-                                                            set_label: "Albums",
-                                                            set_hexpand: true,
-                                                            set_xalign: 0.0,
-                                                        },
-                                                        adw::Spinner {
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: model.loading_albums,
-                                                        },
-
-                                                    },
-                                                },
-
-                                                // Index 3 — Artists.
-                                                gtk::ListBoxRow {
-                                                    #[wrap(Some)]
-                                                    set_child = &gtk::Box {
-                                                        set_spacing: 12,
-                                                        set_margin_all: 8,
-
-                                                        gtk::Image {
-                                                            set_icon_name: Some(icon("avatar-default-symbolic")),
-                                                        },
-                                                        gtk::Label {
-                                                            set_label: "Artists",
-                                                            set_hexpand: true,
-                                                            set_xalign: 0.0,
-                                                        },
-                                                        adw::Spinner {
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: model.loading_artists,
-                                                        },
-
-                                                    },
-                                                },
-
-                                                // Index 4 — Playlists.
-                                                gtk::ListBoxRow {
-                                                    #[wrap(Some)]
-                                                    set_child = &gtk::Box {
-                                                        set_spacing: 12,
-                                                        set_margin_all: 8,
-
-                                                        gtk::Image {
-                                                            set_icon_name: Some(icon("view-list-symbolic")),
-                                                        },
-                                                        gtk::Label {
-                                                            set_label: "Playlists",
-                                                            set_hexpand: true,
-                                                            set_xalign: 0.0,
-                                                        },
-                                                        adw::Spinner {
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: model.loading_playlists,
-                                                        },
-
-                                                    },
-                                                },
+                                                // The five rows are appended by
+                                                // `wiring::sidebar_rows`, from the
+                                                // one array that also defines the
+                                                // index contract read just above.
                                             },
                                     },
                                 },
@@ -1515,6 +1395,7 @@ impl Component for AppModel {
             focus_search: false,
             sync_entry: false,
             animated_shown: std::cell::Cell::new(None),
+            section_spinners: Vec::new(),
             marked_playing: None,
             library_icons: row_registry(),
             current_track: current_track(),
@@ -1685,6 +1566,7 @@ impl Component for AppModel {
         let view_before = self.view;
         self.update(msg, sender.clone(), root);
         self.sync_animated(widgets);
+        self.sync_section_spinners();
 
         if self.view != view_before {
             // `set_text` fires `search-changed`, but `SearchChanged` returns
@@ -1737,6 +1619,7 @@ impl Component for AppModel {
     ) {
         self.update_cmd(message, sender.clone(), root);
         self.sync_animated(widgets);
+        self.sync_section_spinners();
         self.update_view(widgets, sender);
     }
 
@@ -1787,6 +1670,19 @@ impl AppModel {
     /// asking it is the level trigger again wearing a guard's clothes — that
     /// was the first attempt at this fix, and the second core dump found it
     /// still spinning.
+    /// Show a spinner on whichever sections are fetching.
+    ///
+    /// What `#[watch]` did before the rows moved out of `view!`. Called from
+    /// **both** view paths for the reason `sync_animated` documents: a library
+    /// load finishes as a `CommandMsg`, which arrives through
+    /// `update_cmd_with_view` and never through the other — wire this to one
+    /// and every spinner starts but none of them ever stops.
+    fn sync_section_spinners(&self) {
+        for (view, spinner) in &self.section_spinners {
+            spinner.set_visible(self.loading_in(*view));
+        }
+    }
+
     fn sync_animated(&self, widgets: &<Self as relm4::Component>::Widgets) {
         let now = self.animated_state();
         let last = self.animated_shown.get();

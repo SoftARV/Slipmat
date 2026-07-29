@@ -29,7 +29,53 @@ pub enum View {
     Playlists,
 }
 
+/// One sidebar row: which section, its icon, and what it is called.
+pub(super) struct Row {
+    pub view: View,
+    pub icon: &'static str,
+    pub label: &'static str,
+}
+
 impl View {
+    /// The sidebar, in order.
+    ///
+    /// **This array's order *is* `row`/`from_row`.** They were five hand-written
+    /// `ListBoxRow`s in `view!` and this mapping here, a hundred lines apart,
+    /// with a comment on each row repeating its index — the arrangement where
+    /// inserting a section silently selects the wrong one. The test below pins
+    /// them to each other, so a reorder that forgets one fails `cargo test`
+    /// rather than shipping a sidebar that opens the section next door.
+    ///
+    /// The label is not [`View::title`]: the row says "Search" under a heading
+    /// that says "Apple Music", and the narrow header has no heading to lean on.
+    pub(super) const SIDEBAR: [Row; 5] = [
+        Row {
+            view: Self::Search,
+            icon: "system-search-symbolic",
+            label: "Search",
+        },
+        Row {
+            view: Self::Songs,
+            icon: "folder-music-symbolic",
+            label: "Songs",
+        },
+        Row {
+            view: Self::Albums,
+            icon: "media-optical-symbolic",
+            label: "Albums",
+        },
+        Row {
+            view: Self::Artists,
+            icon: "avatar-default-symbolic",
+            label: "Artists",
+        },
+        Row {
+            view: Self::Playlists,
+            icon: "view-list-symbolic",
+            label: "Playlists",
+        },
+    ];
+
     /// Sidebar row order — the contract `connect_row_selected` reads, and the
     /// only place the mapping lives.
     pub(super) fn from_row(index: i32) -> Self {
@@ -451,6 +497,24 @@ mod tests {
             View::Playlists,
         ] {
             assert_eq!(View::from_row(view.row()), view);
+        }
+    }
+
+    #[test]
+    fn the_rows_are_built_in_the_order_the_indices_claim() {
+        // The other half of the same contract. `SIDEBAR` is appended to the
+        // ListBox in array order, so a row's position *is* the index
+        // `connect_row_selected` reports — and `row()` is what selects one when
+        // the last section is restored. Reorder the array without reordering
+        // `row()` and every click opens the section next door.
+        for (index, row) in View::SIDEBAR.iter().enumerate() {
+            assert_eq!(
+                row.view.row(),
+                index as i32,
+                "{} is out of order",
+                row.label
+            );
+            assert_eq!(View::from_row(index as i32), row.view);
         }
     }
 

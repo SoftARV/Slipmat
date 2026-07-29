@@ -15,12 +15,12 @@
 //! `library_list` in particular restores two properties whose loss looked like
 //! two unrelated bugs.
 
-use relm4::ComponentSender;
 use relm4::adw;
 use relm4::adw::prelude::*;
 use relm4::gtk;
+use relm4::{ComponentSender, RelmWidgetExt};
 
-use super::{AppModel, AppMsg, CatalogFilter, SortBy};
+use super::{AppModel, AppMsg, CatalogFilter, SortBy, View};
 
 /// The widgets `view!` generates, spelled without naming the generated type.
 type Widgets = <AppModel as relm4::Component>::Widgets;
@@ -36,6 +36,7 @@ pub(super) fn connect(
     root: &adw::ApplicationWindow,
     sender: &ComponentSender<AppModel>,
 ) {
+    sidebar_rows(model, widgets);
     sidebar_headers(widgets);
     sort_menu(model, widgets, sender);
     catalog_filter_menu(model, widgets, sender);
@@ -45,6 +46,45 @@ pub(super) fn connect(
     type_to_search(root, sender);
     library_list_properties(model, widgets);
     bottom_bar_inset(widgets);
+}
+
+/// Build the sidebar's five rows from [`View::SIDEBAR`].
+///
+/// They were five near-identical `ListBoxRow`s in `view!` — 126 lines saying
+/// one thing five times, each carrying a comment repeating its own index.
+/// A loop cannot get the order wrong, and `view.rs` now holds the order and the
+/// rows it belongs to in the same array (#100).
+///
+/// The spinners are the reason this needs anything beyond a loop. `view!` gave
+/// them `#[watch]`; a widget built here gets none, so they are kept and driven
+/// by `sync_section_spinners`.
+fn sidebar_rows(model: &mut AppModel, widgets: &Widgets) {
+    for row in &View::SIDEBAR {
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        content.set_margin_all(8);
+
+        content.append(&gtk::Image::from_icon_name(super::icon(row.icon)));
+
+        let label = gtk::Label::new(Some(row.label));
+        label.set_hexpand(true);
+        label.set_xalign(0.0);
+        content.append(&label);
+
+        // Apple Music has nothing of its own to load: a catalog search reports
+        // through the content pane, not through a sidebar row.
+        if row.view != View::Search {
+            let spinner = adw::Spinner::new();
+            spinner.set_size_request(16, 16);
+            spinner.set_valign(gtk::Align::Center);
+            spinner.set_visible(false);
+            content.append(&spinner);
+            model.section_spinners.push((row.view, spinner));
+        }
+
+        let list_row = gtk::ListBoxRow::new();
+        list_row.set_child(Some(&content));
+        widgets.nav_list.append(&list_row);
+    }
 }
 
 fn sidebar_headers(widgets: &Widgets) {
