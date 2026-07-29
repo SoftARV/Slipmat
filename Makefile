@@ -18,7 +18,7 @@ SIDECAR  = $(DATADIR)/slipmat/sidecar
 ICON_SIZES = 16 32 48 64 128 256 512
 
 .PHONY: all build run test check sizes sidecar sidecar-run gapless install install-sidecar \
-        dev-install uninstall clean flatpak flatpak-bundle
+        dev-install uninstall clean flatpak flatpak-bundle aur aur-publish
 all: build
 
 build:
@@ -87,6 +87,17 @@ flatpak-bundle: flatpak
 	flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
 		flatpak-repo Slipmat.flatpak dev.miguelrincon.Slipmat master
 	@echo "Slipmat.flatpak — copy it anywhere and: flatpak install ./Slipmat.flatpak"
+
+# Show what publishing to the AUR would do, without doing it. `make aur-publish`
+# is the same thing with --push. Deliberately local rather than a CI job: the
+# key that can publish under your name should not live in a repository secret.
+aur:
+	./scripts/aur-publish.sh slipmat
+	./scripts/aur-publish.sh slipmat-git
+
+aur-publish:
+	./scripts/aur-publish.sh slipmat --push
+	./scripts/aur-publish.sh slipmat-git --push
 
 install: build install-sidecar dev-install
 	install -Dm755 target/release/slipmat $(BINDIR)/slipmat

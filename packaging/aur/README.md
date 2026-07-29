@@ -35,38 +35,45 @@ repository nobody touches while developing goes stale silently, and the first
 sign is a stranger's build failing. So this tree holds the source of truth and
 the AUR repository is a publishing target.
 
-Nothing here has been pushed to the AUR yet.
+Both are published:
 
-## Publishing, when the time comes
+- <https://aur.archlinux.org/packages/slipmat>
+- <https://aur.archlinux.org/packages/slipmat-git>
+
+## Publishing
 
 ```bash
-git -c init.defaultBranch=master clone ssh://aur@aur.archlinux.org/slipmat.git aur-slipmat
-cp packaging/aur/slipmat/{PKGBUILD,LICENSE} aur-slipmat/
-cd aur-slipmat && makepkg --printsrcinfo > .SRCINFO
-git add PKGBUILD .SRCINFO LICENSE
-git commit -m "…" && git push
+make aur           # dry run: what would change, for both packages
+make aur-publish   # the same with --push
 ```
 
-Four things the guidelines require that are easy to get wrong here:
+`scripts/aur-publish.sh` clones the AUR repo, copies `PKGBUILD` and `LICENSE`
+in, regenerates `.SRCINFO`, and pushes to `master`. Dry run by default, because
+a push is public and there is no undo.
 
-- **`.SRCINFO` is generated, never hand-written**, and must be regenerated
-  whenever PKGBUILD metadata changes — including `pkgver()`. Without it the AUR
-  shows a stale version, and a push with no `.SRCINFO` at all is rejected.
-- **The AUR only accepts pushes to `master`.** This repository's default branch
-  is `main`, so the clone above pins `master` explicitly; a local branch under
-  any other name has to be renamed before it will push.
-- **Do not commit bare `pkgver` bumps to `slipmat-git`.** A VCS package is not
-  considered out of date when upstream gains commits — its `pkgver()` computes
-  the version at build time. Commit only when something else changes, such as
-  the build steps.
-- **Commits are authored with your global git identity**, and are very hard to
-  change once pushed (FS#45425). Set `git config user.name`/`user.email` inside
-  the AUR clone first if that is not what you want.
+It encodes the four rules that fail in ways worth not rediscovering:
 
-The `LICENSE` is **0BSD, and it covers the PKGBUILD rather than Slipmat** — the
-app stays GPL-3. The guidelines ask for a licence on the submission itself, and
-note that a package without one, or under anything other than 0BSD, is not
-eligible for promotion to the official repositories.
+- **`master` only.** This repository's default branch is `main`, so the clone
+  pins `master` explicitly. Otherwise it fails at the push, after everything
+  else has already been done.
+- **`.SRCINFO` is regenerated every time.** The AUR's own hook rejects a push
+  without one, or with one that disagrees with the `PKGBUILD`.
+- **No bare `pkgver` bumps to `slipmat-git`.** A VCS package is not out of date
+  when upstream gains commits. The script refuses a commit where nothing but
+  `pkgver` moved — which matters because **`makepkg` rewrites `pkgver` in place
+  after a build**, so it happens by accident rather than intent.
+- **A `.gitignore` that excludes everything**, force-adding the four files. It
+  is what stops a stray source tarball or `pkg/` directory being committed.
+
+**Not a CI job, deliberately.** Publishing from Actions would mean keeping a key
+that can push arbitrary code under your name in a repository secret, and the
+guidelines are pointed about automated updates being at the maintainer's own
+risk and malfunctioning accounts being removed without notice.
+
+After tagging a release, update `slipmat/PKGBUILD` with the new `pkgver` and the
+`sha256sum` **of the tarball GitHub serves** — download it rather than computing
+one locally, because a GitHub archive names its root directory after the
+repository and the bytes differ.
 
 ## Things that are true of these builds
 
