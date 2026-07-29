@@ -305,7 +305,11 @@ impl SimpleComponent for PlayerView {
                         // under it and, in the compact layout, the title is
                         // written straight through it.
                         set_margin_top: 24,
-                        set_margin_bottom: 24,
+                        // Generous under a full-height player, and pure gap when
+                        // the queue is immediately below it — the queue brings
+                        // its own header, which is separation enough.
+                        #[watch]
+                        set_margin_bottom: if model.stacked() { 24 } else { 8 },
                         // Centred in the drawer when it is a column, pinned to
                         // the top when the queue is below it and wants the rest.
                         #[watch]
@@ -479,8 +483,18 @@ impl SimpleComponent for PlayerView {
 
                         // Where the transport lives whenever the artwork is
                         // above it, which is every layout but one.
+                        //
+                        // **Hidden when it is that one.** An empty box is still
+                        // a child, and a visible child takes its share of the
+                        // column's 16px spacing — 16px of nothing between the
+                        // title and the queue, which is where the queue could
+                        // have put a third of a row.
                         #[name = "transport_stacked"]
-                        gtk::Box { set_orientation: gtk::Orientation::Vertical },
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            #[watch]
+                            set_visible: model.stacked(),
+                        },
                     },
 
                     // Where the queue lives when it can be a column of its own.

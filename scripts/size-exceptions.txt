@@ -77,7 +77,7 @@ src/player/protocol.rs               740  # the whole sidecar contract in one fi
                                           # 650 -> 740 for #89: a shared `ms` deserializer that
                                           # floors MusicKit's negative sentinels, and four tests
                                           # built from the exact lines it rejected.
-src/components/player_view/mod.rs    875  # the model, `view!` and the reducer. The transport
+src/components/player_view/mod.rs    890  # the model, `view!` and the reducer. The transport
                                           # moved to a child module — see its header for why a
                                           # child and not a sibling. 870 before the split; this
                                           # number comes down as the ratchet intends, and is the
@@ -88,7 +88,8 @@ src/components/player_view/mod.rs    875  # the model, `view!` and the reducer. 
                                           # built on, both measured.
                                           # 830 -> 875: the cover stands down beside a short queue,
                                           # `QUEUE_NEEDS_ROOM` with the measurement behind it, and the
-                                          # title taking a second size for the job it does there.
+                                          # title taking a second size for the job it does there, and
+                                          # the empty transport slot no longer claiming spacing.
 src/app/queue.rs                     640  # click -> setQueue, healing a queue MusicKit rejected, and
                                           # resolving which row a click meant.
                                           # 600 -> 640 for #88: `index_at` and the three tests that
