@@ -17,6 +17,7 @@
 //! Keeping them apart means a new cover does not reparse the accent rules, and
 //! a bad backdrop can be dropped without taking the accent with it.
 
+use relm4::adw;
 use relm4::gtk::{self, gdk};
 
 /// Accent choices offered in Preferences.
@@ -135,6 +136,19 @@ pub fn init(accent: Accent) {
         )
     });
     set_accent(accent);
+
+    // **Repaint the backdrop when the theme flips.** The veil's alphas differ
+    // per theme (see `Veil`), so a cover painted while dark stays painted with
+    // dark's numbers until the next track — which on a paused player is never.
+    // Switching to light then left the drawer wearing an 0.86 white veil, which
+    // is the washed-out state this pair of numbers exists to avoid.
+    //
+    // `SHOWN_ART` already holds what is on screen, so repainting is just
+    // re-emitting the same image through the current theme's numbers.
+    adw::StyleManager::default().connect_dark_notify(|_| {
+        let shown = SHOWN_ART.with(|c| c.borrow().clone());
+        paint_backdrop(shown.as_deref().map(image_of));
+    });
 }
 
 /// Apply an accent, and the handful of rules that go with it.
@@ -373,11 +387,41 @@ fn image_of(path: &std::path::Path) -> String {
 /// doc comment and the base rules and left the selector here saying `.np-sheet`
 /// alone — a mistake nothing could catch, because the CSS was valid and the
 /// drawer went on working.
-fn backdrop_css(image: Option<&str>) -> String {
+/// How opaque the veil is, top and bottom, for each surface — **per theme**.
+///
+/// One set of numbers cannot serve both, and that is not a matter of taste.
+/// The veil is `@window_bg_color`, so at 0.86 the cover contributes the
+/// remaining 14% either way; but 14% of a photograph over a *dark* window reads
+/// as a coloured glow, and over a near-white one it is pastel mush. Rendered
+/// side by side at the real 48px-upscaled blur, light needed roughly 0.60–0.70
+/// where dark wants 0.86.
+///
+/// The floor is set by text, not by looks. Both surfaces carry labels in the
+/// theme's own foreground colour — dark text in a light theme — so a veil thin
+/// enough to show a sleeve's dark half is a veil thin enough to lose the words
+/// on top of it. These are the strongest values that keep the type legible on
+/// the covers this was checked against, not the prettiest ones available.
+struct Veil {
+    bar: (f32, f32),
+    sheet: (f32, f32),
+}
+
+const DARK_VEIL: Veil = Veil {
+    bar: (0.78, 0.72),
+    sheet: (0.86, 0.78),
+};
+
+const LIGHT_VEIL: Veil = Veil {
+    bar: (0.70, 0.64),
+    sheet: (0.68, 0.60),
+};
+
+fn backdrop_css(image: Option<&str>, dark: bool) -> String {
     let Some(image) = image else {
         return ".np-bar, .np-sheet { background-image: none; }".into();
     };
-    let layers = |top: f32, bottom: f32| {
+    let veil = if dark { DARK_VEIL } else { LIGHT_VEIL };
+    let layers = |(top, bottom): (f32, f32)| {
         format!(
             "background-image:
                  linear-gradient(
@@ -391,13 +435,22 @@ fn backdrop_css(image: Option<&str>) -> String {
     format!(
         ".np-bar {{ {} }}
          .np-sheet {{ {} }}",
-        layers(0.78, 0.72),
-        layers(0.86, 0.78)
+        layers(veil.bar),
+        layers(veil.sheet)
     )
 }
 
+/// Whether libadwaita is currently painting dark.
+///
+/// Asked at paint time rather than cached: the answer changes when the user
+/// flips the preference *and* when the system does it under `ColorScheme::
+/// Default`, and the second one never passes through our settings.
+fn painting_dark() -> bool {
+    adw::StyleManager::default().is_dark()
+}
+
 fn paint_backdrop(image: Option<String>) {
-    let css = backdrop_css(image.as_deref());
+    let css = backdrop_css(image.as_deref(), painting_dark());
     BACKDROP.with(|p| p.load_from_string(&css));
 }
 
@@ -423,7 +476,7 @@ mod tests {
 
     #[test]
     fn both_surfaces_get_the_cover() {
-        let css = backdrop_css(Some("url(\"file:///tmp/x.png\")"));
+        let css = backdrop_css(Some("url(\"file:///tmp/x.png\")"), true);
         assert!(css.contains(".np-bar"), "the bar was left out: {css}");
         assert!(css.contains(".np-sheet"), "the drawer was left out: {css}");
         assert_eq!(
@@ -433,7 +486,7 @@ mod tests {
         );
         // Clearing has to reach both too, or a stopped player keeps the last
         // cover on whichever one was forgotten.
-        let cleared = backdrop_css(None);
+        let cleared = backdrop_css(None, true);
         assert!(cleared.contains(".np-bar") && cleared.contains(".np-sheet"));
     }
 
@@ -442,13 +495,52 @@ mod tests {
         // Small type on a thin strip is the harder read, but a veil heavy
         // enough for the drawer left the bar a flat grey — which is the bug
         // this pair of numbers exists to prevent regressing.
-        let css = backdrop_css(Some("url(\"a\")"));
+        let css = backdrop_css(Some("url(\"a\")"), true);
         let bar = &css[css.find(".np-bar").unwrap()..css.find(".np-sheet").unwrap()];
         assert!(bar.contains("0.78"), "bar scrim changed: {bar}");
         assert!(
             !bar.contains("0.86"),
             "bar is using the drawer's veil: {bar}"
         );
+    }
+
+    #[test]
+    fn a_light_theme_gets_a_thinner_veil_than_a_dark_one() {
+        // The bug this fixes: one set of numbers for both. The veil is
+        // `@window_bg_color`, so 0.86 leaves the cover 14% either way — and 14%
+        // of a photograph reads as a coloured glow over a dark window and as
+        // pastel mush over a near-white one.
+        let dark = backdrop_css(Some("url(\"a\")"), true);
+        let light = backdrop_css(Some("url(\"a\")"), false);
+        assert_ne!(dark, light, "both themes got the same veil");
+
+        for (top, bottom) in [DARK_VEIL.bar, DARK_VEIL.sheet] {
+            assert!(top > bottom, "the veil must thin downwards");
+        }
+        for (top, bottom) in [LIGHT_VEIL.bar, LIGHT_VEIL.sheet] {
+            assert!(top > bottom, "the veil must thin downwards");
+        }
+        assert!(
+            LIGHT_VEIL.sheet.0 < DARK_VEIL.sheet.0 && LIGHT_VEIL.bar.0 < DARK_VEIL.bar.0,
+            "light must let more of the cover through, not less"
+        );
+    }
+
+    #[test]
+    fn a_veil_never_gets_thin_enough_to_lose_the_words() {
+        // The floor is set by text, not by looks: both surfaces carry labels in
+        // the theme's own foreground colour, and a veil thin enough to show a
+        // sleeve's dark half is thin enough to lose them. Rendered against real
+        // covers, below about 0.5 the type stops being readable.
+        for (top, bottom) in [
+            DARK_VEIL.bar,
+            DARK_VEIL.sheet,
+            LIGHT_VEIL.bar,
+            LIGHT_VEIL.sheet,
+        ] {
+            assert!(bottom >= 0.5, "veil too thin for text: {bottom}");
+            assert!(top <= 0.9, "veil so heavy the cover is invisible: {top}");
+        }
     }
 
     #[test]

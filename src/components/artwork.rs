@@ -65,7 +65,7 @@ pub async fn fetch(art: Artwork, size: u32) -> Result<PathBuf> {
 /// Two processes can race here — the app and, later, a second instance — and a
 /// half-written JPEG that `gdk::Texture` chokes on is worse than a slow one.
 /// `rename` within the same directory is atomic.
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().context("artwork path has no parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -166,195 +166,187 @@ pub fn decode(path: &Path, size: i32) -> Option<Decoded> {
     })
 }
 
-/// Where a mosaic lands, named after the covers it is made of.
+/// How wide the drawer's backdrop image is, in pixels.
 ///
-/// The four cache keys concatenated, rather than the playlist's id, and that is
-/// deliberate: it means the file **invalidates itself**. Add a track to the
-/// front of a playlist and the first four covers change, so the name changes
-/// and a new mosaic is composed; nothing has to notice the edit or expire
-/// anything. Keys are sixteen hex characters each, so four of them is a
-/// perfectly good filename and no second hash is needed.
-fn mosaic_path(arts: &[Artwork], size: u32) -> Option<PathBuf> {
-    let name: String = arts.iter().map(Artwork::cache_key).collect();
-    Some(cache_dir()?.join(format!("{name}-mosaic-{size}.png")))
-}
+/// Big enough that the upscale to the sheet is a few times rather than twenty,
+/// because **GTK does not interpolate this smoothly**. See [`backdrop`].
+const BACKDROP_PX: i32 = 256;
 
-/// Draw the 2×2 mosaic Apple's web player draws for a playlist you made.
+/// Radius of the blur, as a fraction of [`BACKDROP_PX`].
 ///
-/// Apple sends **no artwork at all** for a user-created playlist — measured,
-/// and written up in CLAUDE.md — so unlike everything else in this module there
-/// is nothing to fetch. There is only something to build, out of covers we are
-/// fetching anyway.
+/// **Small, and paired with [`SATURATION`].** Two earlier attempts got this
+/// wrong in the same direction. `/16` was chosen so that "no feature of the
+/// sleeve survives", which is true and produced a flat grey panel; `/32` was
+/// barely distinguishable from it.
 ///
-/// Off the GTK thread with everything else here (rule 8), and cached like
-/// everything else here: composed once and found on disk afterwards, including
-/// across restarts.
-pub async fn mosaic(arts: Vec<Artwork>, size: u32, tile_px: u32) -> Option<PathBuf> {
-    let out = mosaic_path(&arts, size)?;
-    if out.is_file() {
-        return Some(out);
-    }
-    let started = std::time::Instant::now();
-
-    // **All four at once, and at a size something else already fetches.**
-    //
-    // Both halves of that were wrong first time round and both were felt as
-    // "the page takes a long time". Awaiting them in a loop makes four round
-    // trips where one will do; and fetching the exact quadrant size — half the
-    // finished mosaic — asks for a size *nothing else in the app uses*, so four
-    // covers already sitting on disk at `tile_px` were downloaded again anyway.
-    // Passed in rather than assumed here, so the call site is what guarantees
-    // it matches the grids.
-    let mut tasks = tokio::task::JoinSet::new();
-    for (slot, art) in arts.iter().cloned().enumerate() {
-        tasks.spawn(async move { (slot, fetch(art, tile_px).await) });
-    }
-
-    // Collected by slot: which download finishes first must not decide where a
-    // cover lands, or the mosaic reshuffles itself between runs.
-    let mut tiles: Vec<Option<PathBuf>> = vec![None; arts.len()];
-    while let Some(joined) = tasks.join_next().await {
-        let Ok((slot, fetched)) = joined else {
-            tracing::warn!("mosaic tile task panicked; no mosaic");
-            return None;
-        };
-        match fetched {
-            Ok(path) => tiles[slot] = Some(path),
-            Err(err) => {
-                tracing::warn!(?err, "mosaic tile not fetched; no mosaic");
-                return None;
-            }
-        }
-    }
-    let tiles: Vec<PathBuf> = tiles.into_iter().collect::<Option<Vec<_>>>()?;
-
-    let bytes = compose(&tiles, size as i32)?;
-    if let Err(err) = write_atomically(&out, &bytes) {
-        tracing::warn!(?err, "mosaic not written");
-        return None;
-    }
-    tracing::debug!(
-        file = %out.display(),
-        tiles = tiles.len(),
-        ms = started.elapsed().as_millis(),
-        "mosaic composed"
-    );
-    Some(out)
-}
-
-/// Where each cover goes, for however many there are. `(x, y, w, h)`.
+/// The reason a wide blur fails is not softness, it is *chroma*. Averaging
+/// pulls colour toward neutral, and a sleeve of alternating complementary
+/// colours — concentric red, green and blue rings, in the case that exposed
+/// this — averages to grey once the window spans several of them. No amount of
+/// saturation afterwards recovers that, because there is no chroma left to
+/// multiply.
 ///
-/// **A playlist is not guaranteed four albums**, and a grid with holes in it
-/// looks broken rather than sparse. So the covers there are divide the square
-/// between them instead:
-///
-/// ```text
-///   two            three          four
-///  ┌────┬────┐   ┌────┬────┐   ┌────┬────┐
-///  │    │    │   │    ├────┤   ├────┼────┤
-///  └────┴────┘   └────┴────┘   └────┴────┘
-/// ```
-///
-/// `b` rather than a second `a` so an odd `size` still tiles exactly: a stray
-/// pixel column down the middle is the sort of thing nobody sees in a mockup
-/// and everybody sees at 2am.
-fn layout(count: usize, size: i32) -> Vec<(i32, i32, i32, i32)> {
-    let a = size / 2;
-    let b = size - a;
-    match count {
-        0 => Vec::new(),
-        1 => vec![(0, 0, size, size)],
-        2 => vec![(0, 0, a, size), (a, 0, b, size)],
-        3 => vec![(0, 0, a, size), (a, 0, b, a), (a, a, b, b)],
-        _ => vec![(0, 0, a, a), (a, 0, b, a), (0, a, a, b), (a, a, b, b)],
-    }
-}
+/// So: blur just enough to destroy legible detail, and put the colour back
+/// with saturation rather than trying to keep it through a wide average.
+const BLUR_RADIUS: usize = BACKDROP_PX as usize / 64;
 
-/// Draw one cover to fill `(x, y, w, h)`, cropping rather than squashing.
+/// How much to lift the colour after blurring, as a percentage.
 ///
-/// Scaled by whichever axis needs the *most* — "cover", not "contain" — then
-/// centred, so the rectangle is filled edge to edge and what falls outside is
-/// trimmed evenly. The alternative distorts: a square sleeve stretched into a
-/// half-width strip makes everyone on the cover look thin, which reads as a
-/// rendering fault rather than as a crop.
-fn place(canvas: &gdk_pixbuf::Pixbuf, cover: &Path, x: i32, y: i32, w: i32, h: i32) -> Option<()> {
-    let src = gdk_pixbuf::Pixbuf::from_file(cover).ok()?;
-    let (sw, sh) = (f64::from(src.width()), f64::from(src.height()));
-    if sw <= 0.0 || sh <= 0.0 {
-        return None;
-    }
-    let scale = (f64::from(w) / sw).max(f64::from(h) / sh);
-    // Where the scaled cover's own origin lands, so its middle sits over the
-    // middle of the rectangle. `composite` clips to the rectangle, so the
-    // overhang costs nothing but is what makes the fill exact.
-    let offset_x = f64::from(x) + (f64::from(w) - sw * scale) / 2.0;
-    let offset_y = f64::from(y) + (f64::from(h) - sh * scale) / 2.0;
-    src.composite(
-        canvas,
-        x,
-        y,
-        w,
-        h,
-        offset_x,
-        offset_y,
-        scale,
-        scale,
-        gdk_pixbuf::InterpType::Bilinear,
-        255,
-    );
-    Some(())
-}
-
-/// Tile `covers` into one square image, as PNG bytes.
-fn compose(covers: &[PathBuf], size: i32) -> Option<Vec<u8>> {
-    let canvas = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, size, size)?;
-    // Opaque, so a cover with alpha does not composite onto uninitialised
-    // memory — `Pixbuf::new` does not clear what it allocates.
-    canvas.fill(0x0000_00ff);
-
-    for (cover, (x, y, w, h)) in covers.iter().zip(layout(covers.len(), size)) {
-        place(&canvas, cover, x, y, w, h)?;
-    }
-
-    // PNG rather than JPEG: this is synthetic, with hard edges that JPEG would
-    // ring around, and it is written once per playlist.
-    canvas
-        .save_to_bufferv("png", &[])
-        .map_err(|err| tracing::warn!(?err, "mosaic not encoded"))
-        .ok()
-}
-
-/// How wide the drawer's backdrop image is, in pixels. Deliberately tiny.
-const BACKDROP_PX: i32 = 48;
-
-/// Write a deliberately tiny copy of a cover beside it, and say where.
+/// Blurring desaturates — it is an average, and averages tend to the middle —
+/// so a backdrop that is *only* blurred reads as grey behind a light veil. This
+/// puts back what the average took, which is why every platform's blurred
+/// backdrop is saturated rather than plain.
 ///
-/// This is the drawer's backdrop, and it is blown up to fill the whole sheet.
-/// **That upscale is the blur.** GTK interpolates when it scales a texture, so
-/// forty-eight pixels stretched across nine hundred arrives soft on its own —
-/// there is no blur pass to write, no shader, and nothing per-frame to pay for.
-/// A real Gaussian would mean a CPU convolution on every track change for a
-/// result nobody could tell apart once it is behind a scrim.
+/// Applied after the blur, deliberately: saturating first would amplify the
+/// noise the blur is about to smear.
+const SATURATION: u32 = 190;
+
+/// Write a blurred copy of a cover beside it, and say where.
 ///
-/// Cached like everything else here: the file is written once per cover and
-/// found on disk from then on, including across restarts.
+/// This is the drawer's backdrop, blown up to fill the whole sheet.
 ///
-/// Off the GTK thread (rule 8), on the same trip as [`tint`] — the cover, its
-/// colour and its backdrop must never be applied a frame apart.
+/// **The upscale is not the blur, which is what this used to claim.** The old
+/// version stored 48px and let CSS stretch it, on the reasoning that GTK
+/// interpolates when it scales a texture and a real Gaussian would be "a CPU
+/// convolution on every track change for a result nobody could tell apart".
+/// Both halves were wrong. GTK stretches this one nearest-neighbour, so 48px
+/// across ~950 arrived as **twenty-pixel squares with hard edges** — reported
+/// unprompted, in both themes, as "pixelated". And a backdrop is written once
+/// per cover and cached, so the convolution is not per track change; it is per
+/// cover, ever, on a worker thread.
+///
+/// So the blur is real now, and the stored image is larger for a second reason:
+/// with nearest-neighbour upscaling the block size is the ratio, so 256px
+/// leaves blocks of about four pixels where 48px left twenty. Blurring alone
+/// would have smoothed their *colour* while leaving their edges.
+///
+/// Cached like everything else here, and keyed by size — changing
+/// [`BACKDROP_PX`] invalidates every stored backdrop by construction, rather
+/// than leaving the old geometry on disk to be found later.
+///
+/// Off the GTK thread (rule 8).
 pub fn backdrop(path: &Path) -> Option<PathBuf> {
-    let out = path.with_extension("backdrop.png");
+    let out = path.with_extension(format!("backdrop{BACKDROP_PX}.png"));
     if out.exists() {
         return Some(out);
     }
     let pixbuf =
         gdk_pixbuf::Pixbuf::from_file_at_scale(path, BACKDROP_PX, BACKDROP_PX, false).ok()?;
-    pixbuf.savev(&out, "png", &[]).ok()?;
+
+    let (w, h) = (pixbuf.width() as usize, pixbuf.height() as usize);
+    let channels = pixbuf.n_channels() as usize;
+    let stride = pixbuf.rowstride() as usize;
+    let mut pixels = pixbuf.read_pixel_bytes().to_vec();
+    blur(&mut pixels, w, h, channels, stride, BLUR_RADIUS);
+    saturate(&mut pixels, w, h, channels, stride, SATURATION);
+
+    let blurred = gdk_pixbuf::Pixbuf::from_bytes(
+        &glib::Bytes::from_owned(pixels),
+        pixbuf.colorspace(),
+        pixbuf.has_alpha(),
+        pixbuf.bits_per_sample(),
+        pixbuf.width(),
+        pixbuf.height(),
+        pixbuf.rowstride(),
+    );
+    blurred.savev(&out, "png", &[]).ok()?;
     Some(out)
+}
+
+/// Lift every pixel's colour away from its own brightness.
+///
+/// `percent` is 100 for no change. Each channel moves away from the pixel's
+/// luma by that factor, which is the standard saturation adjust: it leaves
+/// greys alone — they have no chroma to lift — and makes coloured pixels more
+/// so, without changing how light or dark they are.
+fn saturate(pixels: &mut [u8], w: usize, h: usize, channels: usize, stride: usize, percent: u32) {
+    if percent == 100 || channels < 3 {
+        return;
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * stride + x * channels;
+            let [r, g, b] = [pixels[i], pixels[i + 1], pixels[i + 2]];
+            // Rec. 709 luma: green carries most of perceived brightness, which
+            // is why an unweighted mean would shift the picture's lightness.
+            let luma = (2126 * u32::from(r) + 7152 * u32::from(g) + 722 * u32::from(b)) / 10000;
+            for (c, v) in [r, g, b].into_iter().enumerate() {
+                let lifted = i32::from(luma as u8)
+                    + (i32::from(v) - i32::from(luma as u8)) * percent as i32 / 100;
+                pixels[i + c] = lifted.clamp(0, 255) as u8;
+            }
+        }
+    }
+}
+
+/// Three box passes, which is a close enough Gaussian and far cheaper.
+///
+/// Separable and running-sum, so the cost is O(pixels) per pass rather than
+/// O(pixels x radius) — at 256px that is under a millisecond, once per cover,
+/// off the GTK thread. Pure, so the tests can check it rather than trusting it.
+fn blur(pixels: &mut [u8], w: usize, h: usize, channels: usize, stride: usize, radius: usize) {
+    if radius == 0 || w == 0 || h == 0 {
+        return;
+    }
+    for _ in 0..3 {
+        box_pass(pixels, w, h, channels, stride, radius, true);
+        box_pass(pixels, w, h, channels, stride, radius, false);
+    }
+}
+
+/// One box blur along one axis. `horizontal` picks which.
+fn box_pass(
+    pixels: &mut [u8],
+    w: usize,
+    h: usize,
+    channels: usize,
+    stride: usize,
+    radius: usize,
+    horizontal: bool,
+) {
+    let (lines, len) = if horizontal { (h, w) } else { (w, h) };
+    let at = |line: usize, i: usize, c: usize| {
+        if horizontal {
+            line * stride + i * channels + c
+        } else {
+            i * stride + line * channels + c
+        }
+    };
+    let mut row = vec![0u8; len];
+    for line in 0..lines {
+        for c in 0..channels {
+            for (i, slot) in row.iter_mut().enumerate() {
+                *slot = pixels[at(line, i, c)];
+            }
+            // Running sum over a window clamped to the edges, so the border
+            // does not darken — a black fringe around a backdrop is exactly
+            // the sort of thing that reads as a rendering fault.
+            let primed = radius.min(len - 1) + 1;
+            let mut sum: u32 = row[..primed].iter().map(|v| u32::from(*v)).sum();
+            let mut count = primed as u32;
+            for i in 0..len {
+                pixels[at(line, i, c)] = (sum / count) as u8;
+                if let Some(add) = row.get(i + radius + 1) {
+                    sum += u32::from(*add);
+                    count += 1;
+                }
+                if radius <= i {
+                    sum -= u32::from(row[i - radius]);
+                    count -= 1;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-channel image, so the blur maths is readable in the assertions.
+    fn grey(values: &[u8], w: usize) -> (Vec<u8>, usize, usize) {
+        (values.to_vec(), w, values.len() / w)
+    }
 
     #[test]
     fn cache_paths_are_stable_and_size_specific() {
@@ -375,119 +367,91 @@ mod tests {
         assert_ne!(cache_path(&a, 512), cache_path(&b, 512));
     }
 
-    /// A solid-colour square on disk, standing in for a cover.
-    fn swatch(dir: &Path, name: &str, rgb: u32) -> PathBuf {
-        let pixbuf =
-            gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 16, 16).unwrap();
-        pixbuf.fill(rgb << 8 | 0xff);
-        let path = dir.join(format!("{name}.png"));
-        pixbuf.savev(&path, "png", &[]).unwrap();
-        path
-    }
+    #[test]
+    fn saturating_leaves_grey_alone_and_lifts_colour() {
+        // Grey has no chroma to lift, so it must come back untouched — a
+        // saturation pass that drifts neutrals would tint the whole backdrop.
+        let mut grey = vec![128, 128, 128];
+        saturate(&mut grey, 1, 1, 3, 3, 190);
+        assert_eq!(grey, vec![128, 128, 128], "grey should not move");
 
-    /// The colour at a pixel, as `0xRRGGBB`.
-    fn pixel_at(pixbuf: &gdk_pixbuf::Pixbuf, x: i32, y: i32) -> u32 {
-        let bytes = pixbuf.read_pixel_bytes();
-        let channels = pixbuf.n_channels() as usize;
-        let offset = y as usize * pixbuf.rowstride() as usize + x as usize * channels;
-        u32::from(bytes[offset]) << 16
-            | u32::from(bytes[offset + 1]) << 8
-            | u32::from(bytes[offset + 2])
+        // A muted red should get redder without getting lighter or darker.
+        let mut red = vec![150, 100, 100];
+        saturate(&mut red, 1, 1, 3, 3, 190);
+        assert!(red[0] > 150, "red channel did not lift: {red:?}");
+        assert!(red[1] < 100 && red[2] < 100, "others did not fall: {red:?}");
     }
 
     #[test]
-    fn a_mosaic_puts_each_cover_in_its_own_quadrant() {
-        // A real composition, not a mock: gdk-pixbuf needs no GTK main loop, so
-        // the arithmetic that decides where each quadrant lands is testable —
-        // and getting it wrong is the kind of thing that looks *nearly* right.
-        let dir = std::env::temp_dir().join(format!("slipmat-mosaic-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let covers = [
-            swatch(&dir, "tl", 0xff_0000),
-            swatch(&dir, "tr", 0x00_ff00),
-            swatch(&dir, "bl", 0x00_00ff),
-            swatch(&dir, "br", 0xff_ff00),
-        ];
-        let png = compose(&covers, 64).unwrap();
-        let out = dir.join("mosaic.png");
-        write_atomically(&out, &png).unwrap();
-        let made = gdk_pixbuf::Pixbuf::from_file(&out).unwrap();
-
-        assert_eq!((made.width(), made.height()), (64, 64));
-        // Sampled well inside each quadrant, away from the seams.
-        assert_eq!(pixel_at(&made, 16, 16), 0xff_0000, "top left");
-        assert_eq!(pixel_at(&made, 48, 16), 0x00_ff00, "top right");
-        assert_eq!(pixel_at(&made, 16, 48), 0x00_00ff, "bottom left");
-        assert_eq!(pixel_at(&made, 48, 48), 0xff_ff00, "bottom right");
-
-        let _ = std::fs::remove_dir_all(&dir);
+    fn saturating_cannot_overflow_a_channel() {
+        // Clamping is the whole risk here: an already-vivid pixel lifted 90%
+        // would wrap without it, turning a bright colour into its opposite.
+        let mut vivid = vec![250, 5, 5, 0, 0, 0];
+        saturate(&mut vivid, 2, 1, 3, 6, 400);
+        // Both directions wrap without the clamp: the bright channel runs past
+        // 255 and the dim ones go negative, which on a u8 comes back as a very
+        // bright value — a vivid red would return as its own opposite.
+        assert_eq!(vivid[0], 255, "bright channel should clamp to full");
+        assert_eq!(&vivid[1..3], &[0, 0], "dim channels wrapped: {vivid:?}");
     }
 
     #[test]
-    fn a_mosaic_is_named_after_its_covers_so_it_reinvalidates() {
-        // Named by content rather than by playlist id, so adding a track to the
-        // front of a playlist changes the filename and a new mosaic is composed.
-        // Nothing has to notice the edit or expire anything.
-        let a = Artwork::new("https://is1.mzstatic.com/a/{w}x{h}bb.jpg");
-        let b = Artwork::new("https://is1.mzstatic.com/b/{w}x{h}bb.jpg");
-
-        let one = mosaic_path(&[a.clone(), b.clone()], 512).unwrap();
-        let same = mosaic_path(&[a.clone(), b.clone()], 512).unwrap();
-        let reordered = mosaic_path(&[b, a], 512).unwrap();
-
-        assert_eq!(one, same, "the same covers must reuse one file");
-        assert_ne!(one, reordered, "order is part of the picture");
-        assert!(one.to_string_lossy().ends_with("-mosaic-512.png"));
+    fn a_hundred_percent_saturation_is_a_no_op() {
+        let mut px = vec![10, 20, 30, 40, 50, 60];
+        let before = px.clone();
+        saturate(&mut px, 2, 1, 3, 6, 100);
+        assert_eq!(px, before);
     }
 
     #[test]
-    fn a_mosaic_divides_the_square_however_many_covers_there_are() {
-        // A playlist is not guaranteed four albums, and a 2x2 with holes in it
-        // looks broken rather than sparse. Whatever there is fills the square.
-        for count in 1..=4 {
-            let rects = layout(count, 64);
-            assert_eq!(rects.len(), count, "one rectangle per cover");
-            let area: i32 = rects.iter().map(|(_, _, w, h)| w * h).sum();
-            assert_eq!(area, 64 * 64, "{count} covers must leave no gap");
-        }
-        assert!(layout(0, 64).is_empty());
+    fn a_blur_spreads_a_spike_and_keeps_the_total_brightness() {
+        // One bright pixel in a dark field. After blurring it must be dimmer
+        // and its neighbours brighter — that is the whole job.
+        let (mut px, w, h) = grey(&[0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0], 15);
+        let before = px[7];
+        blur(&mut px, w, h, 1, w, 2);
+
+        assert!(px[7] < before, "the spike did not spread");
+        assert!(px[6] > 0 && px[8] > 0, "neighbours got nothing");
+        assert!(
+            px.iter().map(|v| u32::from(*v)).sum::<u32>() > 200,
+            "the blur threw the light away instead of spreading it"
+        );
     }
 
     #[test]
-    fn an_odd_size_still_tiles_exactly() {
-        // `size / 2` twice leaves a stray pixel column down the middle — the
-        // sort of thing nobody sees in a mockup and everybody sees at 2am.
-        for count in 1..=4 {
-            let area: i32 = layout(count, 65).iter().map(|(_, _, w, h)| w * h).sum();
-            assert_eq!(area, 65 * 65, "{count} covers at an odd size");
-        }
+    fn a_flat_image_survives_the_blur_unchanged() {
+        // The edge clamp is the reason this is worth a test: a window that
+        // counted off-image pixels as zero would darken every border, and a
+        // black fringe around a backdrop reads as a rendering fault.
+        let (mut px, w, h) = grey(&[200; 64], 8);
+        blur(&mut px, w, h, 1, w, 3);
+        assert!(
+            px.iter().all(|v| *v == 200),
+            "a flat image should blur to itself, got {px:?}"
+        );
     }
 
     #[test]
-    fn two_and_three_covers_land_where_the_diagram_says() {
-        let dir = std::env::temp_dir().join(format!("slipmat-layout-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let red = swatch(&dir, "r", 0xff_0000);
-        let green = swatch(&dir, "g", 0x00_ff00);
-        let blue = swatch(&dir, "b", 0x00_00ff);
+    fn a_zero_radius_is_a_no_op() {
+        let (mut px, w, h) = grey(&[1, 2, 3, 4], 2);
+        let before = px.clone();
+        blur(&mut px, w, h, 1, w, 0);
+        assert_eq!(px, before);
+    }
 
-        // Two: left half, right half.
-        let out = dir.join("two.png");
-        write_atomically(&out, &compose(&[red.clone(), green.clone()], 64).unwrap()).unwrap();
-        let two = gdk_pixbuf::Pixbuf::from_file(&out).unwrap();
-        assert_eq!(pixel_at(&two, 16, 32), 0xff_0000, "left");
-        assert_eq!(pixel_at(&two, 48, 32), 0x00_ff00, "right");
-
-        // Three: tall left, then two stacked on the right.
-        let out = dir.join("three.png");
-        write_atomically(&out, &compose(&[red, green, blue], 64).unwrap()).unwrap();
-        let three = gdk_pixbuf::Pixbuf::from_file(&out).unwrap();
-        assert_eq!(pixel_at(&three, 16, 32), 0xff_0000, "tall left");
-        assert_eq!(pixel_at(&three, 48, 16), 0x00_ff00, "top right");
-        assert_eq!(pixel_at(&three, 48, 48), 0x00_00ff, "bottom right");
-
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn the_backdrop_filename_carries_its_size() {
+        // Changing BACKDROP_PX must invalidate what is already on disk. The old
+        // scheme wrote plain `.backdrop.png`, so a geometry change would have
+        // left 48px files to be found and reused for ever.
+        let name = std::path::Path::new("/tmp/abc-512.jpg")
+            .with_extension(format!("backdrop{BACKDROP_PX}.png"));
+        assert!(
+            name.to_string_lossy()
+                .ends_with(&format!("backdrop{BACKDROP_PX}.png"))
+        );
+        assert_ne!(name.to_string_lossy(), "/tmp/abc-512.backdrop.png");
     }
 
     #[test]
