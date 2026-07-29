@@ -185,7 +185,9 @@ impl AppModel {
                 .player
                 .queue
                 .iter()
-                .map(|item| QueueEntry {
+                .enumerate()
+                .map(|(at, item)| QueueEntry {
+                    at,
                     id: queue_id(item),
                     title: item.title.clone(),
                     artist: item.artist.clone(),

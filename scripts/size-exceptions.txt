@@ -48,3 +48,8 @@ src/components/player_view/mod.rs    790  # the model, `view!` and the reducer. 
                                           # child and not a sibling. 870 before the split; this
                                           # number comes down as the ratchet intends, and is the
                                           # first time it has.
+src/app/queue.rs                     640  # click -> setQueue, healing a queue MusicKit rejected, and
+                                          # resolving which row a click meant.
+                                          # 600 -> 640 for #88: `index_at` and the three tests that
+                                          # pin it — a duplicated track, a shifted queue, and a
+                                          # position past the end.
