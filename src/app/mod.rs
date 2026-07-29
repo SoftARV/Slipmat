@@ -205,6 +205,11 @@ pub struct AppModel {
     /// mirrored from the split view — a width we measured ourselves would be a
     /// second opinion about a decision libadwaita has already made.
     narrow_header: bool,
+    /// Set when something asked for the search box and the *widgets* have to
+    /// act on it — focus it, and put the caret after the text. Cleared by
+    /// `update_with_view` the moment it does, because it is a one-shot request
+    /// rather than a state anything can be derived from.
+    focus_search: bool,
     /// Whether the search entry is showing, on a narrow header where it is a
     /// button until asked for. Meaningless while `narrow_header` is false: the
     /// entry is simply the title then.
@@ -519,6 +524,11 @@ pub enum AppMsg {
     NarrowHeader(bool),
     /// Open or close the search entry on a narrow header.
     ShowSearch(bool),
+    /// Put the caret in the search entry, opening it first if it is a button.
+    FocusSearch,
+    /// A printable key arrived with nothing focused that wanted it. Starts a
+    /// search with that character already in it.
+    TypeAhead(String),
     /// The results list is near its end; fetch the next page if there is one.
     LoadMoreCatalog,
     /// Re-fetch one library section. There is no section-less "reload": each
@@ -1479,6 +1489,7 @@ impl Component for AppModel {
             sidebar_collapsed: false,
             narrow_header: false,
             searching: false,
+            focus_search: false,
             animated_shown: std::cell::Cell::new(None),
             marked_playing: None,
             library_icons: row_registry(),
@@ -1657,6 +1668,19 @@ impl Component for AppModel {
             // does by now, because `update` set it first. No loop.
             widgets.search_entry.set_text(self.query());
             self.sync_sort_menu(&widgets.sort_button);
+        }
+
+        // After `update`, so a narrow header has already swapped the entry in
+        // for the section title — an unmapped widget cannot take the caret, and
+        // that is the whole reason this is a flag rather than a `grab_focus`
+        // at the call site.
+        if std::mem::take(&mut self.focus_search) {
+            widgets.search_entry.set_text(self.query());
+            widgets.search_entry.grab_focus();
+            // Typing appends, so the caret belongs after what is already there.
+            // `grab_focus` on an entry selects all of it, and the next
+            // keystroke would replace the character that opened the search.
+            widgets.search_entry.set_position(-1);
         }
 
         let painting = std::time::Instant::now();
@@ -2039,6 +2063,23 @@ impl AppModel {
                 if !show && !self.query().is_empty() {
                     sender.input(AppMsg::SearchChanged(String::new()));
                 }
+            }
+            AppMsg::FocusSearch => {
+                // The box has to exist before it can be focused: on a narrow
+                // header it is a hidden stack page until now, and a widget that
+                // is not mapped cannot take the caret.
+                self.searching = true;
+                self.focus_search = true;
+            }
+            AppMsg::TypeAhead(text) => {
+                self.searching = true;
+                self.focus_search = true;
+                let mut query = self.query().to_owned();
+                query.push_str(&text);
+                // Straight through the ordinary path, so filtering, the
+                // rebuild and the per-scope query all behave exactly as they do
+                // when the character is typed into the entry directly.
+                self.handle(AppMsg::SearchChanged(query), &sender, root);
             }
             AppMsg::SectionChosen => {
                 if self.sidebar_collapsed {

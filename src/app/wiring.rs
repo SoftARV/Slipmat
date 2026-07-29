@@ -42,6 +42,7 @@ pub(super) fn connect(
     open_on_last_section(model, widgets);
     catalog_pagination(widgets, sender);
     window_breakpoints(root, widgets, sender);
+    type_to_search(root, sender);
     library_list_properties(model, widgets);
     bottom_bar_inset(widgets);
 }
@@ -177,6 +178,58 @@ fn catalog_pagination(widgets: &Widgets, sender: &ComponentSender<AppModel>) {
                 }
             });
     }
+}
+
+/// Start searching by typing, the way every list-shaped GNOME app does.
+///
+/// `GtkSearchBar` would give this for free through `key-capture-widget`, but
+/// the entry is a header title rather than a revealer strip, so the capture is
+/// ours. What it costs is the four guards below, each of which is a way to
+/// break something that already works.
+fn type_to_search(root: &adw::ApplicationWindow, sender: &ComponentSender<AppModel>) {
+    let controller = gtk::EventControllerKey::new();
+    // Capture, so it is seen on the way *down* — a list or a button would
+    // otherwise consume Space and the arrow keys before this ever ran. The
+    // guards are what stop that being a problem.
+    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let sender = sender.clone();
+    controller.connect_key_pressed(move |controller, key, _code, state| {
+        // Anything with a modifier is somebody's accelerator, including every
+        // one this app registers. Shift is the exception: it is how capitals
+        // are typed.
+        if state.difference(gtk::gdk::ModifierType::SHIFT_MASK) != gtk::gdk::ModifierType::empty() {
+            return gtk::glib::Propagation::Proceed;
+        }
+        // Only characters. `to_unicode` rejects Escape, Tab, the arrows and
+        // the function keys on its own; Space is rejected here as well,
+        // because it is how a focused row is activated and a search that
+        // begins with a space is nobody's intent.
+        let Some(ch) = key.to_unicode().filter(|c| !c.is_control() && *c != ' ') else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        let Some(window) = controller.widget().and_downcast::<adw::ApplicationWindow>() else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        // An `AdwDialog` is presented *into* this window rather than into one
+        // of its own, so this controller sees its keystrokes too. Preferences,
+        // About, the sign-out confirmation and the first-run gate would each
+        // otherwise be typing into a search box behind them.
+        if window.visible_dialog().is_some() {
+            return gtk::glib::Propagation::Proceed;
+        }
+        // Somewhere that already wants the key — the search entry itself most
+        // of all, which is where the caret lands the moment this fires once.
+        if GtkWindowExt::focus(&window)
+            .is_some_and(|widget| widget.is::<gtk::Editable>() || widget.is::<gtk::Text>())
+        {
+            return gtk::glib::Propagation::Proceed;
+        }
+        sender.input(AppMsg::TypeAhead(ch.to_string()));
+        // Stopped, or the character arrives twice — once here and once in the
+        // entry that is about to take the focus.
+        gtk::glib::Propagation::Stop
+    });
+    root.add_controller(controller);
 }
 
 /// The two widths the window changes shape at.
