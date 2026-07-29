@@ -1020,34 +1020,43 @@ impl Component for AppModel {
                                         // In the header there is no ambiguity to
                                         // resolve: it reloads what you are
                                         // looking at.
-                                        pack_end = &gtk::Button {
-                                            set_icon_name: "view-refresh-symbolic",
-                                            set_tooltip_text: Some("Reload"),
-                                            add_css_class: "flat",
-                                            // Not in Search. Catalog results are
-                                            // the answer to a question, not a
-                                            // collection held between launches —
-                                            // asking again is the search box.
+                                        //
+                                        // A `Stack` rather than two widgets
+                                        // swapping their own visibility, because
+                                        // a spinner is smaller than a button and
+                                        // the header re-centred its search entry
+                                        // every time one started. A stack is
+                                        // homogeneous by default, so it holds the
+                                        // button's width whichever child shows.
+                                        pack_end = &gtk::Stack {
                                             #[watch]
-                                            set_visible: model.view != View::Search
-                                                && !model.loading_section(),
+                                            set_visible: model.view != View::Search,
                                             #[watch]
-                                            set_sensitive: model.controls_live(),
-                                            connect_clicked[sender] => move |_| {
-                                                sender.input(AppMsg::ReloadCurrentSection);
+                                            set_visible_child_name: if model.loading_section() {
+                                                "busy"
+                                            } else {
+                                                "reload"
                                             },
-                                        },
 
-                                        // Takes the button's place while the
-                                        // fetch runs, rather than sitting beside
-                                        // it — the header must not reflow when a
-                                        // section starts loading.
-                                        pack_end = &adw::Spinner {
-                                            set_size_request: (16, 16),
-                                            set_valign: gtk::Align::Center,
-                                            #[watch]
-                                            set_visible: model.view != View::Search
-                                                && model.loading_section(),
+                                            add_named[Some("reload")] = &gtk::Button {
+                                                set_icon_name: "view-refresh-symbolic",
+                                                set_tooltip_text: Some("Reload"),
+                                                add_css_class: "flat",
+                                                #[watch]
+                                                set_sensitive: model.controls_live(),
+                                                connect_clicked[sender] => move |_| {
+                                                    sender.input(AppMsg::ReloadCurrentSection);
+                                                },
+                                            },
+
+                                            // The only sign a reload is running,
+                                            // once the list stopped being taken
+                                            // away for one.
+                                            add_named[Some("busy")] = &adw::Spinner {
+                                                set_size_request: (16, 16),
+                                                set_valign: gtk::Align::Center,
+                                                set_halign: gtk::Align::Center,
+                                            },
                                         },
 
                                         // Only in Songs: the grids have their
@@ -2542,11 +2551,18 @@ impl AppModel {
         self.view.scope()
     }
 
-    /// Throw away a section's cache and fetch it again.
+    /// Fetch a section again, over the top of what it is already showing.
     ///
-    /// Each loader returns early when it already holds data — that is what
-    /// makes revisiting a section instant — so a reload has to clear first or
-    /// it does nothing at all.
+    /// **Nothing is cleared first.** The three grids used to empty themselves
+    /// here, and had to: their guard was `tried || !collection.is_empty()`, so
+    /// clearing the flag alone left the loader returning early. The cost was
+    /// that `page()` saw an empty collection mid-fetch and took the grid away
+    /// for a full-pane spinner — a reload that interrupted whatever you were
+    /// looking at, and Songs never did it because Songs never cleared.
+    ///
+    /// The guard is `tried` alone now, so the clear is not only unnecessary but
+    /// the whole of that bug. All four sections keep their content up, and the
+    /// list changes only if the answer did.
     fn reload(&mut self, view: View, sender: &ComponentSender<Self>) {
         match view {
             View::Songs | View::Search => {
@@ -2554,17 +2570,14 @@ impl AppModel {
                 self.load_library(sender);
             }
             View::Albums => {
-                self.albums.clear();
                 self.tried_albums = false;
                 self.load_albums(sender);
             }
             View::Artists => {
-                self.artists.clear();
                 self.tried_artists = false;
                 self.load_artists(sender);
             }
             View::Playlists => {
-                self.playlists.clear();
                 self.tried_playlists = false;
                 self.load_playlists(sender);
             }

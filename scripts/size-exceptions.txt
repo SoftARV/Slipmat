@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      2685  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      2700  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole.
                                           # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
@@ -14,8 +14,10 @@ src/app/mod.rs                      2685  # the model, the messages, `view!` and
                                           # handler, a property `view!` cannot set on a `#[local_ref]`
                                           # — none of it the model, the messages or the reducer, which
                                           # is the rule this file is meant to follow.
-                                          # 2760 -> 2685: four sidebar reload buttons became one in the
-                                          # header, which is ~130 lines of `view!` for ~45.
+                                          # 2760 -> 2700: four sidebar reload buttons became one in the
+                                          # header, which is ~130 lines of `view!` for ~45 — a `Stack`,
+                                          # so the header keeps the button's width while the spinner
+                                          # shows and the search entry stops shifting.
                                           # Lowering a number as a file shrinks is the ratchet working;
                                           # this is the third time it has gone down.
 src/components/now_playing.rs       1020  # one component, and the one whose seek arithmetic took
