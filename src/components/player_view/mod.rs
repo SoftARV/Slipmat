@@ -325,6 +325,15 @@ impl SimpleComponent for PlayerView {
                                 gtk::Stack {
                                     set_transition_type: gtk::StackTransitionType::Crossfade,
                                     set_transition_duration: SWAP_MS,
+                                    // **A stack measures its widest child,
+                                    // showing or not.** The same trap the bar's
+                                    // stack had: the skeleton below was setting
+                                    // the drawer's minimum width even with a
+                                    // track playing, and the drawer is what
+                                    // `AdwBreakpointBin` complained about
+                                    // exceeding — 376px asked for against 360
+                                    // available.
+                                    set_hhomogeneous: false,
 
                                     // They differ in **length**, not in weight:
                                     // a title runs long and an artist is
@@ -347,7 +356,12 @@ impl SimpleComponent for PlayerView {
                                             } else {
                                                 gtk::Align::Start
                                             },
-                                            set_size_request: (240, 16),
+                                            // 240/120 before, which put a
+                                            // 240px floor under a drawer that
+                                            // has to fit a 360px window. Two
+                                            // grey bars say where the title
+                                            // goes; they need not be its width.
+                                            set_size_request: (150, 16),
                                             add_css_class: "np-skeleton",
                                         },
                                         gtk::Box {
@@ -357,7 +371,7 @@ impl SimpleComponent for PlayerView {
                                             } else {
                                                 gtk::Align::Start
                                             },
-                                            set_size_request: (120, 16),
+                                            set_size_request: (90, 16),
                                             add_css_class: "np-skeleton",
                                         },
                                     },
