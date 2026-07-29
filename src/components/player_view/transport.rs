@@ -97,11 +97,15 @@ pub(super) fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerVi
     play.set_width_request(56);
     play.set_height_request(56);
     let next = button("media-skip-forward-symbolic", &["flat", "circular"]);
-    // Only the way *in*. Closing belongs to the queue's own header, so this
-    // hides once the queue is showing rather than becoming a second control
-    // for the same thing.
-    let queue = button("view-list-symbolic", &["flat", "circular"]);
-    queue.set_tooltip_text(Some("Queue"));
+    // **A toggle, and always visible.** It was a one-way button that hid once
+    // the queue was open, with the queue's own header carrying the way out —
+    // which cost 34px of drawer height every time it vanished, and left volume
+    // sitting alone in a row built for two.
+    let queue = gtk::ToggleButton::builder()
+        .icon_name("view-list-symbolic")
+        .tooltip_text("Queue")
+        .css_classes(["flat", "circular"])
+        .build();
 
     // **Volume lives here now.** The bar drops its own below the narrow
     // breakpoint, and shuffle and repeat were already down here to fall back
@@ -124,11 +128,19 @@ pub(super) fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerVi
         });
     }
 
+    {
+        let sender = sender.clone();
+        queue.connect_toggled(move |b| {
+            // `SetQueueShown` drops a value equal to the one held, which is
+            // what the `set_active` below arrives as — the #37 guard.
+            sender.input(PlayerViewInput::SetQueueShown(b.is_active()));
+        });
+    }
+
     for (widget, msg) in [
         (&previous, PlayerViewInput::Previous),
         (&play, PlayerViewInput::PlayPause),
         (&next, PlayerViewInput::Next),
-        (&queue, PlayerViewInput::SetQueueShown(true)),
         (&shuffle, PlayerViewInput::ShuffleClicked),
         (&repeat, PlayerViewInput::RepeatClicked),
     ] {
@@ -181,7 +193,7 @@ pub(super) struct Bits {
     play: gtk::Button,
     previous: gtk::Button,
     next: gtk::Button,
-    queue: gtk::Button,
+    queue: gtk::ToggleButton,
     volume: gtk::ScaleButton,
     shuffle: gtk::Button,
     repeat: gtk::Button,
@@ -241,17 +253,17 @@ impl Bits {
     /// parent asks for that rather than reaching into three fields it would
     /// then have to keep in step.
     pub(super) fn set_secondary_visible(&self, visible: bool) {
-        // **Faded, not hidden.** Shuffle and repeat sit in the horizontal row
-        // and cost nothing to hide, but the queue button has a row of its own —
-        // and a hidden child collapses it, taking 34px out of the drawer's
-        // height every time the queue opened. Measured: 562px shut, 528px
-        // shown, and the whole difference was this one button.
-        //
+        // The queue button stays — it is a toggle, and the way out as well as
+        // the way in. It also has a row of its own, so hiding it collapsed that
+        // row and took 34px out of the drawer's height every time the queue
+        // opened: 562px shut against 528px shown, all of it this one button.
         // The drawer's height is its content's natural height, because
         // `AdwBottomSheet` has no height setter, so a control that vanishes
         // *is* a resize.
-        self.queue.set_opacity(if visible { 1.0 } else { 0.0 });
-        self.queue.set_sensitive(visible);
+        //
+        // Shuffle and repeat still stand down; they sit in the horizontal row
+        // and cost no height, and the queue's own header carries them.
+        self.queue.set_active(!visible);
         self.shuffle.set_visible(visible);
         self.repeat.set_visible(visible);
     }
