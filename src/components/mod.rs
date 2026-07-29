@@ -11,6 +11,7 @@ pub mod grid_item;
 pub mod mosaic;
 pub mod now_playing;
 pub mod player_view;
+pub mod prune;
 pub mod queue_view;
 pub mod track_row;
 

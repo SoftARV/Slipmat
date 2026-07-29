@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      2810  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      2825  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole.
                                           # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
@@ -66,11 +66,14 @@ src/app/view.rs                      730  # which section is showing, and how ea
                                           # The sort keys differ per section because the *data*
                                           # does — measured, and the measurement is in the
                                           # comments so nobody re-guesses it.
-src/app/library.rs                   800  # four collections and the catalog search, all landing in
+src/app/library.rs                   845  # four collections and the catalog search, all landing in
                                           # the same list.
                                           # 760 -> 800 for #84: seeding those collections from the disk
                                           # cache and writing them back. It owns loading them, so it
                                           # owns where they are loaded *from*.
+                                          # 800 -> 845 for #83: the artwork keep-set is derived from
+                                          # these four collections, so the derivation belongs with
+                                          # them rather than beside the sweep that consumes it.
 src/player/protocol.rs               740  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.

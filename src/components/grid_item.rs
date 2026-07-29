@@ -50,7 +50,17 @@ use crate::music::types::{Album, Artist, Artwork, Playlist};
 
 /// Tile artwork, in logical pixels. Big enough to read, small enough that a
 /// library of a few hundred albums is a few hundred small JPEGs.
-pub const TILE_PX: i32 = 160;
+/// How wide a grid tile asks to be.
+///
+/// **130, not 160, so two columns fit a narrow window.** A tile claims
+/// `TILE_PX + 12` of margin and the grid adds 24 of padding, so two columns
+/// need `24 + 2 × (TILE_PX + 12)`. At 160 that is 344 against the 336 a 360px
+/// window leaves — missing a second column by 8px, and dropping to one.
+///
+/// Independent of `TILE_ART`, the size covers are *fetched* at, so changing it
+/// costs nothing on disk: the cache is untouched and the tile simply draws the
+/// same image smaller.
+pub const TILE_PX: i32 = 130;
 
 /// Tiles currently bound, keyed by [`Artwork::cache_key`], so a fetch that
 /// finishes late can find the widgets to paint.
