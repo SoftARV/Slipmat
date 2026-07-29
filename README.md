@@ -11,11 +11,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 A native GNOME client for Apple Music.
 
-Every other Apple Music option on Linux is `music.apple.com` in a costume —
-Electron wrapped around the website, with the website's scroll behaviour and the
-website's search field. Slipmat is the first one where the interface is actually
-native: GTK4 and libadwaita, written in Rust, with real lists, real GNOME
-search, and media controls that answer from the top bar and the lock screen.
+Apple ships no Linux client, and the DRM makes a fully native one impossible —
+so Slipmat draws its own interface in GTK4 and libadwaita, written in Rust, and
+keeps the web engine strictly for decoding audio. Real lists, real GNOME search,
+and media controls that answer from the top bar and the lock screen.
 
 The web engine is still there. You just never see it.
 
@@ -25,19 +24,18 @@ The web engine is still there. You just never see it.
 
 ## What it does
 
-**A native GNOME app, not a browser in a costume.** GTK4 and libadwaita, written
-in Rust — real lists, real keyboard navigation, a window that tiles to half a
-screen. There is a web layer, because Apple's DRM leaves no choice, but it is
-one hidden process that decodes audio and nothing else. You never see a web
-page.
+**A native GNOME app.** GTK4 and libadwaita, written in Rust — real lists, real
+keyboard navigation, a window that tiles to half a screen. There is a web layer,
+because Apple's DRM leaves no choice, but it is one hidden process that decodes
+audio and nothing else. You never see a web page.
 
 **Your library.** Songs, albums, artists and playlists, each with type-to-find
 filtering and its own sorting. Click anything and the list you are looking at
 becomes the queue.
 
-**A player worth the name.** Gapless, with
-a full-size view you can pull up, the queue beside it, and the cover behind it.
-[Measured, not hoped for](#gapless-verified).
+**A player worth the name.** Gapless, with a full-size view you can pull up, the
+queue beside it, and the cover behind it. [Measured, not
+hoped for](#gapless-verified).
 
 **Controls where you already look.** Play, pause and skip from the GNOME top
 bar, from the lock screen, or with your keyboard's media keys — cover and title
@@ -170,19 +168,6 @@ These are properties of the platform, not a to-do list:
 
 Known bugs live in [the issue tracker](https://github.com/SoftARV/Slipmat/issues).
 
-## Gapless, verified
-
-Verified 2026-07-26 across four consecutive boundaries of a segued album:
-
-- Every transition happened **unprompted** — Slipmat sent nothing at any
-  boundary. MusicKit advanced a queue it already held, which is the only way the
-  transition can be seamless.
-- Wall-clock between transitions matched each track's length to the second, so
-  no track was cut short.
-- The PipeWire stream was **created once and never torn down**. One sink-input
-  survived all four boundaries, which means the decoder ran continuously.
-- No audible gap.
-
 ## How it works, honestly
 
 Apple Music full tracks are HLS + **Widevine** DRM. On Linux the only Widevine
@@ -217,6 +202,19 @@ Slipmat plays through Apple's own MusicKit player with Google's official CDM. It
 is a native front-end and a remote control for a licensed session. It does not
 strip DRM, does not use extracted CDMs, and does not download anything.
 
+## Gapless, verified
+
+Verified 2026-07-26 across four consecutive boundaries of a segued album:
+
+- Every transition happened **unprompted** — Slipmat sent nothing at any
+  boundary. MusicKit advanced a queue it already held, which is the only way the
+  transition can be seamless.
+- Wall-clock between transitions matched each track's length to the second, so
+  no track was cut short.
+- The PipeWire stream was **created once and never torn down**. One sink-input
+  survived all four boundaries, which means the decoder ran continuously.
+- No audible gap.
+
 ## Development
 
 ```bash
@@ -239,10 +237,10 @@ follows, and the traps that cost real debugging time.
 Slipmat is the third in a series of native GNOME apps: **Dockyard** (Docker) and
 **Pitwall** (GitHub Actions).
 
-Prior art worth crediting — both take the wrapper approach Slipmat is reacting
-to, and both worked out the castLabs Electron path first:
-[Sidra](https://github.com/wimpysworld/sidra) and
-[Cider](https://cider.sh).
+Prior art worth crediting: [Sidra](https://github.com/wimpysworld/sidra) and
+[Cider](https://cider.sh) worked out the castLabs Electron path first, which is
+what makes any of this possible on Linux. They take a different approach to the
+interface; Slipmat would not exist without the groundwork.
 
 ## Licence
 

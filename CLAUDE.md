@@ -18,11 +18,14 @@ The app should be indistinguishable from a first-party GNOME application. If a
 design decision would make it look like an Electron app or a generic Qt tool, it
 is the wrong decision.
 
-**Why this project exists.** Every Apple Music option on Linux — Cider, Sidra,
-the various wrappers — is `music.apple.com` in a costume. You get a web page's
-scroll behaviour, a web page's search field, and none of GNOME's taste. Slipmat
-is the first one where the *interface is actually native*; the web engine is
-present but never rendered.
+**Why this project exists.** Apple ships no Linux client, and the DRM makes a
+fully native one impossible — so the existing options load `music.apple.com` in
+an Electron window, which is a reasonable answer to a hard constraint. Slipmat
+takes a different one: draw the *interface natively* and keep the web engine
+present but never rendered. Cider and Sidra solved the DRM first and this
+depends on their groundwork; the difference is where the boundary sits, not who
+did it right. **Never write about them with an edge** — in the README, in
+commits, or in reply to the user.
 
 **The headline feature is playback itself** — gapless transport with correct,
 bidirectional **MPRIS** in the GNOME Shell applet and on the lock screen. Build
@@ -292,7 +295,7 @@ it **tiny and defensive**:
   ("Apple Music changed; Slipmat needs an update"). Never degrade silently into
   a dead player with a spinning UI.
 - Do not scrape the DOM. Only `MusicKit.getInstance()` and its documented events.
-  DOM scraping is what makes wrappers break monthly.
+  Scraped markup is what breaks when Apple redesigns; a documented event survives.
 
 ### 5. No `.unwrap()` / `.expect()` outside `main.rs` and tests
 
@@ -917,8 +920,8 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   for.
 - Bidirectional: `PlayPause` / `Next` / `Previous` / `Seek` / `SetPosition` /
   `Volume` from the Shell must reach the sidecar, and every sidecar event must
-  update the exported properties. Half-working MPRIS is the most common failure
-  of the wrappers — do not ship it.
+  update the exported properties. Half-working MPRIS is worse than none — the
+  shell shows controls that lie. Do not ship it.
 - Emit `Seeked` on discontinuous jumps, and keep `Position` honest between
   events with a 1s tick that is **removed when paused**.
 
