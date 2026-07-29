@@ -226,7 +226,7 @@ impl AppModel {
                 // covers are usually on disk already and the mosaic costs no
                 // download at all. Passed from here rather than derived inside,
                 // so the coupling to the grids is visible at the call site.
-                path: artwork::mosaic(covers, ART_SIZE, super::TILE_ART).await,
+                path: crate::components::mosaic::mosaic(covers, ART_SIZE, super::TILE_ART).await,
             }
         });
     }

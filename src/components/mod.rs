@@ -8,6 +8,7 @@ pub mod artwork;
 pub mod cover;
 pub mod detail_page;
 pub mod grid_item;
+pub mod mosaic;
 pub mod now_playing;
 pub mod player_view;
 pub mod queue_view;
