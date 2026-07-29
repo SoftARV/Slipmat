@@ -1493,29 +1493,30 @@ impl Component for AppModel {
         };
         let primary_menu = gtk::gio::Menu::new();
         {
+            // **First, in its own section.** It is the one item here that is
+            // not about running the app, and under Preferences and About it
+            // read as the least of them — the only thing in this menu that
+            // asks rather than does, buried under three that do.
+            //
+            // A `MenuItem` rather than `append`, because that is the only form
+            // that carries an icon, and the heart is what makes this a
+            // thank-you rather than one more dialog.
+            //
+            // `emote-love-symbolic`, checked against the theme rather than
+            // assumed: Adwaita has no `emblem-favorite-symbolic`, which is the
+            // obvious guess, and `icon()` would have quietly put a music note
+            // here instead.
+            let support = gtk::gio::Menu::new();
+            let item = gtk::gio::MenuItem::new(Some("_Buy Me a Coffee"), Some("win.support"));
+            item.set_icon(&gtk::gio::ThemedIcon::new(icon("emote-love-symbolic")));
+            support.append_item(&item);
+            primary_menu.append_section(None, &support);
+
             let section = gtk::gio::Menu::new();
             section.append(Some("_Preferences"), Some("win.preferences"));
             section.append(Some("_Keyboard Shortcuts"), Some("win.shortcuts"));
             section.append(Some("_About Slipmat"), Some("win.about"));
             primary_menu.append_section(None, &section);
-
-            // Its own section, and above the account one. It is neither app
-            // furniture nor something that touches your music, and a link that
-            // leaves the app entirely should not sit in the same group as the
-            // dialogs that do not.
-            //
-            // A `MenuItem` rather than `append`, because that is the only form
-            // that carries an icon — and the heart is the whole reason this
-            // reads as a thank-you rather than another dialog.
-            let support = gtk::gio::Menu::new();
-            //
-            // `emote-love-symbolic`, checked against the theme rather than
-            // assumed: Adwaita has no `emblem-favorite-symbolic`, the obvious
-            // guess, and `icon()` would have quietly put a music note here.
-            let item = gtk::gio::MenuItem::new(Some("_Buy Me a Coffee"), Some("win.support"));
-            item.set_icon(&gtk::gio::ThemedIcon::new(icon("emote-love-symbolic")));
-            support.append_item(&item);
-            primary_menu.append_section(None, &support);
 
             // Its own section: signing out is an account action, not app
             // furniture, and it should not sit next to About.
