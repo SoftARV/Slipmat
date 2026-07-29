@@ -102,6 +102,7 @@ pub(super) fn matches(track: &Track, needle: &str) -> bool {
 }
 
 impl AppModel {
+    /// The query for whichever scope is showing.
     pub(super) fn query(&self) -> &str {
         match self.scope() {
             SearchScope::Library => &self.library_query,
@@ -110,6 +111,9 @@ impl AppModel {
     }
 
     /// What the results list shows, in order.
+    ///
+    /// Filtering reads `all_tracks`, never the factory, so clearing a search
+    /// restores everything rather than whatever survived the last narrowing.
     pub(super) fn visible_entries(&self) -> Vec<Entry> {
         match self.scope() {
             SearchScope::Library => {

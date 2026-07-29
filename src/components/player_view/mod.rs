@@ -76,39 +76,30 @@ const SHEET_MIN_H: i32 = 260;
 
 /// Tie the drawer's height to the window's, at [`WINDOW_FRACTION`].
 ///
-/// `AdwBottomSheet` sizes the sheet to its child's **natural height** and
-/// offers no maximum, minimum or fraction of its own, so a drawer that should
-/// fill most of the window has to be told how tall that is. There is nothing
-/// to bind to; the number has to be computed and pushed down.
+/// `AdwBottomSheet` sizes the sheet to its child's **natural height** and offers
+/// no maximum or fraction of its own, so the number has to be computed and
+/// pushed down.
 ///
-/// The basis is the toplevel `GdkSurface`'s height, which is the one size that
-/// notifies on *every* resize — including tiling and maximising, which
-/// `GtkWindow:default-height` deliberately does not track (it stores the size
-/// to restore *to*, so it holds still exactly when the window is snapped).
+/// The basis is the toplevel `GdkSurface`'s height, for two reasons. It is the
+/// one size that notifies on *every* resize, including tiling and maximising —
+/// `GtkWindow:default-height` deliberately does not track those, because it
+/// stores the size to restore *to*. And reading the surface keeps this acyclic:
+/// our request changes the sheet's height, and the sheet never changes the
+/// surface.
 ///
-/// Reading the surface rather than the sheet's own allocation also keeps this
-/// acyclic: our request changes how tall the sheet is, and how tall the sheet
-/// is never changes the surface. Measuring the sheet would be a loop.
-///
-/// While the drawer is closed this falls back to [`SHEET_MIN_H`] — **not to
-/// `-1`**. A height request is a minimum, and one that tracked the current
-/// height would fight the user as they drag the window shorter, so it does
-/// have to come off. But `-1` does not restore the floor the `view!` declared
-/// with `set_size_request`; it *clears* it, because they are the same
-/// property. That left the `AdwBreakpointBin` with no minimum height at all,
-/// which libadwaita warns about by name:
+/// While closed this falls back to [`SHEET_MIN_H`] — **not to `-1`**. The
+/// request has to come off, or it fights the user dragging the window shorter.
+/// But `-1` does not restore the floor `view!` declared with `set_size_request`;
+/// it *clears* it, because they are the same property, leaving the
+/// `AdwBreakpointBin` with no minimum height and libadwaita warning by name:
 ///
 /// ```text
 /// AdwBreakpointBin does not have a minimum height, set the 'height-request'
 /// property to specify it
 /// ```
 ///
-/// A breakpoint container with no floor is being asked to decide which
-/// breakpoint applies at a height it never agreed to, which is not a state to
-/// leave a resize in.
-///
-/// `Rc` rather than `Arc` because every one of these callbacks is a GTK signal
-/// handler: they all run on the main thread, and none of them crosses one.
+/// `Rc` rather than `Arc`: these are GTK signal handlers, all on the main
+/// thread.
 pub fn fill_window(
     window: &adw::ApplicationWindow,
     sheet: &adw::BottomSheet,
