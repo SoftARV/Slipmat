@@ -127,6 +127,27 @@ app.commandLine.appendSwitch(
   'MediaSessionService,HardwareMediaKeyHandling',
 )
 
+// **A ceiling on Chromium's HTTP cache.** Without one it sizes itself from
+// free disk and grows without limit: measured at 566 MB after about twelve
+// hours of listening, and nothing in the app would ever have said so.
+//
+// Almost all of it is dead weight rather than a trade-off. Measured by host:
+//
+//     aod-ssl.itunes.apple.com   118 entries   371.5 MB
+//     mvod.itunes.apple.com      132 entries   187.2 MB
+//     everything else            432 entries     7.8 MB
+//
+// **98.7% is DRM-encrypted HLS audio, and Linux Widevine has no persistent
+// licences** — the same platform limit that makes offline playback impossible.
+// So every cached audio byte is undecryptable the moment the session ends. The
+// genuinely reusable part — the API, the page, artwork — is under 8 MB, and
+// Slipmat caches artwork itself anyway.
+//
+// 200 MB leaves that working set enormous headroom and still bounds the total.
+// The cost is re-fetching audio you replay *within* one session, which is
+// bandwidth on an app that already requires a live connection for every track.
+app.commandLine.appendSwitch('disk-cache-size', String(200 * 1024 * 1024))
+
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
@@ -287,6 +308,12 @@ function conceal() {
     // Truly invisible: nothing in the overview, nothing in the dash.
     win.hide()
     log('window mode: hidden (not mapped)')
+    // Asked of Electron rather than inferred: the switch does not appear in the
+    // main process's argv (`appendSwitch` sets Chromium's internal command
+    // line), and the child processes that *do* carry it are transient enough
+    // that reading /proc races them. An empty value here means the cap is not
+    // in force and the cache is unbounded again.
+    log('disk cache cap:', app.commandLine.getSwitchValue('disk-cache-size') || '(none)')
     return
   }
 
