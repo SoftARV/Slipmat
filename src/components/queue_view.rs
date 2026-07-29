@@ -35,7 +35,14 @@ pub struct QueueRowWidgets {
 /// One queue entry, flattened from the sidecar's view of MusicKit's queue.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueueEntry {
-    /// MusicKit's id for this item — the only stable handle on a row.
+    /// Where this row sits in the queue the projection was built from.
+    ///
+    /// **An id alone cannot identify a row.** A queue may legitimately hold the
+    /// same track twice — Play Next and Add to Queue are exactly what put it
+    /// there — so resolving a click by id found the *first* copy and acted on
+    /// that one instead (#88).
+    pub at: usize,
+    /// MusicKit's id for this item. Not unique within a queue; see `at`.
     pub id: String,
     pub title: String,
     pub artist: String,
@@ -168,9 +175,9 @@ impl RelmListItem for QueueItem {
             widgets.remove.disconnect(old);
         }
         let sender = self.sender.clone();
-        let id = self.entry.id.clone();
+        let (at, id) = (self.entry.at, self.entry.id.clone());
         widgets.handler = Some(widgets.remove.connect_clicked(move |_| {
-            sender.emit(QueueViewInput::Remove(id.clone()));
+            sender.emit(QueueViewInput::Remove { at, id: id.clone() });
         }));
     }
 
@@ -226,7 +233,10 @@ pub enum QueueViewInput {
     /// A row was activated. Carries a position into the visible model, which is
     /// resolved to an id immediately.
     Activated(u32),
-    Remove(String),
+    Remove {
+        at: usize,
+        id: String,
+    },
     /// Shuffle and repeat as the player currently has them.
     SetModes {
         shuffle: bool,
@@ -242,10 +252,17 @@ pub enum QueueViewInput {
 
 #[derive(Debug)]
 pub enum QueueViewOutput {
-    /// The id of the track to act on. `app.rs` resolves it against MusicKit's
-    /// live queue.
-    Jump(String),
-    Remove(String),
+    /// Which row to act on: where it sat, and what it was. `app.rs` resolves
+    /// the pair against MusicKit's live queue — the position says which copy of
+    /// a duplicated track, the id says whether the queue has moved since.
+    Jump {
+        at: usize,
+        id: String,
+    },
+    Remove {
+        at: usize,
+        id: String,
+    },
     /// Empty the queue and stop.
     Clear,
     /// Shuffle and repeat live here because they are properties of the queue,
@@ -451,14 +468,19 @@ impl Component for QueueView {
                 }
             }
             QueueViewInput::Activated(position) => {
-                // Straight from position to id, before anything can change.
+                // Both halves, before anything can change: the position says
+                // *which* row, and the id lets the app check the queue has not
+                // moved underneath it.
                 if let Some(item) = self.list.get_visible(position) {
-                    let id = item.borrow().entry.id.clone();
-                    let _ = sender.output(QueueViewOutput::Jump(id));
+                    let entry = &item.borrow().entry;
+                    let _ = sender.output(QueueViewOutput::Jump {
+                        at: entry.at,
+                        id: entry.id.clone(),
+                    });
                 }
             }
-            QueueViewInput::Remove(id) => {
-                let _ = sender.output(QueueViewOutput::Remove(id));
+            QueueViewInput::Remove { at, id } => {
+                let _ = sender.output(QueueViewOutput::Remove { at, id });
             }
         }
         self.update_view(widgets, sender);

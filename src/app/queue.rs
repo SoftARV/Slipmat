@@ -392,10 +392,31 @@ impl AppModel {
     /// order and MusicKit's queue can drift — and a stale position does not
     /// fail loudly, it removes or plays the wrong track, or gets rejected with
     /// INVALID_ARGUMENTS once it runs off the end.
+    /// Where a clicked row is in MusicKit's queue, from where it *was* and what
+    /// it was. See [`index_at`].
+    pub(super) fn queue_index_at(&self, at: usize, id: &str) -> Option<usize> {
+        index_at(&self.player.queue, at, id)
+    }
+
     pub(super) fn queue_index_of(&self, id: &str) -> Option<usize> {
-        self.player.queue.iter().position(|item| {
-            item.catalog_id.as_deref() == Some(id) || item.id.as_deref() == Some(id)
-        })
+        index_at(&self.player.queue, usize::MAX, id)
+    }
+}
+
+/// Where a clicked row is, from where it sat and what it was.
+///
+/// **The position is the key, the id is the check.** A queue may hold the same
+/// track twice — Play Next and Add to Queue insert into a queue that already
+/// has it — so resolving by id alone found the first copy and acted on that
+/// instead (#88). If the queue moved since the click the position is wrong, and
+/// searching by id is the better wrong answer: it is what this did before.
+fn index_at(queue: &[crate::player::protocol::Item], at: usize, id: &str) -> Option<usize> {
+    let is_it = |item: &crate::player::protocol::Item| {
+        item.catalog_id.as_deref() == Some(id) || item.id.as_deref() == Some(id)
+    };
+    match queue.get(at) {
+        Some(item) if is_it(item) => Some(at),
+        _ => queue.iter().position(is_it),
     }
 }
 
@@ -403,6 +424,42 @@ impl AppModel {
 mod tests {
     use super::*;
     use crate::music::types::{Album, Artist, Track, TrackId};
+
+    /// A queue holding `ids` in order, duplicates included.
+    fn queue(ids: &[&str]) -> Vec<crate::player::protocol::Item> {
+        ids.iter()
+            .map(|id| crate::player::protocol::Item {
+                catalog_id: Some((*id).to_owned()),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_duplicated_track_resolves_to_the_copy_that_was_clicked() {
+        // The bug: `a` appears twice, and resolving by id alone always found
+        // index 0 — so removing the second copy removed the first (#88).
+        let q = queue(&["a", "b", "a", "c"]);
+        assert_eq!(index_at(&q, 2, "a"), Some(2), "clicked the second");
+        assert_eq!(index_at(&q, 0, "a"), Some(0), "clicked the first");
+        assert_eq!(index_at(&q, usize::MAX, "a"), Some(0), "id alone finds one");
+    }
+
+    #[test]
+    fn a_moved_queue_falls_back_to_searching_by_id() {
+        // The drift the id is there to catch: the click said position 2, but
+        // the queue shifted and `a` is at 1 now. Searching is the better wrong
+        // answer, and right whenever the track is not duplicated.
+        let q = queue(&["b", "a", "c"]);
+        assert_eq!(index_at(&q, 2, "a"), Some(1));
+    }
+
+    #[test]
+    fn a_position_past_the_end_does_not_panic() {
+        let q = queue(&["a"]);
+        assert_eq!(index_at(&q, 99, "a"), Some(0));
+        assert_eq!(index_at(&q, 99, "gone"), None);
+    }
 
     /// A song row, as the results list holds it.
     fn song(title: &str, catalog: Option<&str>) -> Entry {

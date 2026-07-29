@@ -538,8 +538,14 @@ pub enum AppMsg {
     /// Act on a track in MusicKit's queue, by id. The position is resolved
     /// against the live queue at send time — our row order can drift from
     /// MusicKit's, and sending a stale position got INVALID_ARGUMENTS.
-    JumpTo(String),
-    RemoveFromQueue(String),
+    JumpTo {
+        at: usize,
+        id: String,
+    },
+    RemoveFromQueue {
+        at: usize,
+        id: String,
+    },
 }
 
 #[derive(Debug)]
@@ -1384,8 +1390,8 @@ impl Component for AppModel {
         let queue_view = QueueView::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
-                QueueViewOutput::Jump(id) => AppMsg::JumpTo(id),
-                QueueViewOutput::Remove(id) => AppMsg::RemoveFromQueue(id),
+                QueueViewOutput::Jump { at, id } => AppMsg::JumpTo { at, id },
+                QueueViewOutput::Remove { at, id } => AppMsg::RemoveFromQueue { at, id },
                 QueueViewOutput::Clear => AppMsg::ClearQueue,
                 QueueViewOutput::Hide => AppMsg::ShowQueuePane(false),
                 QueueViewOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
@@ -2064,7 +2070,7 @@ impl AppModel {
                 crate::style::set_backdrop(None);
                 crate::style::set_backdrop(None);
             }
-            AppMsg::JumpTo(id) => match self.queue_index_of(&id) {
+            AppMsg::JumpTo { at, id } => match self.queue_index_at(at, &id) {
                 Some(index) => {
                     self.send(Command::ChangeToIndex { index });
                     // Clicking a track in the queue is a request to *play* it.
@@ -2078,7 +2084,7 @@ impl AppModel {
                 }
                 None => self.toast("That track is no longer in the queue"),
             },
-            AppMsg::RemoveFromQueue(id) => match self.queue_index_of(&id) {
+            AppMsg::RemoveFromQueue { at, id } => match self.queue_index_at(at, &id) {
                 Some(index) => self.send(Command::RemoveFromQueue { index }),
                 None => self.toast("That track is no longer in the queue"),
             },
