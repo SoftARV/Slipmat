@@ -27,8 +27,13 @@ src/components/now_playing.rs       1020  # one component, and the one whose see
                                           # file shrinks is the ratchet working.
 src/music/client.rs                  980  # one endpoint per method against one API. Long because
                                           # Apple is, and each method is short.
-src/music/types.rs                   860  # the JSON boundary (rule 9). Wire types and our types
+src/music/types.rs                   900  # the JSON boundary (rule 9). Wire types and our types
                                           # side by side is the point — they are read together.
+                                          # 860 -> 900 for #84: `Serialize`/`Deserialize` on the five
+                                          # types the library cache persists, and two tests — that a
+                                          # round trip keeps an artwork's cache key (or every cover
+                                          # re-downloads) and that `Track`'s new `PartialEq` sees a
+                                          # star change (or a refresh skips the rebuild it needed).
 src/components/queue_view.rs         670  # the list, its rows, and now shuffle and repeat in the
                                           # header — they act on the queue, so this is where they
                                           # belong. Most of the growth is the comment explaining
@@ -38,8 +43,11 @@ src/app/view.rs                      680  # which section is showing, and how ea
                                           # The sort keys differ per section because the *data*
                                           # does — measured, and the measurement is in the
                                           # comments so nobody re-guesses it.
-src/app/library.rs                   760  # four collections and the catalog search, all landing in
+src/app/library.rs                   800  # four collections and the catalog search, all landing in
                                           # the same list.
+                                          # 760 -> 800 for #84: seeding those collections from the disk
+                                          # cache and writing them back. It owns loading them, so it
+                                          # owns where they are loaded *from*.
 src/player/protocol.rs               740  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.

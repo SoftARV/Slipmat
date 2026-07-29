@@ -3,6 +3,7 @@
 
 mod app;
 mod components;
+mod library_cache;
 mod mpris;
 mod music;
 mod notify;

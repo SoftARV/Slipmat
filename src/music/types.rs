@@ -4,10 +4,11 @@
 //! Our types. Apple's JSON stops here (CLAUDE.md rule 9) — "parse, don't
 //! validate". `components/` sees only what's in this file.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// An Apple Music catalog id, e.g. `"1440857781"`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct TrackId(pub String);
 
 impl std::fmt::Display for TrackId {
@@ -16,7 +17,9 @@ impl std::fmt::Display for TrackId {
     }
 }
 
-#[derive(Debug, Clone)]
+// `PartialEq` is what lets a background refresh notice it changed nothing, and
+// skip a rebuild that costs ~500ms of cover decoding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     /// When this was added to the library, ISO 8601, or empty. Sorts
     /// lexicographically, which for ISO 8601 is also chronologically — the one
@@ -83,7 +86,8 @@ pub fn format_duration(ms: u64) -> String {
 /// `https://is1.mzstatic.com/image/thumb/…/{w}x{h}bb.jpg`. You substitute the
 /// size you want, which is why we can ask for exactly the pixels the widget
 /// needs instead of downscaling a 3000px jpeg.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Artwork {
     template: String,
 }
@@ -122,7 +126,7 @@ impl Artwork {
 }
 
 /// An album, as a search result or a page header.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Album {
     pub id: String,
     /// When this was added to the library, ISO 8601, or empty. Sorts
@@ -142,7 +146,7 @@ pub struct Album {
 }
 
 /// A playlist, as a grid tile or a page header.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: String,
     /// ISO 8601, or empty. See `AlbumAttributes::date_added`.
@@ -169,7 +173,7 @@ pub struct Playlist {
 }
 
 /// An artist, as a search result or a page header.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Artist {
     pub id: String,
     pub name: String,
@@ -577,6 +581,46 @@ impl From<Resource<SongAttributes>> for Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artwork_survives_a_round_trip_with_its_cache_key_intact() {
+        // The cache key is derived from the template, and it names the file on
+        // disk. If a round trip through the library cache perturbed the
+        // template, every cover in `~/.cache/slipmat/artwork` would miss and
+        // opening from cache would re-download the lot — the opposite of the
+        // point.
+        let art = Artwork::new("https://is1.mzstatic.com/image/thumb/x/{w}x{h}{c}.{f}");
+        let json = serde_json::to_string(&art).unwrap();
+        // `transparent`, so it is the URL itself and not `{"template":…}`.
+        assert!(json.starts_with('"'), "{json}");
+        let back: Artwork = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cache_key(), art.cache_key());
+        assert_eq!(back.url(96), art.url(96));
+    }
+
+    #[test]
+    fn a_star_makes_two_tracks_unequal() {
+        // `Track: PartialEq` is what decides whether a background refresh
+        // rebuilds. If it ignored a field Apple can change, a library that
+        // gained a favourite would keep showing the old row until reload.
+        let track = |favorite| Track {
+            date_added: "2024-01-01T00:00:00Z".into(),
+            year: "2024".into(),
+            favorite,
+            in_library: true,
+            library_id: None,
+            id: TrackId("i.a".into()),
+            catalog_id: Some("1".into()),
+            title: "Bloom".into(),
+            artist: "Radiohead".into(),
+            album: "The King of Limbs".into(),
+            duration_ms: 1,
+            track_number: 1,
+            artwork: None,
+        };
+        assert_eq!(track(true), track(true));
+        assert_ne!(track(true), track(false));
+    }
 
     #[test]
     fn an_album_keeps_only_the_year_from_a_release_date() {

@@ -38,9 +38,14 @@ impl AppModel {
     /// answer is how "Loading your library" ended up covering the Apple Music
     /// pane.
     pub(super) fn showing_library(&self) -> bool {
-        if !matches!(self.stage, Stage::Ready) {
-            return false;
-        }
+        // Deliberately **not** gated on `Stage::Ready`. Content restored from
+        // the cache is real content, and the sidecar being half-booted is a
+        // fact about the transport, not about whether there is a library. That
+        // gate was worth ~1.5s of spinner over a list we already had on disk.
+        //
+        // What is still gated is `controls_live`: the sidebar, search and sort
+        // stay insensitive until there is a session to ask, so the list can be
+        // read and scrolled before anything can be fetched with no token.
         match self.view {
             View::Albums => !self.albums.is_empty() || self.loading_albums,
             View::Artists => !self.artists.is_empty() || self.loading_artists,

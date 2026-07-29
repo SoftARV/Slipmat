@@ -1589,6 +1589,11 @@ impl Component for AppModel {
         // Rows read playability from here, so seed it before any are built.
         *model.dead_rows.borrow_mut() = model.dead_ids.clone();
 
+        // Open on last time's library rather than on a spinner. The refresh
+        // still runs the moment the sidecar is up; it lands quietly, or — far
+        // more often — finds nothing changed and does not even rebuild.
+        model.seed_from_cache();
+
         start_sidecar(&sender);
 
         ComponentParts { model, widgets }
@@ -2293,10 +2298,14 @@ impl AppModel {
                 self.loading_albums = false;
                 match result {
                     Ok(albums) => {
-                        tracing::info!(albums = albums.len(), "library albums loaded");
+                        let changed = albums != self.albums;
+                        tracing::info!(albums = albums.len(), changed, "library albums loaded");
                         self.albums = albums;
-                        self.built_albums = None;
-                        self.rebuild_albums();
+                        if changed {
+                            self.built_albums = None;
+                            self.rebuild_albums();
+                            self.save_cache();
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(%err, "library albums failed");
@@ -2308,10 +2317,14 @@ impl AppModel {
                 self.loading_artists = false;
                 match result {
                     Ok(artists) => {
-                        tracing::info!(artists = artists.len(), "library artists loaded");
+                        let changed = artists != self.artists;
+                        tracing::info!(artists = artists.len(), changed, "library artists loaded");
                         self.artists = artists;
-                        self.built_artists = None;
-                        self.rebuild_artists();
+                        if changed {
+                            self.built_artists = None;
+                            self.rebuild_artists();
+                            self.save_cache();
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(%err, "library artists failed");
@@ -2323,10 +2336,18 @@ impl AppModel {
                 self.loading_playlists = false;
                 match result {
                     Ok(playlists) => {
-                        tracing::info!(playlists = playlists.len(), "library playlists loaded");
+                        let changed = playlists != self.playlists;
+                        tracing::info!(
+                            playlists = playlists.len(),
+                            changed,
+                            "library playlists loaded"
+                        );
                         self.playlists = playlists;
-                        self.built_playlists = None;
-                        self.rebuild_playlists();
+                        if changed {
+                            self.built_playlists = None;
+                            self.rebuild_playlists();
+                            self.save_cache();
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(%err, "library playlists failed");
@@ -2455,10 +2476,18 @@ impl AppModel {
             CommandMsg::Library(Ok(tracks)) => {
                 self.loading_library = false;
                 let unplayable = tracks.iter().filter(|t| !t.playable()).count();
-                tracing::info!(tracks = tracks.len(), unplayable, "library loaded");
+                // A refresh over a cached library usually finds nothing new,
+                // and a rebuild it did not need costs ~500ms of cover decoding
+                // *and* resets the scroll under whoever is reading. Equality is
+                // the whole test: same tracks, same order, same fields.
+                let changed = tracks != self.all_tracks;
+                tracing::info!(tracks = tracks.len(), unplayable, changed, "library loaded");
                 self.all_tracks = tracks;
-                self.built_rows = None;
-                self.rebuild_rows();
+                if changed {
+                    self.built_rows = None;
+                    self.rebuild_rows();
+                    self.save_cache();
+                }
             }
             CommandMsg::Catalog {
                 generation,
@@ -2647,6 +2676,7 @@ impl AppModel {
         self.last_queue = None;
         self.pending_start = None;
         crate::session::clear();
+        crate::library_cache::clear();
         crate::style::set_backdrop(None);
         self.push_snapshot();
     }

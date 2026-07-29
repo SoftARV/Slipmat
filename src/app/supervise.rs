@@ -10,7 +10,7 @@
 
 use relm4::ComponentSender;
 
-use super::{AppModel, CommandMsg, Stage, View};
+use super::{AppModel, CommandMsg, Stage};
 use crate::player::protocol::{Command, Event};
 use crate::player::{Incoming, sidecar};
 
@@ -276,15 +276,24 @@ impl AppModel {
         // track that was actually clicked.
         self.verify_start();
 
-        // Load the library the moment we're able to, rather than making the
-        // user ask. Guarded on all three conditions so a later event — a
-        // reconnect, a token refresh — can't kick off a second load over the
-        // top of the first.
-        if matches!(self.stage, Stage::Ready) && !self.loading_library {
-            // `load_library` owns the rest of the decision — whether it has
-            // already been tried, and whether there is a user token to try
-            // with. Duplicating those here is how the two drifted apart.
+        // Refresh the whole library the moment we're able to, rather than
+        // making the user ask.
+        //
+        // All four, not just the songs. It used to be songs here and each grid
+        // on its first visit, which made sense while a fetch was the only way
+        // to fill a section — the wait was paid where it was asked for. With
+        // the disk cache the sections are already on screen, so a section left
+        // unrefreshed is one showing last launch's answer until you press
+        // reload. The cost lands behind content instead of in front of it.
+        //
+        // Each loader owns the rest of the decision — whether it has already
+        // been tried, and whether there is a user token to try with.
+        // Duplicating those here is how the two drifted apart.
+        if matches!(self.stage, Stage::Ready) {
             self.load_library(sender);
+            self.load_albums(sender);
+            self.load_artists(sender);
+            self.load_playlists(sender);
         }
 
         // Put back what was playing when the app last closed. Gated the same
@@ -293,23 +302,6 @@ impl AppModel {
         if matches!(self.stage, Stage::Ready) && !self.restored && self.tokens.is_some() {
             self.restored = true;
             self.restore_session();
-        }
-
-        // The grids load on first visit rather than at startup — but if the app
-        // opened straight into one of them, this *is* the first visit, and the
-        // `SetView` that would normally trigger it never fires (the view was
-        // already correct before the tokens arrived).
-        //
-        // Gated on `Ready`, which it was not: signed out, this fired on every
-        // event, and `refreshTokens` arrives once a second. It was a 403 per
-        // second against Apple for as long as the window was open.
-        if matches!(self.stage, Stage::Ready) {
-            match self.view {
-                View::Albums => self.load_albums(sender),
-                View::Artists => self.load_artists(sender),
-                View::Playlists => self.load_playlists(sender),
-                _ => {}
-            }
         }
     }
 }

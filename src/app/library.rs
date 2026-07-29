@@ -321,11 +321,13 @@ impl AppModel {
 
     /// Load the library's albums, once. Revisiting the section is instant.
     pub(super) fn load_albums(&mut self, sender: &ComponentSender<Self>) {
-        // `tried` as well as "is it empty": a load that *failed* leaves the
-        // collection empty, and without this it was re-attempted on every
-        // sidecar event forever. Cleared by the section's reload button, which
-        // is how a failure is meant to be retried.
-        if self.loading_albums || self.tried_albums || !self.albums.is_empty() {
+        // `tried` alone, and once per run. It used to be "or the collection is
+        // already full", which said the same thing while the collection could
+        // only be filled by a fetch — but it is now seeded from the disk cache
+        // before the sidecar is even up, and that reading would refuse to
+        // refresh it ever. Cleared by the section's reload button, which is how
+        // a failure or a stale list is meant to be retried.
+        if self.loading_albums || self.tried_albums {
             return;
         }
         self.tried_albums = true;
@@ -343,11 +345,13 @@ impl AppModel {
     }
 
     pub(super) fn load_artists(&mut self, sender: &ComponentSender<Self>) {
-        // `tried` as well as "is it empty": a load that *failed* leaves the
-        // collection empty, and without this it was re-attempted on every
-        // sidecar event forever. Cleared by the section's reload button, which
-        // is how a failure is meant to be retried.
-        if self.loading_artists || self.tried_artists || !self.artists.is_empty() {
+        // `tried` alone, and once per run. It used to be "or the collection is
+        // already full", which said the same thing while the collection could
+        // only be filled by a fetch — but it is now seeded from the disk cache
+        // before the sidecar is even up, and that reading would refuse to
+        // refresh it ever. Cleared by the section's reload button, which is how
+        // a failure or a stale list is meant to be retried.
+        if self.loading_artists || self.tried_artists {
             return;
         }
         self.tried_artists = true;
@@ -413,11 +417,13 @@ impl AppModel {
 
     /// Load the library's playlists, once.
     pub(super) fn load_playlists(&mut self, sender: &ComponentSender<Self>) {
-        // `tried` as well as "is it empty": a load that *failed* leaves the
-        // collection empty, and without this it was re-attempted on every
-        // sidecar event forever. Cleared by the section's reload button, which
-        // is how a failure is meant to be retried.
-        if self.loading_playlists || self.tried_playlists || !self.playlists.is_empty() {
+        // `tried` alone, and once per run. It used to be "or the collection is
+        // already full", which said the same thing while the collection could
+        // only be filled by a fetch — but it is now seeded from the disk cache
+        // before the sidecar is even up, and that reading would refuse to
+        // refresh it ever. Cleared by the section's reload button, which is how
+        // a failure or a stale list is meant to be retried.
+        if self.loading_playlists || self.tried_playlists {
             return;
         }
         self.tried_playlists = true;
@@ -526,6 +532,52 @@ impl AppModel {
                 GridItem::new(tile, registry.clone(), self.tile_art_request.clone())
             })
             .collect()
+    }
+
+    /// Fill the four collections from disk, before the sidecar is even up.
+    ///
+    /// Called once, from `init`. Nothing here decides *not* to fetch — the
+    /// loaders' `!is_empty()` guards do that on their own, which is the same
+    /// rule that makes revisiting a section instant.
+    pub(super) fn seed_from_cache(&mut self) {
+        let cached = crate::library_cache::load();
+        if cached.is_empty() {
+            return;
+        }
+        tracing::info!(
+            songs = cached.songs.len(),
+            albums = cached.albums.len(),
+            artists = cached.artists.len(),
+            playlists = cached.playlists.len(),
+            "opened on the cached library"
+        );
+        self.all_tracks = cached.songs;
+        self.albums = cached.albums;
+        self.artists = cached.artists;
+        self.playlists = cached.playlists;
+        // Only the section being opened into: the other three cost ~500ms each
+        // in cover decoding, and `SetView` builds them on the way in. Doing all
+        // four here would spend that before the window is even mapped.
+        match self.view {
+            View::Albums => self.rebuild_albums(),
+            View::Artists => self.rebuild_artists(),
+            View::Playlists => self.rebuild_playlists(),
+            View::Songs | View::Search => self.rebuild_rows(),
+        }
+    }
+
+    /// Write all four collections out, from whichever one of them changed.
+    ///
+    /// Called only when something *did* change: a refresh that found the same
+    /// library is a refresh whose result is already the file on disk, and four
+    /// of those per launch is 1.7 MB of writing to say nothing.
+    pub(super) fn save_cache(&self) {
+        crate::library_cache::save(
+            &self.all_tracks,
+            &self.albums,
+            &self.artists,
+            &self.playlists,
+        );
     }
 
     /// An API client for the current tokens, or `None` if we have none yet.
