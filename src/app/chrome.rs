@@ -178,9 +178,7 @@ pub(super) fn register_actions(
     app.set_accelerators_for_action::<ToggleQueueAction>(&["<Control>u"]);
     // F9 is the GNOME convention for showing and hiding a sidebar.
     app.set_accelerators_for_action::<ToggleSidebarAction>(&["F9"]);
-    // Both, as every GNOME app does: `Ctrl`+`F` is the one people know and
-    // `Ctrl`+`L` is what a list-shaped app answers to.
-    app.set_accelerators_for_action::<FocusSearchAction>(&["<Control>f", "<Control>l"]);
+    app.set_accelerators_for_action::<FocusSearchAction>(&["<Control>f"]);
 
     group.register_for_widget(window);
 }
