@@ -509,7 +509,10 @@ pub enum AppMsg {
     LoadMoreCatalog,
     /// Re-fetch one library section. There is no section-less "reload": each
     /// is fetched separately, so a single one could not know which you meant.
-    ReloadSection(View),
+    /// Fetch the section on screen again. Carries no payload on purpose: the
+    /// only sender is a header button, which cannot read the model from inside
+    /// its click handler, and the reducer already knows which view is showing.
+    ReloadCurrentSection,
     ShowPreferences,
     ShowShortcuts,
     ShowAbout,
@@ -838,14 +841,17 @@ impl Component for AppModel {
                                                             set_xalign: 0.0,
                                                         },
 
-                                                        // The library loads on
-                                                        // startup whichever
-                                                        // section you are in.
-                                                        // Say so here, next to
+                                                        // Every section refreshes
+                                                        // at startup, so this
+                                                        // says which one is
+                                                        // still going — next to
                                                         // the thing that is
-                                                        // loading, rather than
-                                                        // across the whole
-                                                        // window.
+                                                        // loading rather than
+                                                        // across the window. The
+                                                        // reload *control* is in
+                                                        // the header, where it
+                                                        // is reachable with the
+                                                        // sidebar shut.
                                                         adw::Spinner {
                                                             set_size_request: (16, 16),
                                                             set_valign: gtk::Align::Center,
@@ -853,35 +859,6 @@ impl Component for AppModel {
                                                             set_visible: model.loading_library,
                                                         },
 
-                                                        // Per section, because
-                                                        // each is fetched
-                                                        // separately and a
-                                                        // single "reload"
-                                                        // cannot know which one
-                                                        // you meant. Swaps with
-                                                        // the spinner rather
-                                                        // than sitting beside
-                                                        // it.
-                                                        gtk::Button {
-                                                            set_icon_name: "view-refresh-symbolic",
-                                                            set_tooltip_text: Some("Reload"),
-                                                            add_css_class: "flat",
-                                                            add_css_class: "circular",
-                                                            // Exactly the
-                                                            // spinner's 16px,
-                                                            // in the spinner's
-                                                            // place: the row
-                                                            // must not change
-                                                            // height depending
-                                                            // on whether it is
-                                                            // loading.
-                                                            add_css_class: "row-action",
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: !(model.loading_library),
-                                                            connect_clicked => AppMsg::ReloadSection(View::Songs),
-                                                        },
                                                     },
                                                 },
 
@@ -907,35 +884,6 @@ impl Component for AppModel {
                                                             set_visible: model.loading_albums,
                                                         },
 
-                                                        // Per section, because
-                                                        // each is fetched
-                                                        // separately and a
-                                                        // single "reload"
-                                                        // cannot know which one
-                                                        // you meant. Swaps with
-                                                        // the spinner rather
-                                                        // than sitting beside
-                                                        // it.
-                                                        gtk::Button {
-                                                            set_icon_name: "view-refresh-symbolic",
-                                                            set_tooltip_text: Some("Reload"),
-                                                            add_css_class: "flat",
-                                                            add_css_class: "circular",
-                                                            // Exactly the
-                                                            // spinner's 16px,
-                                                            // in the spinner's
-                                                            // place: the row
-                                                            // must not change
-                                                            // height depending
-                                                            // on whether it is
-                                                            // loading.
-                                                            add_css_class: "row-action",
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: !(model.loading_albums),
-                                                            connect_clicked => AppMsg::ReloadSection(View::Albums),
-                                                        },
                                                     },
                                                 },
 
@@ -961,35 +909,6 @@ impl Component for AppModel {
                                                             set_visible: model.loading_artists,
                                                         },
 
-                                                        // Per section, because
-                                                        // each is fetched
-                                                        // separately and a
-                                                        // single "reload"
-                                                        // cannot know which one
-                                                        // you meant. Swaps with
-                                                        // the spinner rather
-                                                        // than sitting beside
-                                                        // it.
-                                                        gtk::Button {
-                                                            set_icon_name: "view-refresh-symbolic",
-                                                            set_tooltip_text: Some("Reload"),
-                                                            add_css_class: "flat",
-                                                            add_css_class: "circular",
-                                                            // Exactly the
-                                                            // spinner's 16px,
-                                                            // in the spinner's
-                                                            // place: the row
-                                                            // must not change
-                                                            // height depending
-                                                            // on whether it is
-                                                            // loading.
-                                                            add_css_class: "row-action",
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: !(model.loading_artists),
-                                                            connect_clicked => AppMsg::ReloadSection(View::Artists),
-                                                        },
                                                     },
                                                 },
 
@@ -1015,35 +934,6 @@ impl Component for AppModel {
                                                             set_visible: model.loading_playlists,
                                                         },
 
-                                                        // Per section, because
-                                                        // each is fetched
-                                                        // separately and a
-                                                        // single "reload"
-                                                        // cannot know which one
-                                                        // you meant. Swaps with
-                                                        // the spinner rather
-                                                        // than sitting beside
-                                                        // it.
-                                                        gtk::Button {
-                                                            set_icon_name: "view-refresh-symbolic",
-                                                            set_tooltip_text: Some("Reload"),
-                                                            add_css_class: "flat",
-                                                            add_css_class: "circular",
-                                                            // Exactly the
-                                                            // spinner's 16px,
-                                                            // in the spinner's
-                                                            // place: the row
-                                                            // must not change
-                                                            // height depending
-                                                            // on whether it is
-                                                            // loading.
-                                                            add_css_class: "row-action",
-                                                            set_size_request: (16, 16),
-                                                            set_valign: gtk::Align::Center,
-                                                            #[watch]
-                                                            set_visible: !(model.loading_playlists),
-                                                            connect_clicked => AppMsg::ReloadSection(View::Playlists),
-                                                        },
                                                     },
                                                 },
                                             },
@@ -1113,6 +1003,51 @@ impl Component for AppModel {
                                             connect_search_changed[sender] => move |entry| {
                                                 sender.input(AppMsg::SearchChanged(entry.text().into()));
                                             },
+                                        },
+
+                                        // Reload lives here rather than on the
+                                        // sidebar rows, where it used to. Those
+                                        // needed one button each, because a
+                                        // sidebar button cannot know which
+                                        // section you meant — but it is exactly
+                                        // that arrangement which put the only
+                                        // way to refresh behind the sidebar
+                                        // toggle. Collapsed, or on a narrow
+                                        // window where the breakpoint collapses
+                                        // it for you, reloading meant opening
+                                        // the sidebar first.
+                                        //
+                                        // In the header there is no ambiguity to
+                                        // resolve: it reloads what you are
+                                        // looking at.
+                                        pack_end = &gtk::Button {
+                                            set_icon_name: "view-refresh-symbolic",
+                                            set_tooltip_text: Some("Reload"),
+                                            add_css_class: "flat",
+                                            // Not in Search. Catalog results are
+                                            // the answer to a question, not a
+                                            // collection held between launches —
+                                            // asking again is the search box.
+                                            #[watch]
+                                            set_visible: model.view != View::Search
+                                                && !model.loading_section(),
+                                            #[watch]
+                                            set_sensitive: model.controls_live(),
+                                            connect_clicked[sender] => move |_| {
+                                                sender.input(AppMsg::ReloadCurrentSection);
+                                            },
+                                        },
+
+                                        // Takes the button's place while the
+                                        // fetch runs, rather than sitting beside
+                                        // it — the header must not reflow when a
+                                        // section starts loading.
+                                        pack_end = &adw::Spinner {
+                                            set_size_request: (16, 16),
+                                            set_valign: gtk::Align::Center,
+                                            #[watch]
+                                            set_visible: model.view != View::Search
+                                                && model.loading_section(),
                                         },
 
                                         // Only in Songs: the grids have their
@@ -1942,7 +1877,7 @@ impl AppModel {
                     self.run_catalog_search(&sender, generation, offset);
                 }
             }
-            AppMsg::ReloadSection(view) => self.reload(view, &sender),
+            AppMsg::ReloadCurrentSection => self.reload(self.view, &sender),
             AppMsg::ShowPreferences => self.show_preferences(&sender, root),
             AppMsg::ShowShortcuts => show_shortcuts(root),
             AppMsg::ShowAbout => show_about(root),

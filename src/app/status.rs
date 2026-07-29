@@ -54,6 +54,21 @@ impl AppModel {
         }
     }
 
+    /// Is the section currently on screen fetching?
+    ///
+    /// The header's reload control swaps itself for a spinner on this. Feedback
+    /// has to be where the click was: with the sidebar collapsed its per-section
+    /// spinners are not on screen, and a reload over a list that stays up — which
+    /// is deliberate, see `page` — would otherwise look like nothing happened.
+    pub(super) fn loading_section(&self) -> bool {
+        match self.view {
+            View::Albums => self.loading_albums,
+            View::Artists => self.loading_artists,
+            View::Playlists => self.loading_playlists,
+            View::Songs | View::Search => self.loading_library,
+        }
+    }
+
     /// Whether the window's own controls should respond yet.
     ///
     /// The same argument the first-run gate is built on, applied to the seconds
