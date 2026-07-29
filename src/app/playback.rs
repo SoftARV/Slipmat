@@ -134,6 +134,10 @@ impl AppModel {
         let snap = Snapshot {
             shuffle: self.player.shuffle,
             queue_open: self.show_queue,
+            // The same breakpoint the header reads. The bar has less room than
+            // the header does, so it stands three controls down rather than
+            // one — and each of them is in the drawer.
+            narrow: self.narrow_header,
             repeat,
             // Ours, not the sidecar's: MusicKit is told the volume and does not
             // report one back, so `self.volume` is the only record of it.

@@ -1956,6 +1956,10 @@ impl AppModel {
             AppMsg::NarrowHeader(narrow) => {
                 tracing::debug!(narrow, "header breakpoint");
                 self.narrow_header = narrow;
+                // The bar reads this off the snapshot to decide whether it has
+                // room for shuffle, repeat and volume, and nothing else pushes
+                // one when only the window changed.
+                self.push_snapshot();
                 // Widening puts the entry back as the title, so the open flag
                 // stops meaning anything — and leaving it set would reopen the
                 // box the next time the window got narrow, which is not

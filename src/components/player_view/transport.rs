@@ -21,7 +21,7 @@ use relm4::gtk;
 use relm4::prelude::*;
 
 use super::{PlayerView, PlayerViewInput};
-use crate::components::now_playing::{Repeat, mode_opacity};
+use crate::components::now_playing::{Repeat, VOLUME_STEP, mode_opacity, volume_is_new};
 use crate::music::types::format_duration;
 
 /// The widest the scrubber may get before it stops growing and centres.
@@ -103,6 +103,27 @@ pub(super) fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerVi
     let queue = button("view-list-symbolic", &["flat", "circular"]);
     queue.set_tooltip_text(Some("Queue"));
 
+    // **Volume lives here now.** The bar drops its own below the narrow
+    // breakpoint, and shuffle and repeat were already down here to fall back
+    // on — volume was the one control that would have had nowhere left to go.
+    let volume = gtk::ScaleButton::builder()
+        .icons([
+            "audio-volume-muted-symbolic",
+            "audio-volume-high-symbolic",
+            "audio-volume-low-symbolic",
+            "audio-volume-medium-symbolic",
+        ])
+        .tooltip_text("Volume")
+        .css_classes(["flat", "circular"])
+        .adjustment(&gtk::Adjustment::new(1.0, 0.0, 1.0, VOLUME_STEP, 0.1, 0.0))
+        .build();
+    {
+        let sender = sender.clone();
+        volume.connect_value_changed(move |_, v| {
+            sender.input(PlayerViewInput::VolumeChanged(v));
+        });
+    }
+
     for (widget, msg) in [
         (&previous, PlayerViewInput::Previous),
         (&play, PlayerViewInput::PlayPause),
@@ -130,8 +151,12 @@ pub(super) fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerVi
 
     // Under the play button rather than beside it, so it never disturbs the
     // count that keeps play centred.
-    let queue_row = gtk::Box::builder().halign(gtk::Align::Center).build();
+    let queue_row = gtk::Box::builder()
+        .halign(gtk::Align::Center)
+        .spacing(6)
+        .build();
     queue_row.append(&queue);
+    queue_row.append(&volume);
     into.append(&queue_row);
 
     Bits {
@@ -142,6 +167,7 @@ pub(super) fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerVi
         previous,
         next,
         queue,
+        volume,
         shuffle,
         repeat,
     }
@@ -156,6 +182,7 @@ pub(super) struct Bits {
     previous: gtk::Button,
     next: gtk::Button,
     queue: gtk::Button,
+    volume: gtk::ScaleButton,
     shuffle: gtk::Button,
     repeat: gtk::Button,
 }
@@ -198,6 +225,11 @@ impl PlayerView {
         bits.repeat
             .set_opacity(mode_opacity(!matches!(self.snap.repeat, Repeat::Off)));
         bits.next.set_sensitive(self.snap.has_next);
+        // Guarded, or the mirror and the widget ping-pong through the reducer —
+        // the #37 loop, which this control is a second chance to reintroduce.
+        if volume_is_new(bits.volume.value(), self.snap.volume) {
+            bits.volume.set_value(self.snap.volume);
+        }
     }
 }
 
@@ -209,7 +241,17 @@ impl Bits {
     /// parent asks for that rather than reaching into three fields it would
     /// then have to keep in step.
     pub(super) fn set_secondary_visible(&self, visible: bool) {
-        self.queue.set_visible(visible);
+        // **Faded, not hidden.** Shuffle and repeat sit in the horizontal row
+        // and cost nothing to hide, but the queue button has a row of its own —
+        // and a hidden child collapses it, taking 34px out of the drawer's
+        // height every time the queue opened. Measured: 562px shut, 528px
+        // shown, and the whole difference was this one button.
+        //
+        // The drawer's height is its content's natural height, because
+        // `AdwBottomSheet` has no height setter, so a control that vanishes
+        // *is* a resize.
+        self.queue.set_opacity(if visible { 1.0 } else { 0.0 });
+        self.queue.set_sensitive(visible);
         self.shuffle.set_visible(visible);
         self.repeat.set_visible(visible);
     }
