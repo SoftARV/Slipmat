@@ -75,6 +75,16 @@ pub struct QueueItemWidgets {
     /// so without this the handlers stack up and one click removes several
     /// unrelated tracks.
     handler: Option<gtk::glib::SignalHandlerId>,
+    /// Reorder, by dragging a row onto another.
+    ///
+    /// The controllers are made once in `setup` and outlive every track that
+    /// passes through this widget; what changes per bind is the index they
+    /// carry, so their handlers are replaced exactly like `handler` above. A
+    /// stale one would move whichever track used to live here.
+    drag: gtk::DragSource,
+    drop: gtk::DropTarget,
+    drag_handler: Option<gtk::glib::SignalHandlerId>,
+    drop_handler: Option<gtk::glib::SignalHandlerId>,
 }
 
 impl RelmListItem for QueueItem {
@@ -138,6 +148,16 @@ impl RelmListItem for QueueItem {
             }
         }
 
+        // `MOVE` rather than `COPY`: the row is going somewhere, not being
+        // duplicated. The payload is the row's own index, which is all the
+        // other end needs.
+        let drag = gtk::DragSource::new();
+        drag.set_actions(gtk::gdk::DragAction::MOVE);
+        root.add_controller(drag.clone());
+
+        let drop = gtk::DropTarget::new(u32::static_type(), gtk::gdk::DragAction::MOVE);
+        root.add_controller(drop.clone());
+
         (
             root,
             QueueItemWidgets {
@@ -147,6 +167,10 @@ impl RelmListItem for QueueItem {
                 duration,
                 remove,
                 handler: None,
+                drag,
+                drop,
+                drag_handler: None,
+                drop_handler: None,
             },
         )
     }
@@ -179,6 +203,30 @@ impl RelmListItem for QueueItem {
         widgets.handler = Some(widgets.remove.connect_clicked(move |_| {
             sender.emit(QueueViewInput::Remove { at, id: id.clone() });
         }));
+
+        if let Some(old) = widgets.drag_handler.take() {
+            widgets.drag.disconnect(old);
+        }
+        widgets.drag_handler = Some(widgets.drag.connect_prepare(move |_, _, _| {
+            Some(gtk::gdk::ContentProvider::for_value(
+                &(at as u32).to_value(),
+            ))
+        }));
+
+        if let Some(old) = widgets.drop_handler.take() {
+            widgets.drop.disconnect(old);
+        }
+        let sender = self.sender.clone();
+        widgets.drop_handler = Some(widgets.drop.connect_drop(move |_, value, _, _| {
+            let Ok(from) = value.get::<u32>() else {
+                return false;
+            };
+            sender.emit(QueueViewInput::Move {
+                from: from as usize,
+                to: at,
+            });
+            true
+        }));
     }
 
     fn unbind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
@@ -186,6 +234,12 @@ impl RelmListItem for QueueItem {
         // handler would remove this one instead.
         if let Some(old) = widgets.handler.take() {
             widgets.remove.disconnect(old);
+        }
+        if let Some(old) = widgets.drag_handler.take() {
+            widgets.drag.disconnect(old);
+        }
+        if let Some(old) = widgets.drop_handler.take() {
+            widgets.drop.disconnect(old);
         }
         self.registry.borrow_mut().remove(&self.entry.id);
     }
@@ -237,6 +291,11 @@ pub enum QueueViewInput {
         at: usize,
         id: String,
     },
+    /// A row was dropped onto another. `to` is where it lands.
+    Move {
+        from: usize,
+        to: usize,
+    },
     /// Shuffle and repeat as the player currently has them.
     SetModes {
         shuffle: bool,
@@ -265,6 +324,11 @@ pub enum QueueViewOutput {
     },
     /// Empty the queue and stop.
     Clear,
+    /// Reorder the queue MusicKit holds. `to` is the final index.
+    Move {
+        from: usize,
+        to: usize,
+    },
     /// Shuffle and repeat live here because they are properties of the queue,
     /// not of the transport. The player still owns the values (rule 3); these
     /// are requests.
@@ -467,6 +531,9 @@ impl Component for QueueView {
             }
             QueueViewInput::Remove { at, id } => {
                 let _ = sender.output(QueueViewOutput::Remove { at, id });
+            }
+            QueueViewInput::Move { from, to } => {
+                let _ = sender.output(QueueViewOutput::Move { from, to });
             }
         }
         self.update_view(widgets, sender);

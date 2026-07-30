@@ -230,6 +230,14 @@ pub struct AppModel {
     /// Whether the current track has already been reloaded to recover a
     /// playback that would not start. One attempt; a second failure is real.
     healed: bool,
+    /// The reorder in flight, so it can be undone if the sidecar refuses it.
+    ///
+    /// An optimistic edit needs a way back or the list quietly stops matching
+    /// what is playing — which is what a stale sidecar produced: fourteen
+    /// `unknown-command` errors, fourteen rows left where they were dropped,
+    /// and a queue that reverted the moment anything asked MusicKit for the
+    /// next track.
+    pending_move: Option<(usize, usize)>,
     /// Where to seek back to once a reloaded track becomes current.
     resume_at: Option<u64>,
     /// Whether the artwork cache has been swept this run. Once is enough: the
@@ -504,6 +512,11 @@ pub enum AppMsg {
     ShowRowMenu(RowMenuRequest),
     /// Empty the queue and stop.
     ClearQueue,
+    /// Reorder the queue. `to` is where the item lands.
+    MoveQueueItem {
+        from: usize,
+        to: usize,
+    },
     /// Grow the queue MusicKit already holds, without rebuilding it.
     Enqueue {
         catalog_id: String,
@@ -1341,6 +1354,7 @@ impl Component for AppModel {
                 QueueViewOutput::Jump { at, id } => AppMsg::JumpTo { at, id },
                 QueueViewOutput::Remove { at, id } => AppMsg::RemoveFromQueue { at, id },
                 QueueViewOutput::Clear => AppMsg::ClearQueue,
+                QueueViewOutput::Move { from, to } => AppMsg::MoveQueueItem { from, to },
                 QueueViewOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
                 QueueViewOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
             });
@@ -1406,6 +1420,7 @@ impl Component for AppModel {
             sync_entry: false,
             animated_shown: std::cell::Cell::new(None),
             healed: false,
+            pending_move: None,
             resume_at: None,
             pruned: false,
             section_spinners: Vec::new(),
@@ -2132,6 +2147,22 @@ impl AppModel {
                 // sequential mode, which is not what pressing Shuffle means.
                 self.send(Command::SetShuffle { shuffle });
                 self.play_entries(&entries, 0);
+            }
+            AppMsg::MoveQueueItem { from, to } => {
+                // **Optimistic.** The row is already where the user dropped it,
+                // so the projection moves now and MusicKit's echo confirms it —
+                // the same shape as a library write, and for the same reason: a
+                // drop that visibly springs back while a command is in flight
+                // reads as a failure even when it worked.
+                if !self.player.move_item(from, to) {
+                    return;
+                }
+                tracing::info!(from, to, "reordering the queue");
+                self.pending_move = Some((from, to));
+                self.send(Command::MoveInQueue { from, to });
+                // `push_snapshot` re-syncs the queue view from the projection,
+                // so the row is already in its new place before the echo.
+                self.push_snapshot();
             }
             AppMsg::ClearQueue => {
                 tracing::info!("clearing the queue");

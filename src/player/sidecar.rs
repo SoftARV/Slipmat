@@ -145,6 +145,35 @@ impl Handle {
 
 /// Find the sidecar directory: an explicit override, the per-user install, the
 /// system install, then the dev tree.
+/// Say so when an installed sidecar is about to shadow the one beside the code.
+///
+/// **This is the trap CLAUDE.md warns about, made audible.** `locate` prefers
+/// an installed sidecar over the build tree, so once anything has been
+/// installed, `cargo run` runs fresh Rust against stale JavaScript and says
+/// nothing. It fails in the most misleading way available: the command goes
+/// out, the optimistic UI updates, and only MusicKit disagrees.
+///
+/// It cost an afternoon on `removeFromLibrary` and then a whole test round on
+/// `moveInQueue` — fourteen `unknown-command` errors read as a broken feature
+/// rather than a stale file. A build has a `sidecar/` next to its manifest and
+/// an installed copy does not, so the two are distinguishable, and the line
+/// costs nothing on a real install because the check cannot fire there.
+#[cfg(debug_assertions)]
+fn warn_if_shadowing_a_build_tree(chosen: &Path) {
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar");
+    if dev.join("main.js").is_file() {
+        tracing::warn!(
+            using = %chosen.display(),
+            ignoring = %dev.display(),
+            "an installed sidecar is shadowing this build tree — \
+             run with SLIPMAT_SIDECAR=$PWD/sidecar, or `make install-sidecar`"
+        );
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn warn_if_shadowing_a_build_tree(_chosen: &Path) {}
+
 pub fn locate() -> Result<PathBuf> {
     let mut tried = Vec::new();
 
@@ -163,6 +192,7 @@ pub fn locate() -> Result<PathBuf> {
     for data in dirs_data_home().into_iter().chain(dirs_data_dirs()) {
         let p = data.join("slipmat/sidecar");
         if p.join("main.js").is_file() {
+            warn_if_shadowing_a_build_tree(&p);
             return Ok(p);
         }
         tried.push(p);

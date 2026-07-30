@@ -314,6 +314,53 @@ const commands = {
   next: () => music.skipToNextItem(),
   previous: () => music.skipToPreviousItem(),
   changeToIndex: ({ index }) => music.changeToMediaAtIndex(index),
+  // Move one item within the queue MusicKit already holds.
+  //
+  // `splice` is undocumented — feature-detected rather than assumed, like
+  // `remove` beside it. Its own source gives away the shape:
+  //
+  //     splice(e, n, d = []) {
+  //       return toMediaItems(this.spliceQueueItems(e, n, toQueueItems(d)))
+  //     }
+  //
+  // so it is `Array.prototype.splice` semantics, and the removed items come
+  // back as media items ready to be handed straight to the insert.
+  // Tell MusicKit where the current track ended up.
+  //
+  // **A splice does not re-index the position.** Measured: playing index 36,
+  // two drags across it, and MusicKit still reports 36 — so `skipToNextItem`
+  // advances 36 -> 37 and plays whatever now sits there, which is not the
+  // track after the one playing. The queue looks right and playback follows a
+  // number that no longer means anything.
+  //
+  // `position` has a real setter, and `_updatePosition` returns early when the
+  // value is unchanged, so this is safe to send after every move.
+  syncQueuePosition: ({ index }) => {
+    const q = music.queue
+    if (!q) throw new Error('no queue to reposition')
+    const len = q.items?.length ?? 0
+    if (!Number.isInteger(index) || index < 0 || index >= len) {
+      throw new Error(`queue position ${index} out of range (queue holds ${len})`)
+    }
+    q.position = index
+  },
+  moveInQueue: ({ from, to }) => {
+    if (typeof music.queue?.splice !== 'function') {
+      throw new Error('this MusicKit build cannot reorder the queue')
+    }
+    const len = music.queue.items?.length ?? 0
+    for (const [name, i] of [['from', from], ['to', to]]) {
+      if (!Number.isInteger(i) || i < 0 || i >= len) {
+        throw new Error(`queue index ${name}=${i} out of range (queue holds ${len})`)
+      }
+    }
+    if (from === to) return
+    const moved = music.queue.splice(from, 1)
+    if (!moved || moved.length !== 1) {
+      throw new Error(`splice removed ${moved ? moved.length : 0} items, expected 1`)
+    }
+    music.queue.splice(to, 0, moved)
+  },
   removeFromQueue: ({ index }) => {
     // `queue.remove` is not in MusicKit's documented surface, so treat it as
     // load-bearing-but-unowned: check it exists rather than throwing a

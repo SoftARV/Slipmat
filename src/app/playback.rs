@@ -241,6 +241,31 @@ impl AppModel {
     /// `glib::SourceId` must be removed exactly once — holding it in an
     /// `Option` and `take()`ing is what makes that safe, since removing an
     /// already-removed source aborts.
+    /// Put a refused reorder back where it came from.
+    ///
+    /// The optimistic move is a promise the sidecar can break — an older
+    /// sidecar has no `moveInQueue` at all, and `queue.splice` is undocumented
+    /// enough that a future MusicKit could drop it. Without this the row stays
+    /// where it was dropped while MusicKit still holds the old order, and the
+    /// two only disagree out loud when something asks for the next track.
+    ///
+    /// Inverting a move is just moving it back: `(from, to)` undone is
+    /// `(to, from)`.
+    pub(super) fn undo_move(&mut self) -> bool {
+        let Some((from, to)) = self.pending_move.take() else {
+            return false;
+        };
+        tracing::warn!(
+            from,
+            to,
+            "the queue would not reorder; putting the row back"
+        );
+        self.player.move_item(to, from);
+        self.push_snapshot();
+        self.toast("Couldn't reorder the queue");
+        true
+    }
+
     /// Reload the track we are on, at the position we were at.
     ///
     /// **The only way back from a dead decrypt session.** Linux Widevine keeps

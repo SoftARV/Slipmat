@@ -25,6 +25,8 @@ pub struct PlayerState {
     /// Queue as MusicKit reports it. Reconciled, never authored here.
     pub queue: Vec<Item>,
     pub queue_position: usize,
+    /// Whether MusicKit's own idea of the position had to be corrected.
+    pub position_disagrees: bool,
     pub position_ms: u64,
     pub duration_ms: u64,
     pub volume: f64,
@@ -97,6 +99,33 @@ impl PlayerState {
         // honest via the same value — you cannot go back from "not started".
         let reported = queue.index().unwrap_or(0);
         self.queue_position = corrected_position(reported, &self.queue, self.now_playing.as_ref());
+        // Remembered so the caller can tell MusicKit when the two disagree —
+        // correcting our own copy is only half of it, and the half MusicKit
+        // keeps is the one `skipToNextItem` counts from.
+        self.position_disagrees = self.queue_position != reported;
+    }
+
+    /// Move an item, before MusicKit has confirmed it.
+    ///
+    /// **Optimistic, and the projection is where that has to happen.** The
+    /// queue view is rebuilt from this, so reordering locally there would be
+    /// undone by the next sync — which arrives before MusicKit's echo does.
+    ///
+    /// `to` is the item's index *after* the move, which is what a drop means
+    /// and what the sidecar's remove-then-insert produces. Verified against a
+    /// real queue in both directions.
+    ///
+    /// The position needs no arithmetic: it is re-derived from `now_playing`,
+    /// which a reorder never changes.
+    pub fn move_item(&mut self, from: usize, to: usize) -> bool {
+        if from == to || from >= self.queue.len() || to >= self.queue.len() {
+            return false;
+        }
+        let item = self.queue.remove(from);
+        self.queue.insert(to, item);
+        self.queue_position =
+            corrected_position(self.queue_position, &self.queue, self.now_playing.as_ref());
+        true
     }
 
     /// Position interpolated to *now*, clamped to the track length.
@@ -188,6 +217,51 @@ mod tests {
                 ..Item::default()
             })
             .collect()
+    }
+
+    #[test]
+    fn an_optimistic_move_keeps_the_marker_on_the_playing_track() {
+        let mut s = PlayerState::new();
+        let items = q(&["a", "b", "c", "d", "e"]);
+        s.apply(&Event::NowPlaying {
+            item: Some(items[2].clone()),
+            queue: Queue {
+                position: 2,
+                items: items.clone(),
+            },
+        });
+
+        // Drag "a" from the top to the end. "c" is playing and slides up to 1.
+        assert!(s.move_item(0, 4));
+        assert_eq!(
+            s.queue.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(),
+            ["b", "c", "d", "e", "a"]
+        );
+        assert_eq!(
+            s.queue_position, 1,
+            "the marker follows the track, not the index"
+        );
+
+        // And back, which puts everything where it started.
+        assert!(s.move_item(4, 0));
+        assert_eq!(
+            s.queue.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c", "d", "e"]
+        );
+        assert_eq!(s.queue_position, 2);
+    }
+
+    #[test]
+    fn a_move_that_cannot_happen_is_refused() {
+        let mut s = PlayerState::new();
+        s.apply(&Event::Queue(Queue {
+            position: 0,
+            items: q(&["a", "b"]),
+        }));
+        assert!(!s.move_item(0, 0), "a move to itself is not a move");
+        assert!(!s.move_item(0, 9), "out of range");
+        assert!(!s.move_item(9, 0), "out of range");
+        assert_eq!(s.queue.len(), 2, "and nothing was disturbed");
     }
 
     #[test]
