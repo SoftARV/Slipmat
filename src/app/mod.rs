@@ -182,9 +182,8 @@ pub struct AppModel {
     /// Whether the panel is up. An **animated** property, so it is written on
     /// an edge through `sync_animated` and never as a `#[watch]`.
     osd_shown: bool,
-    /// Which hide-timer is still the current one. A later press supersedes an
-    /// earlier one rather than letting it fire late.
-    osd_generation: u64,
+    /// The single hide-timer, reset on each press rather than added to.
+    osd_timer: Option<gtk::glib::SourceId>,
     now_playing: Controller<NowPlaying>,
     queue_view: Controller<QueueView>,
     /// The drawer the bar opens into. Fed the same `Snapshot` as the bar, and
@@ -581,8 +580,8 @@ pub enum AppMsg {
     ReloadCurrentSection,
     ShowPreferences,
     ShowShortcuts,
-    /// A hide-timer fired. Ignored unless it is the current one.
-    HideVolumeOsd(u64),
+    /// The hide-timer fired: the panel has been up long enough.
+    HideVolumeOsd,
     ShowAbout,
     /// Open the Ko-fi page in a browser.
     OpenSupport,
@@ -1548,7 +1547,7 @@ impl Component for AppModel {
             toaster: adw::ToastOverlay::new(),
             volume_osd: osd::VolumeOsd::new(),
             osd_shown: false,
-            osd_generation: 0,
+            osd_timer: None,
             now_playing,
             mpris: Mpris::start(sender.clone()),
             volume: 1.0,
@@ -1851,7 +1850,7 @@ impl AppModel {
                 self.set_volume(self.volume - VOLUME_STEP);
                 self.flash_volume(&sender);
             }
-            AppMsg::HideVolumeOsd(generation) => self.hide_volume_osd(generation),
+            AppMsg::HideVolumeOsd => self.hide_volume_osd(),
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
                 if query == self.query() {

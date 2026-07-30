@@ -60,6 +60,8 @@ impl VolumeOsd {
 
         let panel = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         panel.add_css_class("osd");
+        // The colours are `.osd`; the pill shape is ours. See `style.rs`.
+        panel.add_css_class("volume-osd");
         panel.set_margin_all(12);
         panel.append(&icon);
         panel.append(&level);
@@ -124,21 +126,27 @@ impl AppModel {
         self.volume_osd.show_level(self.volume);
         self.osd_shown = true;
 
-        // A later press supersedes this one, the same shape as the drawer's
-        // scrub debounce — a timer that is not superseded fires late and hides
-        // a panel the user is still asking for.
-        self.osd_generation = self.osd_generation.wrapping_add(1);
-        let generation = self.osd_generation;
+        // **One timer, reset — not one per press.** Holding the key repeats at
+        // the keyboard's rate, and a fresh timeout per repeat left dozens alive
+        // at once, each holding a cloned sender and each firing later to say
+        // something already said. `SourceId` must be removed exactly once, so
+        // it is taken out of the Option to remove it; the callback clears the
+        // slot itself, because removing a source that has already fired aborts.
+        if let Some(id) = self.osd_timer.take() {
+            id.remove();
+        }
         let sender = sender.clone();
-        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(HOLD_MS), move || {
-            sender.input(AppMsg::HideVolumeOsd(generation));
-        });
+        self.osd_timer = Some(gtk::glib::timeout_add_local_once(
+            std::time::Duration::from_millis(HOLD_MS),
+            move || sender.input(AppMsg::HideVolumeOsd),
+        ));
     }
 
-    pub(super) fn hide_volume_osd(&mut self, generation: u64) {
-        if generation == self.osd_generation {
-            self.osd_shown = false;
-        }
+    pub(super) fn hide_volume_osd(&mut self) {
+        // The source is finishing as this runs, so drop the handle without
+        // removing it.
+        self.osd_timer = None;
+        self.osd_shown = false;
     }
 }
 
