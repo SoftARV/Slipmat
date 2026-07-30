@@ -1225,8 +1225,15 @@ transition logged `prompted_by="syncQueuePosition"` instead of
 `queue.position` a few hundred milliseconds before a boundary, we read that as a
 disagreement and put it back, and a command therefore always landed inside the
 window `log_transition` looks over. The string was unreachable, so the rule 3
-check could not fail — worse than the traffic, because the day Rust really did
-start driving the queue the log would have looked identical.
+check could not fail: the day Rust really did start driving the queue, the log
+would have looked identical.
+
+**And it was audible.** This was first written up as harmless — the transitions
+logged `left_ms=0` and the PipeWire stream never went away, so both instruments
+said nothing was wrong. Neither of them can hear a transition, and the listener
+could. *Absence of evidence in the two logs is not evidence*: they were built to
+answer "did the decoder stop", and "does the boundary sound right" is a third
+question that only ears answer. That is why the procedure below ends with them.
 
 Settling now happens only when the sidecar says the *items* changed. Re-verified
 the same day, and **the pair is the point**:
