@@ -46,6 +46,9 @@ pub(super) fn connect(
     type_to_search(root, sender);
     library_list_properties(model, widgets);
     bottom_bar_inset(widgets);
+    // The volume panel clears the same bar, and follows it for the same reason:
+    // that height is not a constant.
+    model.volume_osd.clear_the_bar(&widgets.player_sheet);
 }
 
 /// Build the sidebar's five rows from [`View::SIDEBAR`].

@@ -71,6 +71,7 @@ use crate::settings::{Section, Settings, Theme};
 mod background;
 mod chrome;
 mod library;
+mod osd;
 mod pages;
 mod playback;
 mod queue;
@@ -175,6 +176,15 @@ pub struct AppModel {
     sidecar: Option<sidecar::Handle>,
     restarts: u32,
     toaster: adw::ToastOverlay,
+    /// The volume panel. Its widgets rather than its state, which is the two
+    /// fields below — see `osd.rs`.
+    volume_osd: osd::VolumeOsd,
+    /// Whether the panel is up. An **animated** property, so it is written on
+    /// an edge through `sync_animated` and never as a `#[watch]`.
+    osd_shown: bool,
+    /// Which hide-timer is still the current one. A later press supersedes an
+    /// earlier one rather than letting it fire late.
+    osd_generation: u64,
     now_playing: Controller<NowPlaying>,
     queue_view: Controller<QueueView>,
     /// The drawer the bar opens into. Fed the same `Snapshot` as the bar, and
@@ -571,6 +581,8 @@ pub enum AppMsg {
     ReloadCurrentSection,
     ShowPreferences,
     ShowShortcuts,
+    /// A hide-timer fired. Ignored unless it is the current one.
+    HideVolumeOsd(u64),
     ShowAbout,
     /// Open the Ko-fi page in a browser.
     OpenSupport,
@@ -742,7 +754,15 @@ impl Component for AppModel {
 
             #[local_ref]
             toaster -> adw::ToastOverlay {
-                adw::ToolbarView {
+                // The volume panel floats here: above the drawer, so opening it
+                // does not cover the panel, and below toasts, so an error still
+                // wins. See `osd.rs`.
+                gtk::Overlay {
+                    #[local_ref]
+                    add_overlay = volume_osd -> gtk::Revealer {},
+
+                    #[wrap(Some)]
+                    set_child = &adw::ToolbarView {
                     // The bar is the handle of a drawer, not furniture bolted
                     // to the bottom (#18). `AdwBottomSheet` is the widget for
                     // exactly this: `bottom_bar` while closed, `sheet` when
@@ -1325,6 +1345,7 @@ impl Component for AppModel {
                     },
 
                 },
+                },
             },
         }
     }
@@ -1525,6 +1546,9 @@ impl Component for AppModel {
             sidecar: None,
             restarts: 0,
             toaster: adw::ToastOverlay::new(),
+            volume_osd: osd::VolumeOsd::new(),
+            osd_shown: false,
+            osd_generation: 0,
             now_playing,
             mpris: Mpris::start(sender.clone()),
             volume: 1.0,
@@ -1578,6 +1602,10 @@ impl Component for AppModel {
         let artist_grid = &model.artist_grid.view;
         let playlist_grid = &model.playlist_grid.view;
         let player_sheet_content = model.player_view.widget();
+        // Cloned rather than borrowed from the model: `view_output!` needs it
+        // while the model already owns it.
+        let osd_revealer = model.volume_osd.revealer.clone();
+        let volume_osd = &osd_revealer;
         let widgets = view_output!();
 
         wiring::connect(&mut model, &widgets, &root, &sender);
@@ -1711,6 +1739,10 @@ struct Animated {
     sidebar: bool,
     queue: bool,
     bottom_bar: bool,
+    /// The volume panel's crossfade. Fourth of its kind, and here for the same
+    /// reason as the other three: a `#[watch]` would re-ask for it after every
+    /// message, and during playback those never stop.
+    osd: bool,
 }
 
 impl AppModel {
@@ -1719,13 +1751,15 @@ impl AppModel {
             sidebar: self.show_sidebar,
             queue: self.show_queue,
             bottom_bar: matches!(self.stage, Stage::Ready),
+            osd: self.osd_shown,
         }
     }
 
-    /// Push the three animated properties, and **only where they changed**.
+    /// Push the four animated properties, and **only where they changed**.
     ///
-    /// Each drives an `AdwAnimation` — the sidebar's spring, the drawer's
-    /// slide, the bar's reveal — so writing one asks an animation to start or
+    /// Each drives an animation — the sidebar's spring, the drawer's slide, the
+    /// bar's reveal, the volume panel's crossfade — so writing one asks it to
+    /// start or
     /// re-aim. That is correct on an edge and catastrophic on a level: as a
     /// `#[watch]` it re-fired after every message, and during playback those
     /// never stop, which wedged the app inside libadwaita's spring solver.
@@ -1759,6 +1793,9 @@ impl AppModel {
         }
         if last.map(|l| l.bottom_bar) != Some(now.bottom_bar) {
             widgets.player_sheet.set_reveal_bottom_bar(now.bottom_bar);
+        }
+        if last.map(|l| l.osd) != Some(now.osd) {
+            self.volume_osd.revealer.set_reveal_child(now.osd);
         }
         self.animated_shown.set(Some(now));
     }
@@ -1801,8 +1838,20 @@ impl AppModel {
                 self.mpris.seeked(position_ms);
             }
             AppMsg::SetVolume(volume) => self.set_volume(volume),
-            AppMsg::VolumeUp => self.set_volume(self.volume + VOLUME_STEP),
-            AppMsg::VolumeDown => self.set_volume(self.volume - VOLUME_STEP),
+            // **The panel is raised here rather than inside `set_volume`.**
+            // That returns early when the value has not moved, so at 0.0 and
+            // 1.0 it does nothing — and a shortcut that shows nothing at the
+            // ends reads as a dropped keypress rather than "you are already
+            // there".
+            AppMsg::VolumeUp => {
+                self.set_volume(self.volume + VOLUME_STEP);
+                self.flash_volume(&sender);
+            }
+            AppMsg::VolumeDown => {
+                self.set_volume(self.volume - VOLUME_STEP);
+                self.flash_volume(&sender);
+            }
+            AppMsg::HideVolumeOsd(generation) => self.hide_volume_osd(generation),
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
                 if query == self.query() {
