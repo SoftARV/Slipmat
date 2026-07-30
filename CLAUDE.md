@@ -1136,11 +1136,9 @@ its full height. An album is a dozen tracks. That is the right trade.
 
 ## Known issues
 
-- **The drawer's backdrop washes out in a light theme** (#77). Found the first time
-  the app was seen outside a dark theme, on the Ubuntu VM. The veil is
-  `@window_bg_color` so it adapts on its own, but the two numbers beside it —
-  the bar's lighter veil, the drawer's 150% sizing — were chosen against dark
-  only. A pair of numbers, not a design question.
+None open. The list is kept because it will fill again, and because an empty
+one is worth being able to see — a section that silently stops being updated
+reads the same as a project with no bugs.
 
 **Fixed, and left here because the reasoning is still load-bearing:**
 
