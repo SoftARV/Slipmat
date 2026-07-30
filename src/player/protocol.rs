@@ -398,9 +398,44 @@ impl PlaybackState {
     }
 }
 
+/// Why the queue event fired, which the two cases need distinguishing by.
+///
+/// MusicKit subscribes these separately and they mean opposite things. The
+/// sidecar used to collapse both into one `queue` event, and that is what made
+/// a pre-advance indistinguishable from an edit — see [`QueueChange::Position`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueChange {
+    /// The items changed: something was added, removed, moved or reordered.
+    ///
+    /// **MusicKit does not re-index its own position after one** — measured for
+    /// a removal and for a splice — so this is the case where it has to be told
+    /// where the current track went (#117, #118).
+    Items,
+    /// Only the cursor moved, which is MusicKit driving its own queue.
+    ///
+    /// **The default, deliberately.** Settling is a write to the player at the
+    /// most delicate moment it has, so it happens only when something says an
+    /// edit occurred — never because nothing said otherwise. An older sidecar
+    /// sends no reason at all and lands here, which loses a correction rather
+    /// than inventing one.
+    ///
+    /// Includes the pre-advance MusicKit does a few hundred milliseconds before
+    /// every boundary: it moves the cursor to the next track while
+    /// `now_playing` is still the current one. Reading that as a disagreement
+    /// and putting it back is fighting the thing that makes gapless work, and
+    /// it also meant a command always landed inside the window
+    /// `log_transition` looks over — so the rule 3 check could no longer fail
+    /// (#121).
+    #[default]
+    Position,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Queue {
+    #[serde(default)]
+    pub reason: QueueChange,
     /// MusicKit's queue position, and it is **signed**: it reports `-1` when a
     /// queue is loaded but nothing has become current yet. Deserialising this
     /// as `usize` made serde reject the whole event, so the first `queue` after
@@ -614,6 +649,7 @@ mod tests {
         let queue = Queue {
             position: 1,
             items: vec![Item::default(), Item::default()],
+            ..Default::default()
         };
         assert_eq!(queue.index(), Some(1));
     }
@@ -623,6 +659,7 @@ mod tests {
         let queue = Queue {
             position: 5,
             items: vec![Item::default()],
+            ..Default::default()
         };
         assert_eq!(queue.index(), None, "must not index out of bounds");
     }
