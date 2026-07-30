@@ -19,11 +19,11 @@
 # animation that had to be diagnosed from a core dump). Both would have shown up
 # here instantly.
 #
-# Idle is **not** near zero today, and that is the first thing this script found:
-# the backdrop's drift is an `infinite` CSS animation, so the frame clock never
-# stops and a fifth of a core goes into repainting a still window. See #126 for
-# the measurement and the bisect. Until that is settled, read the CPU column as
-# "this plus whatever I changed".
+# Idle should now read near zero. It did not when this script was written — the
+# backdrop drifted on an `infinite` CSS animation, so the frame clock never
+# stopped and a fifth of a core went into repainting a still window. That was
+# the first thing this script found (#126, fixed in #128), which is the argument
+# for having it.
 #
 #   scripts/footprint.sh          # measure a running Slipmat
 #   scripts/footprint.sh --disk   # disk only, no instance needed
@@ -174,8 +174,8 @@ echo
 echo "  CPU is % of one core. Anything near 100 is the class of bug that froze a"
 echo "  desktop twice (#37, and the edge-versus-level rule in CLAUDE.md)."
 echo
-echo "  An idle window currently costs ~20% on a 120Hz display and is not a"
-echo "  regression: the backdrop drifts on an infinite CSS animation, so the"
-echo "  frame clock never stops (#126). GDK_DEBUG=frames counts them."
+echo "  Idle should be near zero. If it is not, something is asking for frames:"
+echo "  GDK_DEBUG=frames counts them, and an animation that never ends is how"
+echo "  a still window cost 20% of a core once already (#126)."
 echo
 disk
