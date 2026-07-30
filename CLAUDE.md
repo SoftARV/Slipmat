@@ -1219,18 +1219,32 @@ store splice landed at every one of them:
   it touches the head and nothing else.
 - The listener heard no gap.
 
-**One check did not pass, and it is the check rather than the playback.** Every
-transition logged `prompted_by="syncQueuePosition"`, not the
-`"nothing — MusicKit advanced itself"` this used to read and that the procedure
-below still asks for. MusicKit pre-advances its own `queue.position` before
-firing `nowPlayingItemDidChange`, we read that as a disagreement and put it
-back, and a command therefore always lands inside the window `log_transition`
-looks back over. So that string is currently unreachable and the rule 3 check
-cannot fail — see **#121**, which is about the diagnostic going blind more than
-about the traffic.
+**That run also found the check itself broken, which #121 fixed.** Every
+transition logged `prompted_by="syncQueuePosition"` instead of
+`"nothing — MusicKit advanced itself"`: MusicKit pre-advances its own
+`queue.position` a few hundred milliseconds before a boundary, we read that as a
+disagreement and put it back, and a command therefore always landed inside the
+window `log_transition` looks over. The string was unreachable, so the rule 3
+check could not fail — worse than the traffic, because the day Rust really did
+start driving the queue the log would have looked identical.
 
-The first verification, on 2026-07-26, was four boundaries with the drawer shut
-and did read `prompted_by="nothing"`. It predates `syncQueuePosition`.
+Settling now happens only when the sidecar says the *items* changed. Re-verified
+the same day, and **the pair is the point**:
+
+```text
+4 boundaries      prompted_by="nothing — MusicKit advanced itself"   0 settles
+2 removals from
+above the current  telling MusicKit ... index=3, then index=2        2 settles
+```
+
+**Check the pair, never the silence alone.** A sidecar too old to send a reason
+produces exactly the same silence at a boundary — the default is "do not settle"
+— so a pass on the transition line by itself is also what a stale sidecar looks
+like. The removal is what tells them apart, and it has to be from *above* the
+current track: removing from below shifts no index and correctly settles nothing.
+
+The first verification, on 2026-07-26, was four boundaries with the drawer shut.
+It predates `syncQueuePosition` entirely.
 
 Two things that run cost, both now fixed, both worth not re-learning:
 
@@ -1270,12 +1284,15 @@ boundary also edits the list, and leaving the drawer shut tests the cheap path.
 Then check all three:
 
 1. **The log.** Every boundary prints a `track transition` line, and a natural
-   one has `left_ms` near zero. `prompted_by` should read
-   `"nothing — MusicKit advanced itself"` — if it names a command on a track
-   that ran to its end, Rust is driving the queue and rule 3 is broken.
-   **Currently it always reads `syncQueuePosition` and this check cannot fail**
-   (#121). Until that is fixed, `left_ms` and the stream are the only two halves
-   of this that still work.
+   one has `left_ms` near zero and reads
+   `prompted_by="nothing — MusicKit advanced itself"`. If it names a command on
+   a track that ran to its end, Rust is driving the queue and rule 3 is broken.
+
+   **Then remove a track from above the current one and watch it settle.** That
+   silence is only evidence when its opposite still works: a sidecar too old to
+   report *why* the queue changed defaults to never settling, and produces the
+   same quiet boundary as a healthy one. `telling MusicKit where the current
+   track is` must fire for the removal (#121, #117).
 2. **The stream.** `make gapless` should print *nothing* at the boundary. A
    `remove` followed by a `new` is a torn-down decoder, which is audible no
    matter what the log says.
