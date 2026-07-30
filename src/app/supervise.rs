@@ -289,6 +289,26 @@ impl AppModel {
         if self.player.state.is_playing() {
             self.resume_position();
         }
+        // **Correcting our own copy is only half of it.** MusicKit does not
+        // re-index its position when the queue is edited — measured for both a
+        // removal and a splice — and the half it keeps is the one
+        // `skipToNextItem` counts from. Left alone, the list looks right and
+        // the next track is whatever sits at a stale index.
+        //
+        // Here rather than beside each edit, because it does not matter what
+        // moved: any disagreement is worth settling, and `_updatePosition`
+        // returns early when the value already matches, so a redundant one
+        // costs nothing.
+        if self.player.position_disagrees {
+            self.player.position_disagrees = false;
+            tracing::debug!(
+                index = self.player.queue_position,
+                "telling MusicKit where the current track is"
+            );
+            self.send(Command::SyncQueuePosition {
+                index: self.player.queue_position,
+            });
+        }
         self.sync_tick(sender);
         self.push_snapshot();
         // After the mirror has the new queue, confirm MusicKit put us on the

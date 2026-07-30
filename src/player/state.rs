@@ -25,6 +25,8 @@ pub struct PlayerState {
     /// Queue as MusicKit reports it. Reconciled, never authored here.
     pub queue: Vec<Item>,
     pub queue_position: usize,
+    /// Whether MusicKit's own idea of the position had to be corrected.
+    pub position_disagrees: bool,
     pub position_ms: u64,
     pub duration_ms: u64,
     pub volume: f64,
@@ -97,6 +99,10 @@ impl PlayerState {
         // honest via the same value — you cannot go back from "not started".
         let reported = queue.index().unwrap_or(0);
         self.queue_position = corrected_position(reported, &self.queue, self.now_playing.as_ref());
+        // Remembered so the caller can tell MusicKit when the two disagree —
+        // correcting our own copy is only half of it, and the half MusicKit
+        // keeps is the one `skipToNextItem` counts from.
+        self.position_disagrees = self.queue_position != reported;
     }
 
     /// Move an item, before MusicKit has confirmed it.
