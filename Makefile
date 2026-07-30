@@ -17,7 +17,7 @@ SIDECAR  = $(DATADIR)/slipmat/sidecar
 
 ICON_SIZES = 16 32 48 64 128 256 512
 
-.PHONY: all build run test check sizes sidecar sidecar-run gapless install install-sidecar \
+.PHONY: all build run test check sizes sidecar sidecar-run gapless footprint install install-sidecar \
         dev-install uninstall clean flatpak flatpak-bundle aur aur-publish
 all: build
 
@@ -60,6 +60,11 @@ sidecar-run: sidecar
 # drove the transition, this says whether the decoder stopped.
 gapless:
 	./scripts/gapless-check.sh
+
+# What the app costs the machine: memory, CPU and disk. Needs a running
+# instance for the first two; `--disk` alone needs nothing.
+footprint:
+	./scripts/footprint.sh
 
 # A native `flatpak-builder` if there is one, otherwise the Flathub app. They
 # are the same tool; the difference is that the flatpak'd one runs sandboxed,
