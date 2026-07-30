@@ -104,6 +104,13 @@ src/components/player_view/mod.rs    890  # the model, `view!` and the reducer. 
                                           # `QUEUE_NEEDS_ROOM` with the measurement behind it, and the
                                           # title taking a second size for the job it does there, and
                                           # the empty transport slot no longer claiming spacing.
+src/style.rs                         610  # the accent, and the cover behind the player. The only
+                                          # CSS, and each rule argues for itself where it sits.
+                                          # Over budget for one test: the backdrop must never carry
+                                          # an animation. An `infinite` one cost ~20% of a core
+                                          # permanently (#126), and the drift that did it was
+                                          # invisible by design — so nothing would notice it coming
+                                          # back except this.
 src/app/queue.rs                     640  # click -> setQueue, healing a queue MusicKit rejected, and
                                           # resolving which row a click meant.
                                           # 600 -> 640 for #88: `index_at` and the three tests that

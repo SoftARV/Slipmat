@@ -924,7 +924,15 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   theme. The bar and the drawer share one rule and differ by two numbers: the
   bar's veil is lighter, because a thin strip shows less of the record, and its
   image is sized `cover` rather than 150%, because a square already overflows a
-  wide strip's height and the drift has room without asking for more.
+  wide strip's height and needs nothing more. Both are centred explicitly: that
+  used to fall out of an animation, and the CSS default is the top-left corner.
+
+  **It does not move.** It drifted once — `background-position` panned across 54
+  seconds, `infinite alternate` — and that cost **~20% of a core, permanently**,
+  because an infinite CSS animation never lets the frame clock stop (#126). The
+  effect was deliberately tuned below perception and it worked: nobody had ever
+  noticed it. A fifth of a core is a lot to pay for motion designed not to be
+  seen.
 
   Cross-faded between tracks with CSS `cross-fade()`, rewritten per frame — a
   provider that is *replaced* is not a state change GTK will transition
