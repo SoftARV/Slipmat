@@ -201,6 +201,7 @@ impl AppModel {
                 .map(|(at, item)| QueueEntry {
                     at,
                     id: queue_id(item),
+                    catalog_id: item.catalog_id.clone(),
                     title: item.title.clone(),
                     artist: item.artist.clone(),
                     duration_ms: item.duration_ms,

@@ -27,6 +27,9 @@ pub struct Target<'a> {
     pub at: usize,
     /// What it was — the half that survives the queue moving. See [`show`].
     pub id: &'a str,
+    /// The catalog id, if Apple gave one. `None` means the album and artist
+    /// cannot be looked up, so they are not offered.
+    pub catalog_id: Option<&'a str>,
     /// False for the track that is playing and for the one already next.
     pub movable: bool,
     /// False for the track that is playing.
@@ -61,6 +64,7 @@ pub fn show(
     let Target {
         at,
         id,
+        catalog_id,
         movable,
         removable,
     } = target;
@@ -78,11 +82,15 @@ pub fn show(
     }
 
     // A second section: these leave the queue and go somewhere else in the app,
-    // which is a different kind of act from reordering it.
-    let browse = gtk::gio::Menu::new();
-    browse.append(Some("Go to _Album"), Some("queue-row.album"));
-    browse.append(Some("Go to A_rtist"), Some("queue-row.artist"));
-    menu.append_section(None, &browse);
+    // which is a different kind of act from reordering it. Only when the track
+    // has a catalog id to look them up with — a menu item that can only fail is
+    // worse than one that is not there.
+    if catalog_id.is_some() {
+        let browse = gtk::gio::Menu::new();
+        browse.append(Some("Go to _Album"), Some("queue-row.album"));
+        browse.append(Some("Go to A_rtist"), Some("queue-row.artist"));
+        menu.append_section(None, &browse);
+    }
 
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
     popover.set_has_arrow(false);
@@ -111,14 +119,14 @@ pub fn show(
         (
             "album",
             QueueViewInput::GoTo {
-                id: id.to_owned(),
+                id: catalog_id.unwrap_or_default().to_owned(),
                 album: true,
             },
         ),
         (
             "artist",
             QueueViewInput::GoTo {
-                id: id.to_owned(),
+                id: catalog_id.unwrap_or_default().to_owned(),
                 album: false,
             },
         ),

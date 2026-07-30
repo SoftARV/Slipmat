@@ -344,7 +344,21 @@ impl RelmListItem for QueueItem {
         )
     }
 
-    fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
+    fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
+        // A recycled widget can arrive still wearing what a drag left on it: a
+        // row highlighted as a drop target may be unbound before `leave` or
+        // `drop` runs, and a track boundary mid-drag is enough to do it. Cleared
+        // here like every other property, and for the same reason.
+        //
+        // **Our own widget only.** This reached `root.parent()` for the dimming
+        // class, and that aborts the app: during a splice GTK is recycling list
+        // item widgets, so `parent()` can hand back one whose last reference is
+        // the temporary you were given — dropping it finalises the widget, which
+        // emits `unbind` on the factory, which asks relm4 for the item that
+        // `bind` is *still holding mutably*. "RefCell already borrowed", from a
+        // line that only removes a CSS class. The dimming needs no clearing
+        // anyway: `drag_begin` and `drag_end` always pair.
+        mark_edge(root, None);
         match self {
             Self::Track {
                 title,
@@ -478,7 +492,17 @@ pub fn focused_row(view: &gtk::ListView, bound: &Bound) -> Option<u32> {
 /// renumbers the rows between its ends without re-binding them, so their
 /// markers are stale even though their contents are right.
 pub fn repaint(bound: &Bound, playing: Option<u32>) {
-    for row in bound.borrow().iter() {
-        apply_playing(&row.icon, &row.remove, playing == Some(row.item.position()));
+    // **Collected before anything is touched.** A GTK setter can move focus,
+    // and focus moving can make `ListView` re-materialise a row — which binds,
+    // which takes `borrow_mut()` on this same cell. Holding the iteration
+    // borrow across a setter would turn that into an abort rather than a
+    // repaint, and an abort is not a failure this app is allowed to have.
+    let rows: Vec<(gtk::Image, gtk::Button, u32)> = bound
+        .borrow()
+        .iter()
+        .map(|row| (row.icon.clone(), row.remove.clone(), row.item.position()))
+        .collect();
+    for (icon, remove, position) in rows {
+        apply_playing(&icon, &remove, playing == Some(position));
     }
 }

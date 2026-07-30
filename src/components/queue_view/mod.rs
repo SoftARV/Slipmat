@@ -51,6 +51,12 @@ pub struct QueueEntry {
     pub at: usize,
     /// MusicKit's id for this item. Not unique within a queue; see `at`.
     pub id: String,
+    /// The catalog id, when Apple gave one — **not** `id`, which falls back to
+    /// MusicKit's own when it did not. The two id spaces are not
+    /// interchangeable, and this is the only one a catalog lookup accepts, so
+    /// "Go to Album" is offered exactly when it is present rather than offered
+    /// always and toasting a 404.
+    pub catalog_id: Option<String>,
     pub title: String,
     pub artist: String,
     pub duration_ms: u64,
@@ -70,7 +76,12 @@ impl Row {
                 hidden: *hidden,
                 expanded: *expanded,
             },
-            Self::Track(entry) => Key::Track(entry.id.clone()),
+            Self::Track(entry) => Key::Track {
+                id: entry.id.clone(),
+                title: entry.title.clone(),
+                artist: entry.artist.clone(),
+                duration_ms: entry.duration_ms,
+            },
         }
     }
 
@@ -521,6 +532,7 @@ impl Component for QueueView {
                     return;
                 };
                 let (at, id) = (entry.at, entry.id.clone());
+                let catalog_id = entry.catalog_id.clone();
                 // The playing track is neither: its own remove button is
                 // insensitive, and "play next" for what is already playing
                 // means nothing.
@@ -534,6 +546,7 @@ impl Component for QueueView {
                     menu::Target {
                         at,
                         id: &id,
+                        catalog_id: catalog_id.as_deref(),
                         movable,
                         removable,
                     },

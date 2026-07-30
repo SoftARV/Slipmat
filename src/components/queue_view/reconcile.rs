@@ -47,11 +47,26 @@ pub enum Key {
     /// more track played, or the user opening it — re-binds the row. It always
     /// sits at position 0, so the resulting splice is at the head, which is the
     /// cheapest place a splice can be.
-    History {
-        hidden: usize,
-        expanded: bool,
+    History { hidden: usize, expanded: bool },
+    /// A track, **and everything the row draws of it**.
+    ///
+    /// The id alone would be the natural key, and it is wrong: nothing else
+    /// ever pushes a content change into the store, so a row whose title or
+    /// duration changes while its id does not would keep the old one for the
+    /// life of the queue. That is reachable — `enqueue` in `preload.js` emits
+    /// the queue the instant `playNext` resolves, and `serializeItem` falls
+    /// back to `''` and `0`, so a row can arrive blank and be corrected by the
+    /// event that follows.
+    ///
+    /// Costs one row re-bound when it happens, which the #6 measurement says is
+    /// free: a one-row splice keeps the scroll, and the focus guard covers the
+    /// case where it would not.
+    Track {
+        id: String,
+        title: String,
+        artist: String,
+        duration_ms: u64,
     },
-    Track(String),
 }
 
 /// The smallest set of store edits that turns one visible list into another.
@@ -190,7 +205,16 @@ mod tests {
     use super::*;
 
     fn keys(v: &[&str]) -> Vec<Key> {
-        v.iter().map(|s| Key::Track((*s).to_owned())).collect()
+        v.iter().map(|s| track(s, "Aitana")).collect()
+    }
+
+    fn track(id: &str, artist: &str) -> Key {
+        Key::Track {
+            id: id.to_owned(),
+            title: format!("{id} (title)"),
+            artist: artist.to_owned(),
+            duration_ms: 200_000,
+        }
     }
 
     #[test]
@@ -420,6 +444,23 @@ mod tests {
         // Dragging from above the current track shifts the same way
         // `play_next_index` does: removing it slides the current track up one.
         assert_eq!(earliest_visible_slot(0, 2), 2);
+    }
+
+    #[test]
+    fn a_row_whose_metadata_changes_is_re_bound() {
+        // The id is unchanged, so an id-only key would call this no work at all
+        // and the row would keep whatever it was first drawn with — which for a
+        // `playNext` echo can be a blank title and "0:00".
+        let before = vec![track("a", ""), track("b", "Aitana")];
+        let after = vec![track("a", "Rosalia"), track("b", "Aitana")];
+        assert_eq!(
+            plan(&before, &after),
+            Plan::Spliced {
+                at: 0,
+                remove: 1,
+                insert: 1
+            }
+        );
     }
 
     #[test]

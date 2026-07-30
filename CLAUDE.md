@@ -815,7 +815,18 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   as many widgets as fit on screen. The consequence: `RelmListItem::bind` must
   set **every** property it cares about, because the widget it is handed was
   showing a different track a moment ago, and anything left unset keeps the old
-  value. Disconnect signal handlers in `unbind` or they stack up on reuse.
+  value. Disconnect signal handlers in `unbind` or they stack up on reuse —
+  unless nothing is captured that can go stale, which is what the queue's rows
+  do instead: connect once in `setup` and read `ListItem::position()` at event
+  time. **Except where the event is a person.** A popover or a drag is spent
+  seconds later, by which time the list has moved, so those carry the row's
+  identity and resolve it again.
+- **Inside `bind`, touch only widgets you own.** Not `root.parent()` — that is
+  GTK's `GtkListItemWidget`, and during a splice it is being recycled, so the
+  reference you are handed can be the last one alive. Dropping it finalises the
+  widget, which emits `unbind` on the factory, which asks relm4 for the item
+  `bind` is *still holding mutably*: `RefCell already borrowed`, and the app
+  aborts. Found from a line whose whole job was removing a CSS class.
 - **A `#[watch]` on a control that also reports user changes is a two-way
   binding, and it will cycle unless you break it.** This one froze a desktop
   hard enough to need a forced power-off, so it is worth understanding rather
@@ -1044,11 +1055,19 @@ There are now three kinds of list, and they share their state deliberately:
 | Artists grid | `AppModel::artist_art_widgets` | `TypedGridView`, virtualised |
 | Playlists grid | `AppModel::playlist_art_widgets` | `TypedGridView`, virtualised |
 
-`CurrentTrack` and `DeadTracks` are shared by all of them; the widget registry
-is **per list**. It is keyed by catalog id, so one shared registry would have
-the same song on a page and in the results behind it overwrite each other's
-entry — the marker would land on whichever bound last. `set_row_playing` asks
-every registry instead.
+`CurrentTrack` and `DeadTracks` are shared by every list **except the queue**;
+the widget registry is always **per list**. Those registries are keyed by
+catalog id, so one shared registry would have the same song on a page and in the
+results behind it overwrite each other's entry — the marker would land on
+whichever bound last. `set_row_playing` asks every registry instead.
+
+**The queue is the exception, because a catalog id cannot address a queue row.**
+A queue may hold the same track twice — Play Next and Add to Queue are what put
+it there (#88) — so an id marks both copies, and "which one is playing" has no
+answer in that space. Its registry is a plain list of the rows currently bound,
+identified by their `GtkListItem`, and the marker is a **visible position** in a
+shared cell. Same principle as `CurrentTrack`, different key, and the reason it
+had to be different is the duplicate.
 
 The grids' registries hold `gtk::Image`s rather than row widgets, and they are
 keyed by the **artwork's** cache key rather than by a catalog id — a tile that
