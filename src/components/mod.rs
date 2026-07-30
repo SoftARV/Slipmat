@@ -15,73 +15,46 @@ pub mod prune;
 pub mod queue_view;
 pub mod track_row;
 
-/// Put a list's scroll position back after `GtkListView` throws it away.
+/// Take keyboard focus out of a list before its model is edited.
 ///
-/// **Measured, after five attempts that were not** (issue #6). Across a
-/// single-row removal the adjustment is fine at first — `value` unchanged, and
-/// `upper` shrunk by exactly one row as it should — and then, somewhere between
-/// 50ms and 100ms, `ListView` assigns `value = 0.0` while `upper` is still
-/// healthy, and leaves it there:
+/// **This is issue #6, and its cause rather than its symptom.** `GtkListView`
+/// throws the scroll position away when the row holding keyboard focus is the
+/// one removed or moved — and clicking a row, or starting a drag on it, is what
+/// gives it focus. Measured on GTK 4.22, driving identical edits with the
+/// viewport parked 200 rows down:
 ///
 /// ```text
-/// before   value=26000  upper=29535  page=556
-/// +50ms    value=26000  upper=29480
-/// +100ms   value=0.0    upper=29480
+///                              value          the row on screen
+/// remove a row, nothing focused  9553 ->  9505   unchanged
+/// remove a focused row           9553 ->     0   lost, ~50ms later
+/// remove a focused row, focus dropped first
+///                                9553 ->  9360   unchanged
 /// ```
 ///
-/// So there is no clamp, whatever #6 assumed. Nothing forces the value down; it
-/// is overwritten. That is why restoring it in an idle, or once `upper` settled,
-/// or calling `scroll_to` one tick after the edit all failed — every one of them
-/// ran *before* the assignment and corrected a value that was still correct.
+/// The delay is what made this so hard to see: for the first frame the
+/// adjustment is *correct*, so every attempt to restore the value ran before the
+/// collapse and corrected a number that was still right. And it is why
+/// `set_focus_on_click(false)` on a row's own buttons never helped — the focus
+/// that matters belongs to the `GtkListItemWidget`, which is GTK's, not ours.
 ///
-/// Hence: watch for the assignment rather than race it. On the first collapse to
-/// zero *while there is still room above*, re-anchor and stop listening.
-///
-/// Two details that both matter:
-///
-/// * **`scroll_to`, not `set_value`.** Restoring the pixel offset alone moves the
-///   viewport while `ListView`'s anchor stays on item 0, so it has materialised
-///   no rows near the new position and the list renders blank until nudged.
-/// * **Bounded.** The listener disconnects after 500ms either way, so a genuine
-///   scroll to the top later is never fought over.
-pub fn restore_scroll_after_edit(
-    view: &relm4::gtk::ListView,
-    adjustment: &relm4::gtk::Adjustment,
-    item: u32,
-) {
+/// The row is not re-focused afterwards. Restoring focus to a row is the very
+/// thing that loses the position, and the act that got here was a click or a
+/// drop, so the pointer is where the user's attention is.
+pub fn drop_focus(view: &relm4::gtk::ListView) {
     use relm4::gtk::prelude::*;
 
-    let was_at = adjustment.value();
-    // Already at the top: nothing to protect, and no way to tell a real jump
-    // from the bug.
-    if was_at <= adjustment.page_size() {
+    let Some(window) = view.root().and_downcast::<relm4::gtk::Window>() else {
         return;
+    };
+    let Some(focused) = relm4::gtk::prelude::GtkWindowExt::focus(&window) else {
+        return;
+    };
+    // Only when it is ours to drop: clearing the window's focus because some
+    // other list was edited would steal it from whatever the user is typing in.
+    let list: relm4::gtk::Widget = view.clone().upcast();
+    if focused == list || focused.is_ancestor(&list) {
+        relm4::gtk::prelude::GtkWindowExt::set_focus(&window, None::<&relm4::gtk::Widget>);
     }
-
-    let handler = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let slot = handler.clone();
-    let view = view.clone();
-    let id = adjustment.connect_value_changed(move |adj| {
-        // Only the collapse, and only while it is unjustified.
-        if adj.value() > 1.0 || was_at > adj.upper() - adj.page_size() {
-            return;
-        }
-        view.scroll_to(item, relm4::gtk::ListScrollFlags::NONE, None);
-        if let Some(id) = slot.borrow_mut().take() {
-            adj.disconnect(id);
-        }
-    });
-    *handler.borrow_mut() = Some(id);
-
-    // Stop listening either way, so a later genuine scroll to the top is never
-    // fought over.
-    let adj = adjustment.clone();
-    let slot = handler.clone();
-    relm4::gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-        if let Some(id) = slot.borrow_mut().take() {
-            adj.disconnect(id);
-        }
-    });
 }
 
 /// Widgets that are **currently bound and on screen**, keyed by track id.

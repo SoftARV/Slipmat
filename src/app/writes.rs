@@ -14,9 +14,6 @@
 //! area has been one of them left behind (see issue #47, which proposes
 //! collapsing them onto a shared cell as `CurrentTrack` already is).
 
-use relm4::gtk;
-use relm4::gtk::prelude::*;
-
 use super::{AppModel, SearchScope, WriteUndo};
 use crate::components::TrackOverride;
 
@@ -52,35 +49,17 @@ impl AppModel {
             return; // not a library track — nothing to take off the list
         }
 
-        // The scrolled window behind the list, so the position can be put back
-        // when GTK discards it. See the note further down.
-        let probe = self
-            .library
-            .view
-            .ancestor(gtk::ScrolledWindow::static_type())
-            .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
-            .map(|sw| sw.vadjustment());
         if let Some(index) = row {
+            // **Before the edit, not after it.** The row menu is parented to
+            // the row, so closing it hands focus back there — and `GtkListView`
+            // discards the scroll position when the focused row is the one
+            // removed. See `components::drop_focus` for the measurement; this
+            // replaced an anchor-and-restore that guessed the top row from the
+            // mean row height and only ever corrected the jump after it showed.
+            crate::components::drop_focus(&self.library.view);
             self.library.remove(index as u32);
             // The widgets it owned are gone with it.
             self.library_icons.borrow_mut().remove(catalog_id);
-
-            // The same restore the queue uses — see `restore_scroll_after_edit`
-            // for the measurements behind it (#6). Anchored on the row that was
-            // at the top, derived from the pixel offset over the mean row
-            // height; the rows here are uniform, so that lands exactly.
-            if let Some(adj) = probe {
-                let rows = self.library.len().max(1) as f64;
-                let row_height = adj.upper() / rows;
-                if row_height > 0.0 {
-                    let top_item = (adj.value() / row_height).floor() as u32;
-                    crate::components::restore_scroll_after_edit(
-                        &self.library.view,
-                        &adj,
-                        top_item,
-                    );
-                }
-            }
         }
         tracing::info!(
             catalog_id,

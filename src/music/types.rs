@@ -224,6 +224,23 @@ pub(crate) struct RelationshipRef {
     pub id: String,
 }
 
+/// A song asked only for what contains it — `include=albums,artists`.
+///
+/// Its own shape rather than a field on [`Resource`] because it is the only
+/// place that asks: a queue item carries no album or artist id, so walking from
+/// a queue row to a page means asking Apple which ones they are. The attributes
+/// are deliberately absent — the page fetches its own.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SongContainers {
+    pub relationships: Option<ContainerRelationships>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ContainerRelationships {
+    pub albums: Option<RelationshipData>,
+    pub artists: Option<RelationshipData>,
+}
+
 impl<A> Resource<A> {
     /// Whether Apple said this is in the library.
     ///
