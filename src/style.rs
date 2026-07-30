@@ -155,8 +155,10 @@ pub fn init(accent: Accent) {
 /// than in the provider that is replaced per track.
 ///
 /// The bar takes `cover`: it is a wide strip, and a square scaled to its width
-/// already overflows its height many times over, so there is room to drift
-/// without asking for more.
+/// already overflows its height many times over, so it needs nothing more.
+///
+/// Both are centred explicitly: that used to come from the drift's keyframes,
+/// and the CSS default is `0% 0%` — the top-left corner.
 ///
 /// The drawer asks for 150% because it is closer to square and would otherwise
 /// have none — but **on both axes, not one**. A single `150%` sets the width
@@ -169,7 +171,8 @@ pub fn init(accent: Accent) {
 /// on a photograph and cannot be seen on a 256px image blurred and then put
 /// behind a veil.
 const COVER_LAYOUT: &str = ".np-bar { background-size: cover, cover; }
-         .np-sheet { background-size: cover, 150% 150%; }";
+         .np-sheet { background-size: cover, 150% 150%; }
+         .np-bar, .np-sheet { background-position: center, center; }";
 
 /// Apply an accent, and the handful of rules that go with it.
 pub fn set_accent(accent: Accent) {
@@ -278,22 +281,6 @@ pub fn set_accent(accent: Accent) {
              );
              box-shadow: inset 0 0 0 1px alpha(currentColor, 0.12);
              color: alpha(currentColor, 0.45);
-         }}
-
-         /* The backdrop drifts, slowly enough that you never catch
-            it moving — you only notice that it is not a still image. Kept
-            here, in the provider parsed once, rather than beside the `url()`
-            that changes per track: a restarted animation on every track
-            change would be a jump, which is the opposite of the point.
-
-            Only the second layer moves. The first is the scrim, and a scrim
-            that slid would stop being one. */
-         @keyframes np-drift {{
-             from {{ background-position: center, 34% 38%; }}
-             to   {{ background-position: center, 66% 62%; }}
-         }}
-         .np-bar, .np-sheet {{
-             animation: np-drift 54s ease-in-out infinite alternate;
          }}
 
          /* Two grey bars where the title and artist go. Static, not pulsing:
@@ -520,6 +507,26 @@ mod tests {
             image == "cover" || image.split_whitespace().count() == 2,
             "the drawer's cover needs both axes or `cover`, got {image:?}"
         );
+    }
+
+    #[test]
+    fn the_backdrop_is_static_and_centred() {
+        // **The one that cost 20% of a core.** An `infinite` CSS animation
+        // never lets GTK's frame clock stop — 119 fps on an idle window, #126.
+        // The cross-fade between covers survives because it is a timer in
+        // `set_backdrop` that ends; nothing in the stylesheet may animate.
+        //
+        // And the position has to be stated, because it used to fall out of
+        // that animation's keyframes: the CSS default is the top-left corner.
+        let css = format!(
+            "{COVER_LAYOUT}{}",
+            backdrop_css(Some("url(\"file:///tmp/x.png\")"), true)
+        );
+        assert!(
+            !css.contains("animation") && !css.contains("keyframes"),
+            "an animation here pins the frame clock open (#126): {css}"
+        );
+        assert!(css.contains("background-position"), "uncentred: {css}");
     }
 
     #[test]
