@@ -266,6 +266,42 @@ mod tests {
     }
 
     #[test]
+    fn a_queue_that_has_gone_away_empties_the_projection() {
+        // **#130.** Signing out clears Apple's session and reloads the page, so
+        // MusicKit comes back holding nothing. Rust only learns that from an
+        // event — and when none arrived, the mirror kept the old queue, `holds`
+        // called the next click "already loaded", and `changeToIndex` went into
+        // a queue that no longer existed. Nothing played until a restart.
+        //
+        // The sidecar now reports the queue whenever the hook attaches. This is
+        // the half that has to be true for that to help: an empty report must
+        // actually empty the projection rather than being ignored as "no news".
+        let mut s = PlayerState::new();
+        let items = q(&["a", "b", "c"]);
+        s.apply(&Event::NowPlaying {
+            item: Some(items[0].clone()),
+            queue: Queue {
+                position: 0,
+                items,
+                reason: QueueChange::Position,
+            },
+        });
+        assert_eq!(s.queue.len(), 3, "baseline");
+
+        s.apply(&Event::Queue(Queue {
+            position: -1,
+            items: Vec::new(),
+            reason: QueueChange::Items,
+        }));
+
+        assert!(
+            s.queue.is_empty(),
+            "the mirror still believes in a dead queue"
+        );
+        assert!(!s.has_next(), "and would offer to skip within it");
+    }
+
+    #[test]
     fn a_move_that_cannot_happen_is_refused() {
         let mut s = PlayerState::new();
         s.apply(&Event::Queue(Queue {
