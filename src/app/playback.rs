@@ -175,9 +175,17 @@ impl AppModel {
         self.now_playing.emit(NowPlayingInput::Sync(Box::new(snap)));
 
         // The queue dialog reads MusicKit's queue, not our library list. The
-        // playing track is identified by id rather than position: after a
-        // removal the positions shift, and marking by index put the indicator
-        // on whichever track slid into the old slot.
+        // playing track is named by its **queue position**, which is the one
+        // answer that survives a duplicate: a queue may hold the same track
+        // twice (#88), and an id marks both copies. `queue_position` is already
+        // the reconciled index — `corrected_position` re-derived it from
+        // `now_playing`, because MusicKit does not re-index after an edit.
+        //
+        // It is a **cursor, not a count of what has been played** — clicking
+        // track 300 of a playlist puts it at 300 the instant playback starts,
+        // and a restored session has it wherever the last one stopped. The
+        // queue folds everything before it away, and says "earlier" rather
+        // than "played" for exactly that reason.
         let queue_id = |item: &crate::player::protocol::Item| {
             item.catalog_id
                 .clone()
@@ -193,12 +201,17 @@ impl AppModel {
                 .map(|(at, item)| QueueEntry {
                     at,
                     id: queue_id(item),
+                    catalog_id: item.catalog_id.clone(),
                     title: item.title.clone(),
                     artist: item.artist.clone(),
                     duration_ms: item.duration_ms,
                 })
                 .collect(),
-            playing: item.map(queue_id),
+            // A loaded-but-never-started queue has no now-playing item, and the
+            // bar already falls back to the queue's own current entry for
+            // exactly that case — so "what this player is on" is the honest
+            // marker, and `None` means nothing is loaded at all.
+            current: (!self.player.queue.is_empty()).then_some(self.player.queue_position),
         });
 
         // Same state, second consumer. MPRIS diffs internally, so calling this

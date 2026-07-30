@@ -720,7 +720,12 @@ src/
                      # *move* between layouts — a child module so construction
                      # and refresh cannot land in different files
     track_row.rs     # FactoryComponent → adw::ActionRow
-    queue_view.rs    # the queue, reorderable
+    queue_view/
+      mod.rs         # the component: the visible list, which is not the queue
+      row.rs         # a track or the history disclosure; drag, drop, and no
+                     # handler that can go stale
+      reconcile.rs   # the diff, because a rebuild is what loses the scroll (#6)
+      menu.rs        # its own row menu: in a queue, "Play Next" is a *move*
     library.rs       # playlists / albums / songs
     cover.rs         # square record or round portrait; one of the two shows
     artwork.rs       # fetch + disk cache; MPRIS needs a file:// path, and
@@ -810,7 +815,18 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   as many widgets as fit on screen. The consequence: `RelmListItem::bind` must
   set **every** property it cares about, because the widget it is handed was
   showing a different track a moment ago, and anything left unset keeps the old
-  value. Disconnect signal handlers in `unbind` or they stack up on reuse.
+  value. Disconnect signal handlers in `unbind` or they stack up on reuse —
+  unless nothing is captured that can go stale, which is what the queue's rows
+  do instead: connect once in `setup` and read `ListItem::position()` at event
+  time. **Except where the event is a person.** A popover or a drag is spent
+  seconds later, by which time the list has moved, so those carry the row's
+  identity and resolve it again.
+- **Inside `bind`, touch only widgets you own.** Not `root.parent()` — that is
+  GTK's `GtkListItemWidget`, and during a splice it is being recycled, so the
+  reference you are handed can be the last one alive. Dropping it finalises the
+  widget, which emits `unbind` on the factory, which asks relm4 for the item
+  `bind` is *still holding mutably*: `RefCell already borrowed`, and the app
+  aborts. Found from a line whose whole job was removing a CSS class.
 - **A `#[watch]` on a control that also reports user changes is a two-way
   binding, and it will cycle unless you break it.** This one froze a desktop
   hard enough to need a forced power-off, so it is worth understanding rather
@@ -984,9 +1000,11 @@ Playback engine first. One vertical slice, one PR each.
   a `file://` URL. Verified over `busctl`: properties read, and `PlayPause` /
   `Next` from the bus reach the sidecar.
 - ✅ **M4 — Queue view.** MusicKit's queue as an `adw::OverlaySplitView`
-  sidebar: jump via `changeToMediaAtIndex`, remove in place. Drag-reorder is
-  deliberately not shipped — `queue.splice` is undocumented and the risk is to
-  the gapless buffer.
+  sidebar: jump via `changeToMediaAtIndex`, remove in place. Drag-reorder was
+  deliberately held back — `queue.splice` is undocumented and the risk was to
+  the gapless buffer — and shipped once that risk was **measured** rather than
+  reasoned about: a reorder does not tear the decoder down, and the boundary
+  after one still reads `prompted_by="nothing — MusicKit advanced itself"`.
 - ✅ **M5 — Library.** Saved songs in a native list, type-to-find search,
   click-to-play enqueuing the whole visible list. Verified against a real
   library: 539 tracks over 6 pages, 4 correctly detected as unplayable.
@@ -1031,17 +1049,25 @@ There are now three kinds of list, and they share their state deliberately:
 | List | Registry | Model |
 | --- | --- | --- |
 | Results (library or catalog) | `AppModel::library_icons` | `TypedListView`, **virtualised** |
-| Queue sidebar | `QueueView`'s own | `TypedListView`, virtualised |
+| Queue sidebar | `QueueView`'s bound-row list | `TypedListView`, virtualised |
 | Album / artist page | the page's own | `TypedListView`, **not** virtualised |
 | Albums grid | `AppModel::album_art_widgets` | `TypedGridView`, virtualised |
 | Artists grid | `AppModel::artist_art_widgets` | `TypedGridView`, virtualised |
 | Playlists grid | `AppModel::playlist_art_widgets` | `TypedGridView`, virtualised |
 
-`CurrentTrack` and `DeadTracks` are shared by all of them; the widget registry
-is **per list**. It is keyed by catalog id, so one shared registry would have
-the same song on a page and in the results behind it overwrite each other's
-entry — the marker would land on whichever bound last. `set_row_playing` asks
-every registry instead.
+`CurrentTrack` and `DeadTracks` are shared by every list **except the queue**;
+the widget registry is always **per list**. Those registries are keyed by
+catalog id, so one shared registry would have the same song on a page and in the
+results behind it overwrite each other's entry — the marker would land on
+whichever bound last. `set_row_playing` asks every registry instead.
+
+**The queue is the exception, because a catalog id cannot address a queue row.**
+A queue may hold the same track twice — Play Next and Add to Queue are what put
+it there (#88) — so an id marks both copies, and "which one is playing" has no
+answer in that space. Its registry is a plain list of the rows currently bound,
+identified by their `GtkListItem`, and the marker is a **visible position** in a
+shared cell. Same principle as `CurrentTrack`, different key, and the reason it
+had to be different is the duplicate.
 
 The grids' registries hold `gtk::Image`s rather than row widgets, and they are
 keyed by the **artwork's** cache key rather than by a catalog id — a tile that
@@ -1110,17 +1136,33 @@ its full height. An album is a dozen tracks. That is the right trade.
 
 ## Known issues
 
-- **Removing a queue track scrolls the list to the top** (#6). Four approaches
-  tried and ruled out; the issue records them so they are not retried. Playing
-  and jumping are unaffected, and the library list no longer does it.
 - **The drawer's backdrop washes out in a light theme** (#77). Found the first time
   the app was seen outside a dark theme, on the Ubuntu VM. The veil is
   `@window_bg_color` so it adapts on its own, but the two numbers beside it —
   the bar's lighter veil, the drawer's 150% sizing — were chosen against dark
   only. A pair of numbers, not a design question.
 
-**Fixed, and left here because the reasoning is still load-bearing:** a runaway
-reducer used to have nothing between it and the session (#37) — every dispatch
+**Fixed, and left here because the reasoning is still load-bearing:**
+
+**A list loses its scroll position when the row holding keyboard focus is the
+one removed or moved** (#6). Not when any row is removed — only the focused one,
+and clicking a row or starting a drag on it is what gives it focus. Measured on
+GTK 4.22 by driving identical edits with the viewport parked 200 rows down:
+untouched at 9505 with nothing focused, zero with the row focused, untouched
+again with focus dropped first. The fix is one line before the edit —
+`components::drop_focus` — and it replaced an anchor-and-restore that could only
+ever correct the jump after it had shown.
+
+Two things made this expensive to find, and both are worth remembering. The
+adjustment is **correct for the first frame** and collapses ~50ms later, so every
+attempt to restore the value ran too early and corrected a number that was still
+right. And `set_focus_on_click(false)` on a row's own buttons cannot help,
+because the focus that matters belongs to the `GtkListItemWidget` — GTK's, not
+ours. The corollary is the rule `reconcile.rs` is built on: **a rebuild loses the
+scroll unconditionally**, focus or no focus, so every list edit has to be a
+splice.
+
+A runaway reducer used to have nothing between it and the session (#37) — every dispatch
 journalled, no coalescing, no ceiling, so a message loop cost a disk write and a
 bus round trip per lap. That is why the `#[watch]` binding bug above reached the
 compositor instead of staying an app bug. `sidecar.rs` now carries a per-kind
@@ -1282,7 +1324,7 @@ evident from the code beside it.
   belongs in the module header instead.
 
 The failure mode this exists against is sediment, not length.
-`components/queue_view.rs` reached **thirty-seven lines** saying one thing three
+`components/queue_view.rs` once reached **thirty-seven lines** saying one thing three
 times, because three separate changes each added a paragraph rather than editing
 the one in front of them — and the first ten lines described behaviour that no
 longer existed. A reader had to reach line twenty to learn the opening was

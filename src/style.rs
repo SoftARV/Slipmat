@@ -244,6 +244,15 @@ pub fn set_accent(accent: Accent) {
              background: none;
          }}
 
+         /* Dragging a queue row. The argument CLAUDE.md asks for: libadwaita has
+            no reorderable list, and a drop has to say where it will land before
+            it happens. An inset shadow rather than a border, because a border
+            would change the row's height and shove the list down 2px as the
+            pointer crossed it. */
+         .queue-drop-above {{ box-shadow: inset 0 2px 0 var(--accent-bg-color); }}
+         .queue-drop-below {{ box-shadow: inset 0 -2px 0 var(--accent-bg-color); }}
+         .queue-dragging {{ opacity: 0.35; }}
+
          /* A button that has to be exactly as big as the 16px spinner it
             swaps with. GTK's own button metrics are built for a hit target,
             not for sitting inside a sidebar row, and the default padding

@@ -594,6 +594,15 @@ pub enum AppMsg {
     /// Push an album or artist page — catalog or library, which the `PageKind`
     /// carries so the fetch knows which endpoint to ask.
     OpenPage(PageKind),
+    /// Walk from a queue row to the album or artist behind it.
+    ///
+    /// A separate message from `OpenPage` because a queue item has no album or
+    /// artist id to push a page with — only the song's own. Resolving that costs
+    /// a request, which is why it happens on a menu click and not per row.
+    OpenQueueTrackPage {
+        catalog_id: String,
+        album: bool,
+    },
     /// The navigation view popped a page — drop the state behind it.
     PagePopped(u64),
     /// Act on a track in MusicKit's queue, by id. The position is resolved
@@ -671,6 +680,11 @@ pub enum CommandMsg {
         catalog_id: String,
         action: LibraryAction,
         result: Result<(), String>,
+    },
+    /// Which album or artist a queue track belongs to. `None` means Apple
+    /// named neither — a single that belongs to no album is not an error.
+    QueueTrackPage {
+        result: Result<Option<PageKind>, String>,
     },
     /// A grid tile's cover is on disk and decoded, or could not be had.
     /// Carries pixels rather than a path because the decode is the expensive
@@ -1357,6 +1371,14 @@ impl Component for AppModel {
                 QueueViewOutput::Move { from, to } => AppMsg::MoveQueueItem { from, to },
                 QueueViewOutput::SetShuffle(on) => AppMsg::SetShuffle(on),
                 QueueViewOutput::SetRepeat(mode) => AppMsg::SetRepeat(mode),
+                QueueViewOutput::GoToAlbum(catalog_id) => AppMsg::OpenQueueTrackPage {
+                    catalog_id,
+                    album: true,
+                },
+                QueueViewOutput::GoToArtist(catalog_id) => AppMsg::OpenQueueTrackPage {
+                    catalog_id,
+                    album: false,
+                },
             });
 
         // The queue **moves** into the expanded player rather than being
@@ -2107,6 +2129,27 @@ impl AppModel {
                 }
             }
             AppMsg::OpenPage(kind) => self.push_page(kind, &sender),
+            AppMsg::OpenQueueTrackPage { catalog_id, album } => {
+                let Some(client) = self.client() else {
+                    self.toast("Not connected yet");
+                    return;
+                };
+                sender.oneshot_command(async move {
+                    CommandMsg::QueueTrackPage {
+                        result: client
+                            .song_containers(&catalog_id)
+                            .await
+                            .map(|(album_id, artist_id)| {
+                                if album {
+                                    album_id.map(PageKind::Album)
+                                } else {
+                                    artist_id.map(PageKind::Artist)
+                                }
+                            })
+                            .map_err(|err| format!("{err:#}")),
+                    }
+                });
+            }
             AppMsg::PagePopped(id) => {
                 // The page owns its own row registry, so dropping it takes the
                 // stale widget handles with it. Nothing to clean up by hand.
@@ -2396,6 +2439,31 @@ impl AppModel {
                     }
                 }
             }
+            CommandMsg::QueueTrackPage { result } => match result {
+                Ok(Some(kind)) => {
+                    // **Close the drawer, or the page lands behind it.** The
+                    // queue only exists inside the player sheet, which is modal
+                    // and covers the navigation stack — so pushing a page and
+                    // leaving the drawer up meant the *successful* click was
+                    // the only silent one, both failures below being toasts
+                    // that draw above the sheet.
+                    //
+                    // On success only: a lookup that found nothing should not
+                    // also take the queue away.
+                    self.show_queue = false;
+                    self.sync_page_controls();
+                    self.push_snapshot();
+                    self.push_page(kind, &sender);
+                }
+                // Said out loud rather than nothing happening: a menu item that
+                // silently does nothing is the failure this project keeps
+                // refusing to ship.
+                Ok(None) => self.toast("Apple doesn't say where that track came from"),
+                Err(err) => {
+                    tracing::warn!(%err, "resolving a queue track's album or artist");
+                    self.toast("Couldn't open that");
+                }
+            },
             CommandMsg::Pruned(report) => {
                 // Reported here rather than inside the sweep, so the sweep
                 // stays a function that returns facts and can be tested as one.

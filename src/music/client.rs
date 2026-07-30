@@ -19,7 +19,8 @@ use serde::Deserialize;
 
 use super::types::{
     Album, AlbumAttributes, AlbumResource, Artist, ArtistAttributes, ArtistResource,
-    LibraryArtistResource, Playlist, PlaylistAttributes, Resource, Response, SongAttributes, Track,
+    LibraryArtistResource, Playlist, PlaylistAttributes, RelationshipData, Resource, Response,
+    SongAttributes, SongContainers, Track,
 };
 
 /// What a catalog search turned up. Apple returns each kind in its own array;
@@ -722,6 +723,44 @@ impl Client {
             )
             .await?;
         Ok((playlist, tracks))
+    }
+
+    /// The album and artist a **catalog** song belongs to.
+    ///
+    /// Exists because a queue item is not a `Track`: MusicKit reports a title,
+    /// an artist name and an album name, and no ids for either. So walking from
+    /// a queue row to its album page needs one lookup, which is why it happens
+    /// on a menu click rather than for every row.
+    ///
+    /// Catalog only, and that is safe here rather than lucky: a queue is loaded
+    /// by `setQueue` from catalog ids, so a queue item's id is always one.
+    /// Either relationship may be absent, and `None` is a real answer — a
+    /// single that belongs to no album is not an error.
+    pub async fn song_containers(&self, id: &str) -> Result<(Option<String>, Option<String>)> {
+        let res = self
+            .get(&format!(
+                "/catalog/{}/songs/{id}?include=albums,artists",
+                self.storefront
+            ))
+            .send()
+            .await
+            .map_err(Self::transport_error)
+            .context("requesting song")?;
+
+        if !res.status().is_success() {
+            return Err(self.explain(res).await);
+        }
+
+        let parsed: Response<SongContainers> = res.json().await.context("decoding song")?;
+        let song = parsed.data.into_iter().next().context("song not found")?;
+        let (albums, artists) = match song.relationships {
+            Some(rel) => (rel.albums, rel.artists),
+            None => (None, None),
+        };
+        let first = |data: Option<RelationshipData>| {
+            data.and_then(|d| d.data.into_iter().next()).map(|r| r.id)
+        };
+        Ok((first(albums), first(artists)))
     }
 
     /// An album and its tracks, in one request.
