@@ -181,8 +181,11 @@ impl AppModel {
         // the reconciled index — `corrected_position` re-derived it from
         // `now_playing`, because MusicKit does not re-index after an edit.
         //
-        // It is also where the played tracks end, which is what the queue
-        // collapses behind its disclosure.
+        // It is a **cursor, not a count of what has been played** — clicking
+        // track 300 of a playlist puts it at 300 the instant playback starts,
+        // and a restored session has it wherever the last one stopped. The
+        // queue folds everything before it away, and says "earlier" rather
+        // than "played" for exactly that reason.
         let queue_id = |item: &crate::player::protocol::Item| {
             item.catalog_id
                 .clone()

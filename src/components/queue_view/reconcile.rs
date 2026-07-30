@@ -144,6 +144,34 @@ pub fn drop_index(from: usize, over: usize, below: bool) -> usize {
     insert_at - usize::from(from < insert_at)
 }
 
+/// The earliest index a dragged row may land on and still be seen.
+///
+/// **A row dropped above the current track files itself into the past**, and
+/// while the history is collapsed the past is exactly what is hidden — so the
+/// drag reads as a delete. That is not hypothetical: any drop above the current
+/// track creates history, whether or not there was any before.
+///
+/// So a collapsed queue has a floor, and it is the slot immediately after the
+/// current track — which is `current` rather than `current + 1` when the row
+/// came from above it, for the same reason [`play_next_index`] shifts.
+pub fn earliest_visible_slot(from: usize, current: usize) -> usize {
+    play_next_index(from, current)
+}
+
+/// Whether two queues have a track in common.
+///
+/// Used to decide whether an opened history belongs to the queue still on
+/// screen. Overlap rather than length or first-id, because Play Next *grows* a
+/// queue and must not fold it, while a fresh album shares nothing with the last
+/// one and should start folded.
+pub fn shares_a_track<'a>(
+    old: impl IntoIterator<Item = &'a str>,
+    new: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    let seen: std::collections::HashSet<&str> = old.into_iter().collect();
+    new.into_iter().any(|id| seen.contains(id))
+}
+
 /// Where "Play Next" puts an item **already in the queue**.
 ///
 /// Not [`crate::player::protocol::Command::PlayNext`], which inserts songs that
@@ -378,6 +406,31 @@ mod tests {
     fn play_next_puts_a_later_track_directly_after_the_current_one() {
         // Queue [a b c d], `b` playing at 1. Play Next on `d`.
         assert_eq!(play_next_index(3, 1), 2);
+    }
+
+    #[test]
+    fn a_drop_above_the_current_track_is_floored_to_where_it_stays_visible() {
+        // Queue [a b c d] with b playing at 1 and the history collapsed. The
+        // reported bug: dragging d onto the upper half of b gives index 1, `b`
+        // slides to 2, and d is then behind the disclosure — the drag reads as
+        // a delete. The floor puts it immediately after b instead.
+        assert_eq!(drop_index(3, 1, false), 1, "what the drop alone says");
+        assert_eq!(earliest_visible_slot(3, 1), 2, "and where it may land");
+
+        // Dragging from above the current track shifts the same way
+        // `play_next_index` does: removing it slides the current track up one.
+        assert_eq!(earliest_visible_slot(0, 2), 2);
+    }
+
+    #[test]
+    fn a_queue_that_shares_a_track_is_the_same_queue() {
+        // Play Next grows a queue; an opened history must survive that.
+        assert!(shares_a_track(["a", "b"], ["a", "b", "c"]));
+        // A different album shares nothing, so its history starts folded.
+        assert!(!shares_a_track(["a", "b"], ["x", "y"]));
+        // And a cleared queue is not the queue it replaced.
+        assert!(!shares_a_track(["a", "b"], []));
+        assert!(!shares_a_track([], ["a"]));
     }
 
     #[test]

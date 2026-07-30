@@ -24,6 +24,7 @@
 mod menu;
 mod reconcile;
 mod row;
+mod sync;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -33,7 +34,7 @@ use relm4::typed_view::list::TypedListView;
 use relm4::{Component, ComponentParts, ComponentSender, adw, gtk};
 
 use crate::components::now_playing::{Repeat, mode_opacity};
-use reconcile::{Key, Plan};
+use reconcile::Key;
 use row::{Bound, QueueItem, Shared};
 
 /// One queue entry, flattened from the sidecar's view of MusicKit's queue.
@@ -122,6 +123,17 @@ pub struct QueueView {
     /// The visible position of the playing row, shared with every row so the
     /// marker can move without the store being touched.
     playing: Rc<Cell<Option<u32>>>,
+    /// Mirrors `!history_expanded` for the drop handlers, which are connected
+    /// once and cannot be told at connect time.
+    collapsed: Rc<Cell<bool>>,
+    /// Which track is being dragged, remembered when the drag begins.
+    ///
+    /// A drag lasts seconds and the list moves underneath it — a track boundary
+    /// alone renumbers every row once the played one folds away — so the
+    /// dragged row is identified once, up front, and resolved again at drop.
+    /// A cancelled drag leaves this set; the next drag overwrites it, and the
+    /// only thing that reads it is a drop, which a drag always precedes.
+    dragging: Option<(usize, String)>,
     bound: Bound,
 }
 
@@ -138,19 +150,33 @@ pub enum QueueViewInput {
     /// A row was activated. A **visible** position, resolved immediately.
     Activated(u32),
     RemoveAt(u32),
+    /// A drag began on a row. Carries a **visible** position, which is resolved
+    /// to a track immediately — see [`QueueView::dragging`].
+    DragStarted(u32),
     /// A row was dropped onto another. `below` says which half of it, so the
-    /// drop lands where the line was drawn rather than onto a row.
+    /// drop lands where the line was drawn rather than onto a row. What was
+    /// dragged is not in here; it was remembered when the drag began.
     Dropped {
-        from: u32,
         over: u32,
         below: bool,
     },
     /// Move a row that is **already in the queue** to just after the current
     /// track. Not an insert; see [`reconcile::play_next_index`].
-    PlayNextAt(u32),
+    ///
+    /// Carries the track's identity rather than its position, because it comes
+    /// from a popover that waited on a person. See `menu::show`.
+    PlayNext {
+        at: usize,
+        id: String,
+    },
+    /// As [`QueueViewInput::RemoveAt`], from the menu rather than the button.
+    RemoveTrack {
+        at: usize,
+        id: String,
+    },
     /// Open the album or artist the row's track belongs to.
     GoTo {
-        at: u32,
+        id: String,
         album: bool,
     },
     Menu {
@@ -331,12 +357,14 @@ impl Component for QueueView {
         let list: TypedListView<QueueItem, gtk::NoSelection> = TypedListView::new();
 
         let playing = Rc::new(Cell::new(None));
+        let collapsed = Rc::new(Cell::new(true));
         let bound: Bound = Rc::new(RefCell::new(Vec::new()));
         // Rows are built by GTK's factory, which has no component behind it.
         // This is what they reach for instead — see `row::Shared`.
         row::install(Rc::new(Shared {
             sender: sender.input_sender().clone(),
             playing: playing.clone(),
+            collapsed: collapsed.clone(),
             bound: bound.clone(),
         }));
 
@@ -354,6 +382,8 @@ impl Component for QueueView {
             shuffle: false,
             repeat: Repeat::default(),
             playing,
+            collapsed,
+            dragging: None,
             bound,
         };
         let queue_list = &model.list.view;
@@ -373,6 +403,18 @@ impl Component for QueueView {
                 // No scroll to save and none to restore. See `reconcile.rs` and
                 // `components::drop_focus` for why that is now true.
                 if entries != self.entries || current != self.current {
+                    // A different queue is a different history, and an opened
+                    // disclosure belongs to the queue it was opened on — left
+                    // alone it unfolds the next album's first track the moment
+                    // the second one starts.
+                    if self.history_expanded
+                        && !reconcile::shares_a_track(
+                            self.entries.iter().map(|e| e.id.as_str()),
+                            entries.iter().map(|e| e.id.as_str()),
+                        )
+                    {
+                        self.history_expanded = false;
+                    }
                     self.entries = entries;
                     self.current = current;
                     self.refresh();
@@ -419,23 +461,38 @@ impl Component for QueueView {
                     });
                 }
             }
-            QueueViewInput::Dropped { from, over, below } => {
+            QueueViewInput::DragStarted(position) => {
+                self.dragging = self.track_at(position).map(|e| (e.at, e.id.clone()));
+            }
+            QueueViewInput::Dropped { over, below } => {
                 // Both ends resolved to queue indices before the arithmetic:
                 // the visible list is not the queue when the history is
                 // collapsed, and mixing the two is off-by-`hidden`.
-                let Some(from) = self.track_at(from).map(|e| e.at) else {
+                let Some((at, id)) = self.dragging.take() else {
                     return;
+                };
+                let Some(from) = self.entry_index(at, &id) else {
+                    return; // it left the queue mid-drag
                 };
                 let Some(over) = self.track_at(over).map(|e| e.at) else {
                     return; // dropped on the disclosure
                 };
-                let to = reconcile::drop_index(from, over, below);
+                let mut to = reconcile::drop_index(from, over, below);
+                // A drop above the current track files the row into the past,
+                // which the collapsed history then hides — so the drag would
+                // read as a delete. `drop_below` keeps the line honest; this
+                // refuses the move the line cannot promise.
+                if !self.history_expanded
+                    && let Some(current) = self.current
+                {
+                    to = to.max(reconcile::earliest_visible_slot(from, current));
+                }
                 if to != from {
                     let _ = sender.output(QueueViewOutput::Move { from, to });
                 }
             }
-            QueueViewInput::PlayNextAt(position) => {
-                let Some(from) = self.track_at(position).map(|e| e.at) else {
+            QueueViewInput::PlayNext { at, id } => {
+                let Some(from) = self.entry_index(at, &id) else {
                     return;
                 };
                 let Some(current) = self.current else { return };
@@ -444,117 +501,48 @@ impl Component for QueueView {
                     let _ = sender.output(QueueViewOutput::Move { from, to });
                 }
             }
-            QueueViewInput::GoTo { at, album } => {
-                if let Some(id) = self.track_at(at).map(|e| e.id.clone()) {
-                    let _ = sender.output(if album {
-                        QueueViewOutput::GoToAlbum(id)
-                    } else {
-                        QueueViewOutput::GoToArtist(id)
-                    });
-                }
+            QueueViewInput::RemoveTrack { at, id } => {
+                // Re-resolved rather than passed through: the app checks the
+                // pair against MusicKit's live queue anyway, but handing it a
+                // position that is already known to be stale is one more thing
+                // for the fallback to have to rescue.
+                let at = self.entry_index(at, &id).unwrap_or(at);
+                let _ = sender.output(QueueViewOutput::Remove { at, id });
+            }
+            QueueViewInput::GoTo { id, album } => {
+                let _ = sender.output(if album {
+                    QueueViewOutput::GoToAlbum(id)
+                } else {
+                    QueueViewOutput::GoToArtist(id)
+                });
             }
             QueueViewInput::Menu { at, over, x, y } => {
-                menu::show(sender.input_sender(), at, &over, x, y, self.movable(at));
+                let Some(entry) = self.track_at(at) else {
+                    return;
+                };
+                let (at, id) = (entry.at, entry.id.clone());
+                // The playing track is neither: its own remove button is
+                // insensitive, and "play next" for what is already playing
+                // means nothing.
+                let removable = self.current != Some(at);
+                let movable = removable
+                    && self
+                        .current
+                        .is_some_and(|c| reconcile::play_next_index(at, c) != at);
+                menu::show(
+                    sender.input_sender(),
+                    menu::Target {
+                        at,
+                        id: &id,
+                        movable,
+                        removable,
+                    },
+                    &over,
+                    x,
+                    y,
+                );
             }
         }
         self.update_view(widgets, sender);
-    }
-}
-
-impl QueueView {
-    /// The track at a **visible** position, if that row is a track at all.
-    fn track_at(&self, position: u32) -> Option<&QueueEntry> {
-        match self.rows.get(position as usize)? {
-            Row::Track(entry) => Some(entry),
-            Row::History { .. } => None,
-        }
-    }
-
-    /// Whether "Play Next" would do anything for this row. It would not for the
-    /// track that is playing, nor for the one already next.
-    fn movable(&self, position: u32) -> bool {
-        let (Some(from), Some(current)) = (self.track_at(position).map(|e| e.at), self.current)
-        else {
-            return false;
-        };
-        from != current && reconcile::play_next_index(from, current) != from
-    }
-
-    /// The list as it should be, given the queue and whether history is showing.
-    fn visible_rows(&self) -> Vec<Row> {
-        let hidden = self.current.unwrap_or(0);
-        let mut rows = Vec::with_capacity(self.entries.len() + 1);
-        if hidden > 0 {
-            rows.push(Row::History {
-                hidden,
-                expanded: self.history_expanded,
-            });
-        }
-        let from = if self.history_expanded { 0 } else { hidden };
-        rows.extend(
-            self.entries
-                .get(from..)
-                .unwrap_or_default()
-                .iter()
-                .cloned()
-                .map(Row::Track),
-        );
-        rows
-    }
-
-    /// Bring the rows in line with the queue, and the markers with the rows.
-    fn refresh(&mut self) {
-        let was: Vec<Key> = self.rows.iter().map(Row::key).collect();
-        let rows = self.visible_rows();
-        let now: Vec<Key> = rows.iter().map(Row::key).collect();
-        let plan = reconcile::plan(&was, &now);
-        self.rows = rows;
-
-        self.playing.set(
-            self.current
-                .and_then(|at| self.rows.iter().position(|r| r.queue_index() == Some(at)))
-                .map(|position| position as u32),
-        );
-
-        self.apply(plan);
-        // **After the edit, unconditionally.** A move renumbers every row
-        // between its ends without re-binding one of them, so their contents are
-        // right and their markers are stale.
-        row::repaint(&self.bound, self.playing.get());
-    }
-
-    /// Perform one plan against the store.
-    fn apply(&mut self, plan: Plan) {
-        if matches!(plan, Plan::Unchanged) {
-            return;
-        }
-        // **The fix for #6, and the only one needed.** `GtkListView` throws the
-        // scroll position away when the row holding keyboard focus is the one
-        // being removed or moved — and clicking a row, or starting a drag on it,
-        // is what gives it focus. Measured: identical edits keep the position
-        // exactly when no row in the list is focused.
-        crate::components::drop_focus(&self.list.view);
-
-        match plan {
-            Plan::Unchanged => {}
-            Plan::Moved { from, to } => {
-                tracing::debug!(from, to, "queue: moving one row");
-                if let Some(item) = self.rows.get(to).map(Row::item) {
-                    self.list.remove(from as u32);
-                    self.list.insert(to as u32, item);
-                }
-            }
-            Plan::Spliced { at, remove, insert } => {
-                tracing::debug!(at, remove, insert, "queue: splicing rows");
-                for _ in 0..remove {
-                    self.list.remove(at as u32);
-                }
-                for offset in 0..insert {
-                    if let Some(item) = self.rows.get(at + offset).map(Row::item) {
-                        self.list.insert((at + offset) as u32, item);
-                    }
-                }
-            }
-        }
     }
 }

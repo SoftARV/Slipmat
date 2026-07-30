@@ -73,6 +73,10 @@ pub struct Shared {
     /// The **visible position** of the playing row, not its id: a queue may hold
     /// the same track twice (#88), so an id marks both copies.
     pub playing: Rc<Cell<Option<u32>>>,
+    /// Whether the tracks before the current one are folded away. Read by the
+    /// drop handlers, which decide where a line may be drawn — see
+    /// [`drop_below`].
+    pub collapsed: Rc<Cell<bool>>,
     pub bound: Bound,
 }
 
@@ -246,40 +250,62 @@ impl RelmListItem for QueueItem {
         root.add_controller(menu);
 
         // `MOVE`, not `COPY`: the row is going somewhere, not being duplicated.
-        // The payload is the row's own visible position, which is all the other
-        // end needs to name it.
+        //
+        // **The payload does not name the track**, and cannot: the store holds
+        // only what is drawn, so all a row knows about itself is where it sits
+        // now. A visible position captured here is stale by the time the drop
+        // lands seconds later — a track boundary alone is enough to shift the
+        // list — so the component is told to remember *which* track this is at
+        // drag start, and resolves it again at drop. The payload exists only to
+        // say the drag is ours.
         let drag = gtk::DragSource::new();
         drag.set_actions(gtk::gdk::DragAction::MOVE);
         let item = list_item.clone();
         let track_row = is_track.clone();
         drag.connect_prepare(move |_, _, _| {
-            track_row
-                .get()
-                .then(|| gtk::gdk::ContentProvider::for_value(&item.position().to_value()))
+            if !track_row.get() {
+                return None;
+            }
+            let position = item.position();
+            emit(QueueViewInput::DragStarted(position));
+            Some(gtk::gdk::ContentProvider::for_value(&position.to_value()))
         });
         // Live feedback, which is the whole of what the old drag was missing:
         // the row travels with the pointer as a picture of itself, and the one
         // it left behind dims so it reads as in transit rather than duplicated.
+        //
+        // The dimming goes on the *list item* rather than on `root`, because a
+        // `GtkWidgetPaintable` renders its widget live rather than snapshotting
+        // it — dimming the widget the icon is made from dims the icon too, and
+        // the thing under the pointer all but disappears.
         let picture = root.clone();
+        let dimmed = list_item.clone();
         drag.connect_drag_begin(move |source, _| {
             let paintable = gtk::WidgetPaintable::new(Some(&picture));
             source.set_icon(Some(&paintable), picture.width() / 2, picture.height() / 2);
-            picture.add_css_class("queue-dragging");
+            if let Some(row) = dimmed.child().and_then(|c| c.parent()) {
+                row.add_css_class("queue-dragging");
+            }
         });
-        let picture = root.clone();
-        drag.connect_drag_end(move |_, _, _| picture.remove_css_class("queue-dragging"));
+        let dimmed = list_item.clone();
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(row) = dimmed.child().and_then(|c| c.parent()) {
+                row.remove_css_class("queue-dragging");
+            }
+        });
         root.add_controller(drag);
 
         let drop = gtk::DropTarget::new(u32::static_type(), gtk::gdk::DragAction::MOVE);
         // Where it would land, drawn as a line on the edge the row would take.
         // Without this a drag says only "somewhere in this list".
         let edge = root.clone();
+        let item = list_item.clone();
         let track_row = is_track.clone();
         drop.connect_motion(move |_, _, y| {
             if !track_row.get() {
                 return gtk::gdk::DragAction::empty();
             }
-            mark_edge(&edge, Some(below_middle(&edge, y)));
+            mark_edge(&edge, Some(drop_below(&edge, &item, y)));
             gtk::gdk::DragAction::MOVE
         });
         let edge = root.clone();
@@ -289,16 +315,12 @@ impl RelmListItem for QueueItem {
         let track_row = is_track.clone();
         drop.connect_drop(move |_, value, _, y| {
             mark_edge(&edge, None);
-            let Ok(from) = value.get::<u32>() else {
-                return false;
-            };
-            if !track_row.get() {
+            if value.get::<u32>().is_err() || !track_row.get() {
                 return false;
             }
             emit(QueueViewInput::Dropped {
-                from,
                 over: item.position(),
-                below: below_middle(&edge, y),
+                below: drop_below(&edge, &item, y),
             });
             true
         });
@@ -350,14 +372,20 @@ impl RelmListItem for QueueItem {
                 } else {
                     "pan-end-symbolic"
                 }));
+                // **"Earlier", not "played".** What this folds away is
+                // everything before the queue's cursor, which is not the same
+                // thing: `play_entries` enqueues the whole list and starts at
+                // the clicked row, so clicking track 300 of a playlist puts 299
+                // tracks behind the disclosure that nobody has heard. A
+                // restored session says it too, having played nothing at all.
                 widgets.hint.set_label(&match hidden {
-                    1 => "1 played".to_owned(),
-                    n => format!("{n} played"),
+                    1 => "1 earlier".to_owned(),
+                    n => format!("{n} earlier"),
                 });
                 widgets.hint.set_tooltip_text(Some(if *expanded {
-                    "Hide the tracks already played"
+                    "Hide the tracks before this one"
                 } else {
-                    "Show the tracks already played"
+                    "Show the tracks before this one"
                 }));
             }
         }
@@ -390,6 +418,17 @@ fn below_middle(row: &gtk::Box, y: f64) -> bool {
     y > f64::from(row.height()) / 2.0
 }
 
+/// The same, except above the current track while the history is collapsed.
+///
+/// A row dropped there files itself into the past and disappears behind the
+/// disclosure, so the drag reads as a delete. `earliest_visible_slot` refuses
+/// the move; this is the half that keeps the promise honest, by drawing the
+/// line where the drop will actually land rather than where it cannot.
+fn drop_below(row: &gtk::Box, item: &gtk::ListItem, y: f64) -> bool {
+    below_middle(row, y)
+        || shared().is_some_and(|s| s.collapsed.get() && s.playing.get() == Some(item.position()))
+}
+
 /// Draw, or clear, the line a drop would land on.
 fn mark_edge(row: &gtk::Box, below: Option<bool>) {
     row.remove_css_class("queue-drop-above");
@@ -413,6 +452,24 @@ pub fn apply_playing(icon: &gtk::Image, remove: &gtk::Button, playing: bool) {
     // Removing the track you are listening to is a stop dressed up as an edit;
     // skip is the button for that.
     remove.set_sensitive(!playing);
+}
+
+/// Which row holds keyboard focus, if any is on screen.
+///
+/// Focus sits either on the `GtkListItemWidget` — GTK's own wrapper, the parent
+/// of our root — or on a button inside the row, so both are asked. Used to
+/// decide whether an edit is one that would cost the scroll position; see
+/// `QueueView::apply`.
+pub fn focused_row(view: &gtk::ListView, bound: &Bound) -> Option<u32> {
+    let window = view.root().and_downcast::<gtk::Window>()?;
+    let focused = gtk::prelude::GtkWindowExt::focus(&window)?;
+    bound.borrow().iter().find_map(|row| {
+        let root = row.item.child()?;
+        let holds = focused == root
+            || focused.is_ancestor(&root)
+            || root.parent().is_some_and(|parent| parent == focused);
+        holds.then(|| row.item.position())
+    })
 }
 
 /// Repaint every row that is on screen, from where it sits **now**.

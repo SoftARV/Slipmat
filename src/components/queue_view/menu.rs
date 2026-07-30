@@ -18,28 +18,64 @@ use relm4::gtk::prelude::*;
 
 use super::QueueViewInput;
 
-/// Show the menu for the row at visible position `at`.
+/// Which row the menu is for, and what it may offer.
+///
+/// A struct rather than four more parameters: they are all facts about one row,
+/// and read as a list of unlabelled booleans at the call site otherwise.
+pub struct Target<'a> {
+    /// Where the row sat in the queue when the menu was opened.
+    pub at: usize,
+    /// What it was — the half that survives the queue moving. See [`show`].
+    pub id: &'a str,
+    /// False for the track that is playing and for the one already next.
+    pub movable: bool,
+    /// False for the track that is playing.
+    pub removable: bool,
+}
+
+/// Show the menu for a queue row.
+///
+/// **Takes the track's identity, never its position on screen.** A popover
+/// waits on a person, and the list moves while it is open — a gapless advance
+/// alone renumbers every row once the played track folds away. A position
+/// captured here and spent on the click that follows names a different track,
+/// which is the trap `row.rs` exists to avoid and the one place a widget cannot
+/// avoid it by reading `ListItem::position()` at event time.
+///
+/// So this carries `(at, id)`, the same pair the row activation sends: the
+/// position says which copy of a duplicated track was meant, and the id lets
+/// the queue check whether it has moved since (#88).
 ///
 /// `movable` is false for the track that is playing and for the one already
-/// next: an item that offers to move something where it already is reads as
-/// broken. Offering nothing at all is not a risk — the other three are always
-/// there.
+/// next; `removable` is false for the track that is playing, because the row's
+/// own remove button is deliberately insensitive there — removing what you are
+/// listening to is a stop dressed up as an edit. Two affordances for one act
+/// must not disagree about when it is allowed.
 pub fn show(
     sender: &relm4::Sender<QueueViewInput>,
-    at: u32,
+    target: Target<'_>,
     over: &gtk::Widget,
     x: f64,
     y: f64,
-    movable: bool,
 ) {
+    let Target {
+        at,
+        id,
+        movable,
+        removable,
+    } = target;
     let menu = gtk::gio::Menu::new();
 
     let queue = gtk::gio::Menu::new();
     if movable {
         queue.append(Some("Play _Next"), Some("queue-row.play-next"));
     }
-    queue.append(Some("_Remove from Queue"), Some("queue-row.remove"));
-    menu.append_section(None, &queue);
+    if removable {
+        queue.append(Some("_Remove from Queue"), Some("queue-row.remove"));
+    }
+    if queue.n_items() > 0 {
+        menu.append_section(None, &queue);
+    }
 
     // A second section: these leave the queue and go somewhere else in the app,
     // which is a different kind of act from reordering it.
@@ -58,10 +94,34 @@ pub fn show(
     // accumulating on the window one right-click at a time.
     let actions = gtk::gio::SimpleActionGroup::new();
     for (name, msg) in [
-        ("play-next", QueueViewInput::PlayNextAt(at)),
-        ("remove", QueueViewInput::RemoveAt(at)),
-        ("album", QueueViewInput::GoTo { at, album: true }),
-        ("artist", QueueViewInput::GoTo { at, album: false }),
+        (
+            "play-next",
+            QueueViewInput::PlayNext {
+                at,
+                id: id.to_owned(),
+            },
+        ),
+        (
+            "remove",
+            QueueViewInput::RemoveTrack {
+                at,
+                id: id.to_owned(),
+            },
+        ),
+        (
+            "album",
+            QueueViewInput::GoTo {
+                id: id.to_owned(),
+                album: true,
+            },
+        ),
+        (
+            "artist",
+            QueueViewInput::GoTo {
+                id: id.to_owned(),
+                album: false,
+            },
+        ),
     ] {
         let action = gtk::gio::SimpleAction::new(name, None);
         let sender = sender.clone();

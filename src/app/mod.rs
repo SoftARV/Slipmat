@@ -2440,7 +2440,21 @@ impl AppModel {
                 }
             }
             CommandMsg::QueueTrackPage { result } => match result {
-                Ok(Some(kind)) => self.push_page(kind, &sender),
+                Ok(Some(kind)) => {
+                    // **Close the drawer, or the page lands behind it.** The
+                    // queue only exists inside the player sheet, which is modal
+                    // and covers the navigation stack — so pushing a page and
+                    // leaving the drawer up meant the *successful* click was
+                    // the only silent one, both failures below being toasts
+                    // that draw above the sheet.
+                    //
+                    // On success only: a lookup that found nothing should not
+                    // also take the queue away.
+                    self.show_queue = false;
+                    self.sync_page_controls();
+                    self.push_snapshot();
+                    self.push_page(kind, &sender);
+                }
                 // Said out loud rather than nothing happening: a menu item that
                 // silently does nothing is the failure this project keeps
                 // refusing to ship.
