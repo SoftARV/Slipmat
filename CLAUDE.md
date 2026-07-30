@@ -1202,20 +1202,35 @@ Two gotchas around installing the sidecar, both of which fail confusingly:
   `node_modules` with no binary, and the failure only surfaces later as
   "Electron not installed". `make sidecar` runs both steps.
 
-### Gapless — verified 2026-07-26
+### Gapless — verified 2026-07-30
 
-**It works.** Measured on *A Thousand Suns (Deluxe)*, four consecutive
-boundaries:
+**It works.** Measured on *A Thousand Suns (Deluxe)*, seven consecutive
+boundaries, with the **queue drawer open and the history collapsed** — so a
+store splice landed at every one of them:
 
-- Every transition logged `prompted_by="nothing — MusicKit advanced itself"`.
-  Rust sent nothing at any boundary; MusicKit advanced a queue it already held,
-  which is exactly what rule 3 exists to guarantee.
-- Wall-clock between transitions matched each track's length to the second
-  (57s / 254s / 18s), so every track ran out rather than being cut short.
-- PipeWire sink-input **#26158 was created once, at the first play, and was
-  still alive after all four boundaries.** The decoder never stopped. That is
-  the half you cannot hear and cannot infer.
+- PipeWire sink-input **#39600 was created once, at the first play, and was
+  still alive after all seven boundaries.** The decoder never stopped. That is
+  the half you cannot hear and cannot infer, and it is the whole result.
+- `left_ms=0` on every transition, and wall-clock matched each track's length to
+  the second — including the two interludes, *Empty Spaces* at 20s and *Jornada
+  Del Muerto* at 95s. Every track ran out rather than being cut short.
+- Every boundary spliced the queue rows (`remove=2 insert=1` once the disclosure
+  is re-labelling) and none of it disturbed playback. The reconcile is minimal:
+  it touches the head and nothing else.
 - The listener heard no gap.
+
+**One check did not pass, and it is the check rather than the playback.** Every
+transition logged `prompted_by="syncQueuePosition"`, not the
+`"nothing — MusicKit advanced itself"` this used to read and that the procedure
+below still asks for. MusicKit pre-advances its own `queue.position` before
+firing `nowPlayingItemDidChange`, we read that as a disagreement and put it
+back, and a command therefore always lands inside the window `log_transition`
+looks back over. So that string is currently unreachable and the rule 3 check
+cannot fail — see **#121**, which is about the diagnostic going blind more than
+about the traffic.
+
+The first verification, on 2026-07-26, was four boundaries with the drawer shut
+and did read `prompted_by="nothing"`. It predates `syncQueuePosition`.
 
 Two things that run cost, both now fixed, both worth not re-learning:
 
@@ -1247,12 +1262,20 @@ RUST_LOG=slipmat=info cargo run               # terminal 2: watch the transition
 ```
 
 Queue an album with a **true** gapless transition — a live record, a DJ mix,
-something segued — and let it run across the boundary. Then check all three:
+something segued — and let it run across the boundary. **Open the queue drawer
+and leave the history collapsed**: that is the configuration where every
+boundary also edits the list, and leaving the drawer shut tests the cheap path.
+`RUST_LOG=slipmat=debug` adds the `queue:` lines so both are on one clock.
 
-1. **The log.** Every boundary prints a `track transition` line. A natural one
-   must read `prompted_by="nothing — MusicKit advanced itself"` with `left_ms`
-   near zero. If `prompted_by` names a command on a track that ran to its end,
-   Rust is driving the queue and rule 3 is broken.
+Then check all three:
+
+1. **The log.** Every boundary prints a `track transition` line, and a natural
+   one has `left_ms` near zero. `prompted_by` should read
+   `"nothing — MusicKit advanced itself"` — if it names a command on a track
+   that ran to its end, Rust is driving the queue and rule 3 is broken.
+   **Currently it always reads `syncQueuePosition` and this check cannot fail**
+   (#121). Until that is fixed, `left_ms` and the stream are the only two halves
+   of this that still work.
 2. **The stream.** `make gapless` should print *nothing* at the boundary. A
    `remove` followed by a `new` is a torn-down decoder, which is audible no
    matter what the log says.
