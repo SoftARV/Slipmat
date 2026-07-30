@@ -149,6 +149,22 @@ app.commandLine.appendSwitch(
 app.commandLine.appendSwitch('disk-cache-size', String(200 * 1024 * 1024))
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+// No GPU process. The window is never mapped (WINDOW_MODE=hidden), so nothing
+// this renderer draws is ever seen — and it was paying for compositing anyway.
+//
+// Measured while playing, PSS across the whole tree:
+//
+//              total    renderer   gpu     cpu
+//   before     856 MB   399 MB     106 MB  24.8%
+//   after      587 MB   169 MB      60 MB   7.1%
+//
+// The renderer is where most of it went: without a GPU process it stops holding
+// the raster and texture buffers that back a surface nobody looks at. 269 MB and
+// most of the sidecar's idle CPU, for a picture that is never presented.
+//
+// Audio is unaffected — Widevine on Linux decrypts in software and this is an
+// audio-only client. If Slipmat ever plays video, revisit this first.
+app.commandLine.appendSwitch('disable-gpu')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
