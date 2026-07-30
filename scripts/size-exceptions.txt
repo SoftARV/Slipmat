@@ -81,12 +81,16 @@ src/app/library.rs                   845  # four collections and the catalog sea
                                           # 800 -> 845 for #83: the artwork keep-set is derived from
                                           # these four collections, so the derivation belongs with
                                           # them rather than beside the sweep that consumes it.
-src/player/protocol.rs               740  # the whole sidecar contract in one file, deliberately
+src/player/protocol.rs               780  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
                                           # 650 -> 740 for #89: a shared `ms` deserializer that
                                           # floors MusicKit's negative sentinels, and four tests
                                           # built from the exact lines it rejected.
+                                          # 740 -> 780 for #121: `QueueChange`, which is why a queue
+                                          # event fired. Two MusicKit events the sidecar used to
+                                          # collapse into one, and the explanation of why settling
+                                          # the wrong one fights gapless is worth the lines.
 src/components/player_view/mod.rs    890  # the model, `view!` and the reducer. The transport
                                           # moved to a child module — see its header for why a
                                           # child and not a sibling. 870 before the split; this

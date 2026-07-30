@@ -16,7 +16,7 @@
 
 use std::time::Instant;
 
-use super::protocol::{Event, Item, PlaybackState, Queue, RepeatMode};
+use super::protocol::{Event, Item, PlaybackState, Queue, QueueChange, RepeatMode};
 
 #[derive(Debug, Default)]
 pub struct PlayerState {
@@ -102,7 +102,20 @@ impl PlayerState {
         // Remembered so the caller can tell MusicKit when the two disagree —
         // correcting our own copy is only half of it, and the half MusicKit
         // keeps is the one `skipToNextItem` counts from.
-        self.position_disagrees = self.queue_position != reported;
+        //
+        // **Only after an edit** (#121). Correcting our own copy is always right
+        // — `now_playing` is the fact and the reported index is a hint. Writing
+        // the correction *back* is only right when the edit is what made the
+        // index stale. MusicKit pre-advances its cursor a few hundred
+        // milliseconds before every boundary, and that disagreement looks
+        // identical here: reported is one ahead, `now_playing` has not caught up
+        // yet, and both are behaving correctly. Settling it pushed MusicKit
+        // backwards mid-advance and put a command inside the window
+        // `log_transition` looks over, so the rule 3 check stopped being able to
+        // fail. The sidecar knows which event fired; this trusts it rather than
+        // guessing from the shape.
+        self.position_disagrees =
+            self.queue_position != reported && queue.reason == QueueChange::Items;
     }
 
     /// Move an item, before MusicKit has confirmed it.
@@ -228,6 +241,7 @@ mod tests {
             queue: Queue {
                 position: 2,
                 items: items.clone(),
+                reason: QueueChange::Position,
             },
         });
 
@@ -257,6 +271,7 @@ mod tests {
         s.apply(&Event::Queue(Queue {
             position: 0,
             items: q(&["a", "b"]),
+            ..Default::default()
         }));
         assert!(!s.move_item(0, 0), "a move to itself is not a move");
         assert!(!s.move_item(0, 9), "out of range");
@@ -276,6 +291,7 @@ mod tests {
             queue: Queue {
                 position: 2,
                 items: items.clone(),
+                reason: QueueChange::Position,
             },
         });
         assert_eq!(s.queue_position, 2, "baseline");
@@ -285,11 +301,89 @@ mod tests {
         s.apply(&Event::Queue(Queue {
             position: 2,
             items: q(&["b", "c", "d"]),
+            reason: QueueChange::Items,
         }));
         assert_eq!(
             s.queue_position, 1,
             "the playing track moved to 1; a stale report said 2"
         );
+        assert!(
+            s.position_disagrees,
+            "and MusicKit has to be told, or `skipToNextItem` counts from 2"
+        );
+    }
+
+    #[test]
+    fn musickits_pre_advance_is_not_a_disagreement_to_settle() {
+        // **#121.** A few hundred milliseconds before every boundary MusicKit
+        // moves its own cursor to the next track while `now_playing` is still
+        // the current one. Our copy is corrected — that half is always right —
+        // but writing it *back* pushes MusicKit backwards mid-advance, and it
+        // put a command inside the window `log_transition` looks over, so the
+        // rule 3 check could no longer fail.
+        //
+        // Measured lead times before the transition: 231, 284, 317, 345, 346
+        // and 802ms.
+        let mut s = PlayerState::new();
+        let items = q(&["a", "b", "c"]);
+        s.apply(&Event::NowPlaying {
+            item: Some(items[0].clone()),
+            queue: Queue {
+                position: 0,
+                items: items.clone(),
+                reason: QueueChange::Position,
+            },
+        });
+
+        s.apply(&Event::Queue(Queue {
+            position: 1, // MusicKit has moved on; `now_playing` has not
+            items: items.clone(),
+            reason: QueueChange::Position,
+        }));
+
+        assert_eq!(s.queue_position, 0, "our copy still follows now_playing");
+        assert!(
+            !s.position_disagrees,
+            "but MusicKit is right and must not be corrected"
+        );
+    }
+
+    #[test]
+    fn an_identical_disagreement_after_an_edit_is_still_settled() {
+        // The same numbers as the test above, and the opposite answer. Nothing
+        // about the *shape* separates them — only which MusicKit event fired,
+        // which is why the sidecar reports it rather than this guessing.
+        let mut s = PlayerState::new();
+        let items = q(&["a", "b", "c"]);
+        s.apply(&Event::NowPlaying {
+            item: Some(items[0].clone()),
+            queue: Queue {
+                position: 0,
+                items: items.clone(),
+                reason: QueueChange::Position,
+            },
+        });
+
+        s.apply(&Event::Queue(Queue {
+            position: 1,
+            items: items.clone(),
+            reason: QueueChange::Items,
+        }));
+
+        assert_eq!(s.queue_position, 0);
+        assert!(
+            s.position_disagrees,
+            "an edit leaves a genuinely stale index"
+        );
+    }
+
+    #[test]
+    fn a_sidecar_that_does_not_say_why_is_never_settled() {
+        // The default is `Position`, deliberately: settling is a write to the
+        // player at its most delicate moment, so it happens only when something
+        // says an edit occurred — never because nothing said otherwise.
+        let queue: Queue = serde_json::from_str(r#"{"position":1,"items":[]}"#).unwrap();
+        assert_eq!(queue.reason, QueueChange::Position);
     }
 
     #[test]
@@ -420,6 +514,7 @@ mod tests {
         s.apply(&Event::Queue(Queue {
             position: 0,
             items: vec![item("a", 1), item("b", 1)],
+            ..Default::default()
         }));
         assert!(s.has_next());
         assert!(!s.has_previous(), "nothing before the first track");
@@ -428,6 +523,7 @@ mod tests {
         s.apply(&Event::Queue(Queue {
             position: -1,
             items: vec![item("a", 1), item("b", 1)],
+            ..Default::default()
         }));
         assert_eq!(s.queue_position, 0);
         assert!(!s.has_previous(), "cannot go back from 'not started'");
@@ -435,6 +531,7 @@ mod tests {
         s.apply(&Event::Queue(Queue {
             position: 1,
             items: vec![item("a", 1), item("b", 1)],
+            ..Default::default()
         }));
         assert!(!s.has_next(), "nothing after the last track");
         assert!(s.has_previous());

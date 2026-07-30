@@ -146,9 +146,22 @@ function serializeItem(item) {
   }
 }
 
-function currentQueue() {
+// `reason` is the one thing Rust cannot work out for itself, and the two values
+// mean opposite things:
+//
+//   'items'     the queue was EDITED. MusicKit does not re-index its own
+//               position afterwards, so it has to be told where the current
+//               track went (#117, #118).
+//   'position'  MusicKit moved its own cursor. Correcting that is fighting it —
+//               including the pre-advance it does a few hundred ms before every
+//               track boundary, which is what makes gapless seamless (#121).
+//
+// Every caller passes it explicitly. A default here would be a guess at the one
+// question this argument exists to answer.
+function currentQueue(reason) {
   const items = pick(() => music.queue && music.queue.items) || []
   return {
+    reason,
     position: pick(() => music.queue && music.queue.position) ?? 0,
     items: items.map(serializeItem),
   }
@@ -183,7 +196,7 @@ function wireEvents() {
   on('nowPlayingItemDidChange', () =>
     emit('nowPlaying', {
       item: serializeItem(pick(() => music.nowPlayingItem)),
-      queue: currentQueue(),
+      queue: currentQueue('position'),
     }))
 
   on('playbackTimeDidChange', () =>
@@ -197,8 +210,10 @@ function wireEvents() {
   on('shuffleModeDidChange', emitModes)
   on('repeatModeDidChange', emitModes)
 
-  on('queueItemsDidChange', () => emit('queue', currentQueue()))
-  on('queuePositionDidChange', () => emit('queue', currentQueue()))
+  // Subscribed separately and reported separately. Collapsing them into one
+  // event is what blinded the gapless check: see `currentQueue`.
+  on('queueItemsDidChange', () => emit('queue', currentQueue('items')))
+  on('queuePositionDidChange', () => emit('queue', currentQueue('position')))
 
   on('authorizationStatusDidChange', () => {
     const t = pushTokens()
@@ -232,7 +247,7 @@ async function enqueue(method, songs) {
   // `queueItemsDidChange` does not fire for playNext/playLater in this
   // MusicKit build, so the mirror would keep showing the old queue and the
   // insert would look like it did nothing. Push it ourselves.
-  emit('queue', currentQueue())
+  emit('queue', currentQueue('items'))
 
   // And say so if the queue genuinely did not grow — silently doing nothing is
   // the failure this project keeps refusing to ship.
@@ -399,7 +414,7 @@ const commands = {
     }
     // `queueItemsDidChange` is not reliable for this either — same as
     // playNext/playLater.
-    emit('queue', currentQueue())
+    emit('queue', currentQueue('items'))
     const left = pick(() => music.queue?.items?.length) ?? 0
     if (left > 0) {
       throw new Error(`could not clear the queue (${left} items remain)`)
@@ -417,7 +432,7 @@ const commands = {
     emitModes()
     // Turning shuffle off restores the queue's original order, so the queue
     // itself has changed even though no item was added or removed.
-    emit('queue', currentQueue())
+    emit('queue', currentQueue('items'))
   },
   setRepeat: ({ mode }) => {
     // MusicKit: 0 none, 1 one, 2 all
