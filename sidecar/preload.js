@@ -529,6 +529,23 @@ function wire(trigger) {
     authorized: !!pick(() => music.isAuthorized),
     version: pick(() => window.MusicKit.version) || 'unknown',
   })
+
+  // **And say what the queue is now.** Rust mirrors the queue and only ever
+  // learns of a change from an event, so a queue that goes away without one is
+  // a queue Rust keeps believing in.
+  //
+  // That is exactly what signing out does: the session is cleared, the page
+  // reloads, and this preload context is replaced — MusicKit comes back with an
+  // empty queue and nothing said so. Rust went on holding the old 519 items,
+  // decided a click was "already loaded", and sent `changeToIndex` into a queue
+  // that no longer existed. Silent, and wedged until the app restarted (#130).
+  //
+  // Reported on every wire rather than only after a sign-out, because every
+  // path that replaces this context has the same hole: a cross-document
+  // navigation, a sidecar restart. Whatever the queue is at the moment the hook
+  // attaches, that is the truth, and an empty one is a fact rather than an
+  // absence of news.
+  emit('queue', currentQueue('items'))
   return true
 }
 
