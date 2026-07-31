@@ -15,11 +15,14 @@
 //! #126. Not by dragging the slider either, because you are looking at the thing
 //! that already moved.
 //!
-//! No CSS of its own: `.osd` is GTK's, the same translucent panel the Shell
-//! uses, so `style.rs` stays the exception it is meant to be.
+//! `.osd` is GTK's own — the same translucent panel the Shell uses — and it
+//! brings every colour, in both themes. What it does not bring is a shape: it
+//! stops at square corners, and no libadwaita widget exists for an OSD panel to
+//! inherit a pill from. So `style.rs` carries one rule of two properties, which
+//! is the argument that rule has to make.
 
 use relm4::gtk::prelude::*;
-use relm4::{RelmWidgetExt, adw, gtk};
+use relm4::{adw, gtk};
 
 use super::{AppModel, AppMsg};
 
@@ -28,6 +31,26 @@ use super::{AppModel, AppMsg};
 /// Re-armed on every press, so holding the key keeps it visible rather than
 /// flickering once per repeat.
 const HOLD_MS: u64 = 1_200;
+
+/// A pending hide, and whether it has already gone off.
+///
+/// A `SourceId` must be removed exactly **once**. A one-shot timeout removes its
+/// own source when it fires, but our callback only *sends a message* — and relm4
+/// processes that a main-loop turn later. Between those two moments the id we
+/// are holding is already dead, and a keypress landing in that gap would remove
+/// it a second time.
+///
+/// The flag closes the gap because the callback sets it **synchronously**,
+/// before the message goes anywhere.
+///
+/// `Rc<Cell<bool>>` rather than a plain `bool`: the closure outlives this scope
+/// and cannot borrow the model, so the flag needs two owners. `Rc` and not
+/// `Arc` because `timeout_add_local_once` runs its callback on the main thread —
+/// there is no second thread to synchronise with, so the cheaper one is right.
+pub(super) struct HideTimer {
+    id: gtk::glib::SourceId,
+    fired: std::rc::Rc<std::cell::Cell<bool>>,
+}
 
 /// The panel, and the two widgets whose values change.
 pub(super) struct VolumeOsd {
@@ -62,7 +85,6 @@ impl VolumeOsd {
         panel.add_css_class("osd");
         // The colours are `.osd`; the pill shape is ours. See `style.rs`.
         panel.add_css_class("volume-osd");
-        panel.set_margin_all(12);
         panel.append(&icon);
         panel.append(&level);
 
@@ -70,7 +92,11 @@ impl VolumeOsd {
         revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
         revealer.set_child(Some(&panel));
         revealer.set_halign(gtk::Align::Center);
-        revealer.set_valign(gtk::Align::End);
+        // **Top, not bottom.** It sat above the Now Playing bar, which put it
+        // straight through the middle of the drawer's transport and its queue
+        // the moment the drawer was open — over the controls you were reaching
+        // for. Nothing is ever laid out directly under the header.
+        revealer.set_valign(gtk::Align::Start);
         // It is feedback, not furniture: a click aimed at what is underneath
         // must reach it rather than landing on a panel that is fading out.
         revealer.set_can_target(false);
@@ -82,18 +108,22 @@ impl VolumeOsd {
         }
     }
 
-    /// Sit clear of the Now Playing bar, however tall the bar happens to be.
+    /// Sit just below the header, however tall the header happens to be.
     ///
-    /// `bottom-bar-height` notifies, so the panel follows it rather than
-    /// guessing — the height changes with the theme and the text scale, and
-    /// guessing at it has already been got wrong once for the content inset.
-    pub(super) fn clear_the_bar(&self, sheet: &adw::BottomSheet) {
+    /// `top-bar-height` notifies, so the panel follows it rather than guessing —
+    /// the height changes with the theme and the text scale, and guessing at a
+    /// bar's height has already been got wrong once here for the content inset.
+    ///
+    /// Every page's header is the same height, so following one is enough; the
+    /// panel floats above the whole window rather than inside a page, which is
+    /// what keeps it over the drawer instead of under it.
+    pub(super) fn sit_below_the_header(&self, bars: &adw::ToolbarView) {
         let revealer = self.revealer.clone();
-        let apply = move |sheet: &adw::BottomSheet| {
-            revealer.set_margin_bottom(sheet.bottom_bar_height() + 12);
+        let apply = move |bars: &adw::ToolbarView| {
+            revealer.set_margin_top(bars.top_bar_height() + 12);
         };
-        apply(sheet);
-        sheet.connect_bottom_bar_height_notify(apply);
+        apply(bars);
+        bars.connect_top_bar_height_notify(apply);
     }
 
     fn show_level(&self, volume: f64) {
@@ -129,22 +159,30 @@ impl AppModel {
         // **One timer, reset — not one per press.** Holding the key repeats at
         // the keyboard's rate, and a fresh timeout per repeat left dozens alive
         // at once, each holding a cloned sender and each firing later to say
-        // something already said. `SourceId` must be removed exactly once, so
-        // it is taken out of the Option to remove it; the callback clears the
-        // slot itself, because removing a source that has already fired aborts.
-        if let Some(id) = self.osd_timer.take() {
-            id.remove();
+        // something already said.
+        //
+        // Only cancel one that has not gone off yet — see [`HideTimer`].
+        if let Some(pending) = self.osd_timer.take()
+            && !pending.fired.get()
+        {
+            pending.id.remove();
         }
-        let sender = sender.clone();
-        self.osd_timer = Some(gtk::glib::timeout_add_local_once(
-            std::time::Duration::from_millis(HOLD_MS),
-            move || sender.input(AppMsg::HideVolumeOsd),
-        ));
+
+        let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+        let id = gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(HOLD_MS), {
+            let fired = fired.clone();
+            let sender = sender.clone();
+            move || {
+                fired.set(true);
+                sender.input(AppMsg::HideVolumeOsd);
+            }
+        });
+        self.osd_timer = Some(HideTimer { id, fired });
     }
 
     pub(super) fn hide_volume_osd(&mut self) {
-        // The source is finishing as this runs, so drop the handle without
-        // removing it.
+        // The source removed itself when it fired, so drop the handle rather
+        // than removing it again.
         self.osd_timer = None;
         self.osd_shown = false;
     }

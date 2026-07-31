@@ -183,7 +183,7 @@ pub struct AppModel {
     /// an edge through `sync_animated` and never as a `#[watch]`.
     osd_shown: bool,
     /// The single hide-timer, reset on each press rather than added to.
-    osd_timer: Option<gtk::glib::SourceId>,
+    osd_timer: Option<osd::HideTimer>,
     now_playing: Controller<NowPlaying>,
     queue_view: Controller<QueueView>,
     /// The drawer the bar opens into. Fed the same `Snapshot` as the bar, and
@@ -920,6 +920,7 @@ impl Component for AppModel {
                                     set_tag: Some("results"),
 
                                     #[wrap(Some)]
+                                    #[name = "content_bars"]
                                     set_child = &adw::ToolbarView {
                                     add_top_bar = &adw::HeaderBar {
                                         // The sidebar's own header carries the
