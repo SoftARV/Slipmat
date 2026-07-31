@@ -73,6 +73,33 @@ pub type ArtRegistry = Rc<RefCell<HashMap<String, Vec<Cover>>>>;
 /// turns it into a relm4 `Command`.
 pub type ArtRequest = Rc<dyn Fn(String, Artwork)>;
 
+/// What a right-click on a playlist tile asks for.
+///
+/// The tile carries the playlist's identity and where it was clicked, and
+/// nothing else: whether it is pinned is the app's to know, and asking the tile
+/// would mean telling every tile about the sidebar.
+#[derive(Debug)]
+pub struct TileMenuRequest {
+    /// The **library** id — the same one a pin stores.
+    pub playlist_id: String,
+    pub at: (i32, i32),
+    pub over: gtk::Box,
+}
+
+type TileMenuHandler = Rc<dyn Fn(TileMenuRequest)>;
+
+thread_local! {
+    /// Set once at startup, for the same reason as `track_row`'s: the gesture is
+    /// created in `setup`, a *static* method with no access to any item.
+    static TILE_MENU: RefCell<Option<TileMenuHandler>> = const { RefCell::new(None) };
+}
+
+/// Install the handler that shows a tile's context menu. Called once, from the
+/// root component's `init`.
+pub fn set_tile_menu(handler: impl Fn(TileMenuRequest) + 'static) {
+    TILE_MENU.with(|m| *m.borrow_mut() = Some(Rc::new(handler)));
+}
+
 pub fn art_registry() -> ArtRegistry {
     Rc::new(RefCell::new(HashMap::new()))
 }
@@ -204,6 +231,16 @@ pub struct GridItemWidgets {
     cover: Cover,
     title: gtk::Label,
     subtitle: gtk::Label,
+    /// Which playlist this widget is currently showing, or `None` for an album,
+    /// an artist, or a tile between binds.
+    ///
+    /// The gesture is connected once in `setup` and lives as long as the widget,
+    /// which outlives every tile it displays — so it cannot capture one. A
+    /// right-click is a person, and a person is slow: the popover opens seconds
+    /// later, by which time the grid may have recycled this widget onto
+    /// something else. Reading the cell at click time is what keeps the menu
+    /// about the tile under the pointer.
+    showing: Rc<RefCell<Option<String>>>,
 }
 
 impl RelmGridItem for GridItem {
@@ -252,17 +289,51 @@ impl RelmGridItem for GridItem {
         let cover = Cover::new(TILE_PX);
         cover.attach_first(&root);
 
+        let showing: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+        // Secondary button only. A `GtkGestureClick` claiming *any* button
+        // swallows the sequence, which is what once silently killed scrubbing on
+        // the seek scale — so this never sees the click that opens a tile.
+        let menu = gtk::GestureClick::new();
+        menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let asked = showing.clone();
+        let over = root.clone();
+        menu.connect_pressed(move |gesture, _, x, y| {
+            let Some(playlist_id) = asked.borrow().clone() else {
+                return; // an album or an artist: nothing to pin
+            };
+            let Some(request) = TILE_MENU.with(|m| m.borrow().clone()) else {
+                return;
+            };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            request(TileMenuRequest {
+                playlist_id,
+                at: (x as i32, y as i32),
+                over: over.clone(),
+            });
+        });
+        root.add_controller(menu);
+
         (
             root,
             GridItemWidgets {
                 cover,
                 title,
                 subtitle,
+                showing,
             },
         )
     }
 
     fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
+        // Set unconditionally, including back to `None`: this widget was showing
+        // something else a moment ago, and a recycled album that kept a
+        // playlist's id would offer to pin the wrong thing entirely.
+        *widgets.showing.borrow_mut() = match &self.tile {
+            Tile::Playlist(playlist) => Some(playlist.id.clone()),
+            Tile::Album(_) | Tile::Artist(_) => None,
+        };
+
         let title = one_line(self.tile.title());
         widgets.title.set_label(&title);
         // The full, untruncated name on hover — the tile always ellipsizes.
