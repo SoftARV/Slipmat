@@ -14,7 +14,7 @@
 
 use relm4::adw::prelude::*;
 use relm4::gtk::glib;
-use relm4::{ComponentSender, adw};
+use relm4::{ComponentSender, adw, gtk};
 
 use super::View;
 use super::pages::Arrival;
@@ -126,27 +126,70 @@ impl AppModel {
             ));
         }
 
+        let mut switches = Vec::with_capacity(self.playlists.len());
         for playlist in &self.playlists {
             let row = adw::SwitchRow::new();
             row.set_title(&glib::markup_escape_text(&playlist.name));
             row.set_active(self.settings.pinned_playlists.contains(&playlist.id));
+            group.add(&row);
+            switches.push((playlist.id.clone(), row));
+        }
+        let switches = std::rc::Rc::new(switches);
 
-            let id = playlist.id.clone();
+        // One action, two meanings, and the label is the only thing saying
+        // which: everything pinned means the useful move is to clear them.
+        let toggle_all = gtk::Button::new();
+        toggle_all.set_visible(!switches.is_empty());
+        let relabel: std::rc::Rc<dyn Fn()> = {
+            let switches = switches.clone();
+            let button = toggle_all.clone();
+            std::rc::Rc::new(move || {
+                let all_on = switches.iter().all(|(_, row)| row.is_active());
+                button.set_label(if all_on { "Unpin All" } else { "Pin All" });
+            })
+        };
+        relabel();
+
+        for (id, row) in switches.iter() {
+            let id = id.clone();
             let sender = sender.clone();
+            let relabel = relabel.clone();
             row.connect_active_notify(move |row| {
                 sender.input(AppMsg::SetPinned {
                     id: id.clone(),
                     pinned: row.is_active(),
                 });
+                relabel();
             });
-            group.add(&row);
+        }
+
+        {
+            let switches = switches.clone();
+            let relabel = relabel.clone();
+            let sender = sender.clone();
+            toggle_all.connect_clicked(move |_| {
+                let target = !switches.iter().all(|(_, row)| row.is_active());
+                // **The whole list in one message, then the switches.** Setting
+                // the switches first would fire a `SetPinned` each, and every
+                // one of those rebuilds the sidebar — eight rebuilds to say one
+                // thing. Sent first, each switch's echo finds the pin already in
+                // the state it is asking for and `set_pinned` returns early.
+                sender.input(AppMsg::SetAllPinned(target));
+                for (_, row) in switches.iter() {
+                    row.set_active(target);
+                }
+                relabel();
+            });
         }
 
         let page = adw::PreferencesPage::new();
         page.add(&group);
 
+        let header = adw::HeaderBar::new();
+        header.pack_start(&toggle_all);
+
         let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&adw::HeaderBar::new());
+        toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&page));
 
         let dialog = adw::Dialog::builder()
@@ -190,6 +233,35 @@ impl AppModel {
         if self.sidebar_collapsed {
             self.show_sidebar = false;
         }
+    }
+
+    /// Pin or unpin every library playlist at once.
+    ///
+    /// Pinning keeps the pins already there in the order they were put there and
+    /// appends the rest, so "Pin All" does not reshuffle a sidebar somebody
+    /// arranged — it only fills in what was missing.
+    pub(super) fn set_all_pinned(&mut self, pinned: bool, sender: &ComponentSender<Self>) {
+        if pinned {
+            for playlist in &self.playlists {
+                if !self.settings.pinned_playlists.contains(&playlist.id) {
+                    self.settings.pinned_playlists.push(playlist.id.clone());
+                }
+            }
+        } else {
+            self.settings.pinned_playlists.clear();
+        }
+        self.settings.save();
+
+        // Unpinning everything takes with it whatever pin you were looking at,
+        // for the same reason unpinning one does. See `set_pinned`.
+        if !pinned && matches!(self.selected_row, Some(SidebarRow::Pinned(_))) {
+            self.pop_to_results();
+            self.selected_row = Some(SidebarRow::Section(View::Playlists));
+            sender.input(AppMsg::SetView(View::Playlists));
+        }
+
+        self.sidebar_rows = sidebar_rows(&self.settings.pinned_playlists);
+        self.pins_dirty = true;
     }
 
     /// Pin or unpin one playlist.

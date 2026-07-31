@@ -620,6 +620,8 @@ pub enum AppMsg {
         id: String,
         pinned: bool,
     },
+    /// Pin or unpin every library playlist — the picker's header action.
+    SetAllPinned(bool),
     ShowAbout,
     /// Open the Ko-fi page in a browser.
     OpenSupport,
@@ -1916,6 +1918,7 @@ impl AppModel {
             AppMsg::SidebarRowActivated(index) => self.sidebar_row_activated(index, &sender),
             AppMsg::ShowPinPicker => self.show_pin_picker(&sender, root),
             AppMsg::SetPinned { id, pinned } => self.set_pinned(&id, pinned, &sender),
+            AppMsg::SetAllPinned(pinned) => self.set_all_pinned(pinned, &sender),
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
                 if query == self.query() {
