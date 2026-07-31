@@ -135,6 +135,7 @@ impl AppModel {
                 ));
             }
             Event::HookWarning { detail } => tracing::warn!(%detail, "hook warning"),
+            Event::Volume { volume } => self.adopt_volume(*volume),
             // Per-command tracing is debug, not info: it was invaluable while
             // the command path was broken and is pure noise now that it works.
             Event::CmdRecv { cmd } => tracing::debug!(%cmd, "sidecar received command"),

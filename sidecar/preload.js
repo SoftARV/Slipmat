@@ -189,6 +189,12 @@ function emitModes() {
   })
 }
 
+function emitVolume() {
+  // `?? 1` and not `?? 0`: a MusicKit that cannot tell us is not a silent one,
+  // and opening muted because a read failed would be worse than opening loud.
+  emit('volume', { volume: pick(() => music.volume) ?? 1 })
+}
+
 function wireEvents() {
   on('playbackStateDidChange', () =>
     emit('playbackState', { state: stateName(pick(() => music.playbackState) ?? 0) }))
@@ -214,6 +220,13 @@ function wireEvents() {
   // event is what blinded the gapless check: see `currentQueue`.
   on('queueItemsDidChange', () => emit('queue', currentQueue('items')))
   on('queuePositionDidChange', () => emit('queue', currentQueue('position')))
+
+  // **MusicKit owns the volume, and it remembers it.** Measured: mute, quit
+  // fully, relaunch — `music.volume` reads 0 before we have sent anything, out
+  // of the same session storage that keeps the login. Rust used to assume the
+  // opposite and open at 1.0, so the bar showed full volume over silent audio
+  // until the first keypress snapped the two together.
+  on('playbackVolumeDidChange', () => emitVolume())
 
   on('authorizationStatusDidChange', () => {
     const t = pushTokens()
@@ -546,6 +559,12 @@ function wire(trigger) {
   // attaches, that is the truth, and an empty one is a fact rather than an
   // absence of news.
   emit('queue', currentQueue('items'))
+
+  // Same reasoning one line up, for the same class of fact: whatever the volume
+  // is when the hook attaches is the truth, and Rust has no other way to learn
+  // it. This is what makes a fresh launch — and a supervised restart — agree
+  // with what you can hear.
+  emitVolume()
   return true
 }
 

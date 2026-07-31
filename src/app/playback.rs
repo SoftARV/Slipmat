@@ -249,6 +249,26 @@ impl AppModel {
         self.push_snapshot();
     }
 
+    /// Take MusicKit's word for the volume, without answering back.
+    ///
+    /// **The counterpart to `set_volume`, and deliberately not it.** That one
+    /// sends a command; this one must not, because the value came *from* the
+    /// player — echoing it is the two-way loop that froze the app once already
+    /// (see `now_playing::post_view`). One direction each, and the difference
+    /// is the whole reason there are two methods rather than a flag.
+    ///
+    /// Volume is not persisted anywhere on our side and does not need to be:
+    /// MusicKit restores its own across launches, and this is how we find out.
+    pub(super) fn adopt_volume(&mut self, volume: f64) {
+        let volume = volume.clamp(0.0, 1.0);
+        if (volume - self.volume).abs() < f64::EPSILON {
+            return;
+        }
+        tracing::debug!(volume, "adopting the player's own volume");
+        self.volume = volume;
+        self.push_snapshot();
+    }
+
     /// Start the repaint timer while playing, drop it otherwise.
     ///
     /// `glib::SourceId` must be removed exactly once — holding it in an

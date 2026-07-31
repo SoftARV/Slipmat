@@ -249,6 +249,15 @@ pub enum Event {
     #[serde(rename = "hook-warning")]
     HookWarning { detail: String },
 
+    /// What MusicKit's volume actually is — at attach, and on every change.
+    ///
+    /// **Inbound, unlike everything else about volume.** MusicKit keeps its own
+    /// volume and restores it across launches from the session that keeps the
+    /// login, so Rust cannot know it without being told. Adopted, never echoed:
+    /// sending a `SetVolume` back for a value MusicKit just reported is a loop.
+    #[serde(rename = "volume")]
+    Volume { volume: f64 },
+
     /// Harvested live on every launch, never cached (rule 7).
     #[serde(rename = "tokens")]
     Tokens(Tokens),
