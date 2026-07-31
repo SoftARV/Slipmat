@@ -46,6 +46,9 @@ pub(super) fn connect(
     type_to_search(root, sender);
     library_list_properties(model, widgets);
     bottom_bar_inset(widgets);
+    // The volume panel sits under the header for the same reason the content
+    // clears the bar: that height is not a constant.
+    model.volume_osd.sit_below_the_header(&widgets.content_bars);
 }
 
 /// Build the sidebar's five rows from [`View::SIDEBAR`].

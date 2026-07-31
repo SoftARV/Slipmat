@@ -256,6 +256,19 @@ pub fn set_accent(accent: Accent) {
          .queue-drop-below {{ box-shadow: inset 0 -2px 0 var(--accent-bg-color); }}
          .queue-dragging {{ opacity: 0.35; }}
 
+         /* The volume panel's shape. GTK's `.osd` brings the colours — the
+            translucent slab the Shell uses — and stops there, so the corners
+            are square and it reads as a dialog rather than a readout.
+
+            A pill is what every GNOME surface that shows a level uses, and
+            there is no libadwaita widget for an OSD panel to inherit it from,
+            which is the argument this rule needs. Two properties, no colours:
+            whatever `.osd` resolves to in either theme still applies. */
+         .volume-osd {{
+             border-radius: 9999px;
+             padding: 10px 18px;
+         }}
+
          /* A button that has to be exactly as big as the 16px spinner it
             swaps with. GTK's own button metrics are built for a hit target,
             not for sitting inside a sidebar row, and the default padding
