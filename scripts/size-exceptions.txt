@@ -92,7 +92,7 @@ src/app/library.rs                   845  # four collections and the catalog sea
                                           # 800 -> 845 for #83: the artwork keep-set is derived from
                                           # these four collections, so the derivation belongs with
                                           # them rather than beside the sweep that consumes it.
-src/player/protocol.rs               780  # the whole sidecar contract in one file, deliberately
+src/player/protocol.rs               790  # the whole sidecar contract in one file, deliberately
                                           # (rule 9). Splitting it would hide the drift it exists
                                           # to prevent.
                                           # 650 -> 740 for #89: a shared `ms` deserializer that
@@ -102,6 +102,10 @@ src/player/protocol.rs               780  # the whole sidecar contract in one fi
                                           # event fired. Two MusicKit events the sidecar used to
                                           # collapse into one, and the explanation of why settling
                                           # the wrong one fights gapless is worth the lines.
+                                          # 780 -> 790: `Event::Volume`. Volume was write-only until
+                                          # it was measured that MusicKit keeps its own and restores
+                                          # it across launches — so the contract gained a direction
+                                          # it should always have had.
 src/components/player_view/mod.rs    890  # the model, `view!` and the reducer. The transport
                                           # moved to a child module — see its header for why a
                                           # child and not a sibling. 870 before the split; this
@@ -131,3 +135,14 @@ src/app/queue.rs                     640  # click -> setQueue, healing a queue M
                                           # 600 -> 640 for #88: `index_at` and the three tests that
                                           # pin it — a duplicated track, a shifted queue, and a
                                           # position past the end.
+sidecar/preload.js                   610  # the injected hook (rule 4), and the one file that is
+                                          # deliberately defensive line by line: every property
+                                          # feature-detected, every silent failure made loud.
+                                          # Recorded rather than cut because most of its length is
+                                          # the traps that cost rounds to find — `did-start-loading`
+                                          # invalidating the hook, the two queue events that must
+                                          # not be collapsed, MusicKit's signed queue position.
+                                          # The budget is a ratchet on the JS, which rule "every
+                                          # line here is a line that isn't native" makes worth
+                                          # watching: 604 today, against the ~200 CLAUDE.md claimed
+                                          # until this was counted.

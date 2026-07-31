@@ -731,7 +731,8 @@ src/
     artwork.rs       # fetch + disk cache; MPRIS needs a file:// path, and
                      # the player's backdrop needs a deliberately tiny one
 sidecar/
-  package.json  main.js  preload.js    # ~200 lines of JS, total
+  package.json  main.js  preload.js    # ~1200 lines of JS, and a ratchet
+                                       # on it in size-exceptions.txt
 data/
   dev.miguelrincon.Slipmat.desktop
   icons/hicolor/{scalable,symbolic}/apps/dev.miguelrincon.Slipmat{,-symbolic}.svg
