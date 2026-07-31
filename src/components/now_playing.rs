@@ -4,7 +4,7 @@
 //! The persistent Now Playing bar — the thing that makes this an app rather
 //! than a handshake.
 //!
-//! It owns no state of its own beyond what it is told: `app/mod.rs` pushes a
+//! It owns no state of its own beyond what it is told: `app.rs` pushes a
 //! `Snapshot` derived from `PlayerState` (which is itself a mirror of the
 //! sidecar, rule 3), and this component renders it and emits intent back up.
 //! It never talks to the sidecar directly.
