@@ -38,6 +38,7 @@ pub(super) fn connect(
     sender: &ComponentSender<AppModel>,
 ) {
     sidebar_rows(model, widgets);
+    sidebar_selection(model, widgets, sender);
     sidebar_headers(
         widgets,
         super::view::section_index(&model.sidebar_rows, View::Playlists).unwrap_or_default(),
@@ -85,6 +86,7 @@ fn sidebar_rows(model: &mut AppModel, widgets: &Widgets) {
                     .unwrap_or(super::pins::UNAVAILABLE)
                     .to_owned(),
             ),
+            SidebarRow::PinButton => ("list-add-symbolic", "Pin a playlist".to_owned()),
         };
 
         content.append(&gtk::Image::from_icon_name(super::icon(icon)));
@@ -117,9 +119,84 @@ fn sidebar_rows(model: &mut AppModel, widgets: &Widgets) {
         }
 
         let list_row = gtk::ListBoxRow::new();
+        // It does something rather than being somewhere, so it must not sit
+        // there looking selected once the picker has closed.
+        list_row.set_selectable(!matches!(entry, SidebarRow::PinButton));
         list_row.set_child(Some(&content));
         widgets.nav_list.append(&list_row);
     }
+}
+
+/// Connect `row-selected`, keeping the handler's id.
+///
+/// Not in `view!` because the macro discards what `connect_*` returns, and the
+/// id is the point: `sync_pins` rebuilds these rows, and selecting one during a
+/// rebuild would post `SidebarRowChosen` for whatever happened to be at that
+/// position — opening a page nobody clicked. Same reasoning, and the same fix,
+/// as the volume button in `now_playing::post_view`.
+fn sidebar_selection(model: &mut AppModel, widgets: &Widgets, sender: &ComponentSender<AppModel>) {
+    let sender = sender.clone();
+    let handler = widgets.nav_list.connect_row_selected(move |_, row| {
+        if let Some(row) = row {
+            sender.input(AppMsg::SidebarRowChosen(row.index()));
+        }
+    });
+    *model.nav_selected.borrow_mut() = Some(handler);
+}
+
+/// Rebuild the sidebar's rows after the pins change.
+///
+/// Every row is thrown away and redrawn, which is affordable — there are seven
+/// of them — and simpler than splicing. What it is *not* is free of
+/// consequences: clearing a `ListBox` clears its selection, and both the
+/// clearing and the reselect emit `row-selected`, so the handler is silenced
+/// across the whole operation and the selection is put back by hand.
+pub(super) fn rebuild_sidebar(model: &mut AppModel, widgets: &Widgets) {
+    // Taken out rather than borrowed: the rebuild below needs `model` mutably,
+    // and a live borrow of one of its fields would stop that.
+    let handler = model.nav_selected.borrow_mut().take();
+    if let Some(handler) = &handler {
+        widgets.nav_list.block_signal(handler);
+    }
+
+    widgets.nav_list.remove_all();
+    model.section_spinners.clear();
+    model.pin_labels.clear();
+    sidebar_rows(model, widgets);
+    model.refresh_pin_names();
+
+    // Back to the same *row*, wherever it moved to — tracked on the model
+    // rather than read off the widget, because by now the widget's positions
+    // mean something different. An unpinned row is gone, so its section is the
+    // honest answer; an empty selection reads as broken.
+    let target = model
+        .selected_row
+        .clone()
+        .and_then(|row| model.sidebar_rows.iter().position(|other| other == &row))
+        .or_else(|| {
+            model
+                .sidebar_rows
+                .iter()
+                .position(|row| row == &SidebarRow::Section(model.view))
+        });
+    if let Some(index) = target
+        && let Some(row) = i32::try_from(index)
+            .ok()
+            .and_then(|i| widgets.nav_list.row_at_index(i))
+    {
+        widgets.nav_list.select_row(Some(&row));
+        // **The model has to be told too.** The handler is blocked, so nothing
+        // else will say what is now selected — and a model that still names the
+        // old row leaves the widget already on the row you are about to click,
+        // which emits nothing at all. That is a section that will not open until
+        // you visit another one first.
+        model.selected_row = model.sidebar_rows.get(index).cloned();
+    }
+
+    if let Some(handler) = &handler {
+        widgets.nav_list.unblock_signal(handler);
+    }
+    *model.nav_selected.borrow_mut() = handler;
 }
 
 /// The static definition behind a section row — its icon and its label.

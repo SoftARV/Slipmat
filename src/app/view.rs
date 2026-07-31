@@ -58,6 +58,9 @@ pub(super) enum SidebarRow {
     /// A pinned playlist, by **library** id. The name is looked up when the row
     /// is built, so a pin costs nothing to store and cannot go out of date.
     Pinned(String),
+    /// Opens the picker. Always last, and always present — with nothing pinned
+    /// it is the only thing telling you the feature exists.
+    PinButton,
 }
 
 /// Every row the sidebar shows, in order: the sections, then the pins.
@@ -70,6 +73,7 @@ pub(super) fn sidebar_rows(pins: &[String]) -> Vec<SidebarRow> {
         .iter()
         .map(|row| SidebarRow::Section(row.view))
         .chain(pins.iter().cloned().map(SidebarRow::Pinned))
+        .chain(std::iter::once(SidebarRow::PinButton))
         .collect()
 }
 
@@ -545,6 +549,7 @@ mod tests {
             &[
                 SidebarRow::Pinned("p.one".to_owned()),
                 SidebarRow::Pinned("p.two".to_owned()),
+                SidebarRow::PinButton,
             ]
         );
     }
@@ -556,7 +561,21 @@ mod tests {
         // position is what this design removed.
         let rows = sidebar_rows(&["p.one".to_owned()]);
         assert!(section_index(&rows, View::Playlists).is_some());
-        assert!(matches!(rows.last(), Some(SidebarRow::Pinned(_))));
+        assert!(matches!(rows[rows.len() - 2], SidebarRow::Pinned(_)));
+    }
+
+    #[test]
+    fn the_pin_button_is_always_last_and_always_there() {
+        // With nothing pinned it is the only thing saying the feature exists,
+        // and below the pins is where "add another" belongs.
+        for pins in [vec![], vec!["p.one".to_owned()]] {
+            let rows = sidebar_rows(&pins);
+            assert_eq!(rows.last(), Some(&SidebarRow::PinButton));
+            assert_eq!(
+                rows.iter().filter(|r| *r == &SidebarRow::PinButton).count(),
+                1
+            );
+        }
     }
 
     #[test]

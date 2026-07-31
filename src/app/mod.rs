@@ -235,6 +235,19 @@ pub struct AppModel {
     /// Every sidebar row, in order — sections then pins. Rebuilt whenever the
     /// pins change, and the only thing `SidebarRowChosen` indexes into.
     sidebar_rows: Vec<SidebarRow>,
+    /// Which sidebar row is selected, so a rebuild can put it back.
+    ///
+    /// Tracked here rather than read off the `ListBox`: a rebuild changes what
+    /// each position means, so by the time it is needed the widget can only say
+    /// *where* the selection was, not what it was.
+    selected_row: Option<SidebarRow>,
+    /// The sidebar's `row-selected` handler, so a rebuild can silence it.
+    nav_selected: std::cell::RefCell<Option<gtk::glib::SignalHandlerId>>,
+    /// The pins changed and the sidebar's rows have not caught up.
+    ///
+    /// Set in `update`, which cannot reach the widgets, and cleared in
+    /// `sync_pins` on the way out — the same shape as `sync_animated`.
+    pins_dirty: bool,
     /// A pinned row's label, by playlist id.
     ///
     /// Kept so a name can be filled in *after* the row is drawn. The sidebar is
@@ -570,7 +583,6 @@ pub enum AppMsg {
     SidebarShown(bool),
     /// A sidebar row was activated. Dismisses the sidebar if it is an overlay,
     /// and does nothing at all if it is a pane.
-    SectionChosen,
     /// The breakpoint turned the sidebar into an overlay, or back into a pane.
     SidebarCollapsed(bool),
     /// The header crossed its own breakpoint.
@@ -597,6 +609,17 @@ pub enum AppMsg {
     /// A sidebar row was selected, by position. What it does depends on what
     /// kind of row it is — see `pins::sidebar_row_chosen`.
     SidebarRowChosen(i32),
+    /// A sidebar row was clicked. Only the pin button cares — every other row
+    /// has already acted through `SidebarRowChosen`, and this is where the
+    /// overlay sidebar gets out of the way.
+    SidebarRowActivated(i32),
+    /// Open the picker over the library's playlists.
+    ShowPinPicker,
+    /// Pin or unpin one playlist, from the picker or a row menu.
+    SetPinned {
+        id: String,
+        pinned: bool,
+    },
     ShowAbout,
     /// Open the Ko-fi page in a browser.
     OpenSupport,
@@ -899,27 +922,26 @@ impl Component for AppModel {
                                             gtk::ListBox {
                                                 add_css_class: "navigation-sidebar",
                                                 set_selection_mode: gtk::SelectionMode::Single,
-                                                // Reports a *position*; what
-                                                // it means is `sidebar_rows`'
-                                                // to say. A pin and a section
-                                                // sit in one list and do
-                                                // different things, so the
-                                                // lookup cannot live here.
-                                                connect_row_selected[sender] => move |_, row| {
-                                                    if let Some(row) = row {
-                                                        sender.input(
-                                                            AppMsg::SidebarRowChosen(row.index()),
-                                                        );
-                                                    }
-                                                },
+                                                // `row-selected` is connected
+                                                // in `wiring`, not here: the
+                                                // handler's id has to be kept
+                                                // so a rebuild can silence it.
+                                                // See `sync_pins`.
                                                 // Choosing a section is the end
                                                 // of what an overlay sidebar is
                                                 // for, so it gets out of the
                                                 // way — but only when it *is*
                                                 // an overlay. Beside a pane, it
                                                 // stays put.
-                                                connect_row_activated[sender] => move |_, _| {
-                                                    sender.input(AppMsg::SectionChosen);
+                                                // Activation, not selection,
+                                                // because the pin button is
+                                                // deliberately unselectable —
+                                                // it does something rather than
+                                                // being somewhere.
+                                                connect_row_activated[sender] => move |_, row| {
+                                                    sender.input(
+                                                        AppMsg::SidebarRowActivated(row.index()),
+                                                    );
                                                 },
 
                                                 // The five rows are appended by
@@ -1489,6 +1511,9 @@ impl Component for AppModel {
             pruned: false,
             section_spinners: Vec::new(),
             pin_labels: Vec::new(),
+            pins_dirty: false,
+            selected_row: None,
+            nav_selected: std::cell::RefCell::new(None),
             // Built from the persisted pins before anything is on screen: the
             // library cache has already seeded `playlists`, so a pinned row
             // draws its name at the same moment the sections do.
@@ -1688,6 +1713,7 @@ impl Component for AppModel {
         let view_before = self.view;
         self.update(msg, sender.clone(), root);
         self.sync_animated(widgets);
+        self.sync_pins(widgets);
         self.sync_section_spinners();
 
         if self.view != view_before {
@@ -1887,6 +1913,9 @@ impl AppModel {
             }
             AppMsg::HideVolumeOsd => self.hide_volume_osd(),
             AppMsg::SidebarRowChosen(index) => self.sidebar_row_chosen(index, &sender),
+            AppMsg::SidebarRowActivated(index) => self.sidebar_row_activated(index, &sender),
+            AppMsg::ShowPinPicker => self.show_pin_picker(&sender, root),
+            AppMsg::SetPinned { id, pinned } => self.set_pinned(&id, pinned, &sender),
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
                 if query == self.query() {
@@ -2164,11 +2193,6 @@ impl AppModel {
                 // rebuild and the per-scope query all behave exactly as they do
                 // when the character is typed into the entry directly.
                 self.handle(AppMsg::SearchChanged(query), &sender, root);
-            }
-            AppMsg::SectionChosen => {
-                if self.sidebar_collapsed {
-                    self.show_sidebar = false;
-                }
             }
             AppMsg::ToggleSidebar => {
                 self.show_sidebar = !self.show_sidebar;
