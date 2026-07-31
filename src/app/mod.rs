@@ -73,6 +73,7 @@ mod chrome;
 mod library;
 mod osd;
 mod pages;
+mod pins;
 mod playback;
 mod queue;
 mod row_menu;
@@ -86,6 +87,7 @@ use chrome::{icon, register_actions, show_about, show_shortcuts};
 use supervise::{respawn_sidecar, start_sidecar};
 
 pub use view::{CatalogFilter, SearchScope, SortBy, View};
+use view::{SidebarRow, sidebar_rows};
 
 const TICK_MS: u32 = 500;
 
@@ -230,6 +232,9 @@ pub struct AppModel {
     /// button until asked for. Meaningless while `narrow_header` is false: the
     /// entry is simply the title then.
     searching: bool,
+    /// Every sidebar row, in order — sections then pins. Rebuilt whenever the
+    /// pins change, and the only thing `SidebarRowChosen` indexes into.
+    sidebar_rows: Vec<SidebarRow>,
     /// The sidebar's per-section spinners, built in `wiring::sidebar_rows`.
     ///
     /// Held because they are built outside `view!` and so get no `#[watch]` —
@@ -582,6 +587,9 @@ pub enum AppMsg {
     ShowShortcuts,
     /// The hide-timer fired: the panel has been up long enough.
     HideVolumeOsd,
+    /// A sidebar row was selected, by position. What it does depends on what
+    /// kind of row it is — see `pins::sidebar_row_chosen`.
+    SidebarRowChosen(i32),
     ShowAbout,
     /// Open the Ko-fi page in a browser.
     OpenSupport,
@@ -884,11 +892,17 @@ impl Component for AppModel {
                                             gtk::ListBox {
                                                 add_css_class: "navigation-sidebar",
                                                 set_selection_mode: gtk::SelectionMode::Single,
+                                                // Reports a *position*; what
+                                                // it means is `sidebar_rows`'
+                                                // to say. A pin and a section
+                                                // sit in one list and do
+                                                // different things, so the
+                                                // lookup cannot live here.
                                                 connect_row_selected[sender] => move |_, row| {
                                                     if let Some(row) = row {
-                                                        sender.input(AppMsg::SetView(
-                                                            View::from_row(row.index()),
-                                                        ));
+                                                        sender.input(
+                                                            AppMsg::SidebarRowChosen(row.index()),
+                                                        );
                                                     }
                                                 },
                                                 // Choosing a section is the end
@@ -1467,6 +1481,10 @@ impl Component for AppModel {
             resume_at: None,
             pruned: false,
             section_spinners: Vec::new(),
+            // Built from the persisted pins before anything is on screen: the
+            // library cache has already seeded `playlists`, so a pinned row
+            // draws its name at the same moment the sections do.
+            sidebar_rows: sidebar_rows(&settings.pinned_playlists),
             marked_playing: None,
             library_icons: row_registry(),
             current_track: current_track(),
@@ -1852,6 +1870,7 @@ impl AppModel {
                 self.flash_volume(&sender);
             }
             AppMsg::HideVolumeOsd => self.hide_volume_osd(),
+            AppMsg::SidebarRowChosen(index) => self.sidebar_row_chosen(index, &sender),
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
                 if query == self.query() {

@@ -36,15 +36,55 @@ pub(super) struct Row {
     pub label: &'static str,
 }
 
+/// What a sidebar row means.
+///
+/// The sidebar used to be an array of sections indexed by position, and
+/// `View::from_row` turned a position back into a section. Pinning playlists
+/// into it (#133) ended that: a pin is not a section — it pushes a page rather
+/// than changing what the pane shows — so a row's position can no longer say
+/// what the row does.
+///
+/// Rows carry their meaning instead, which deletes the index contract rather
+/// than working around it. The alternative was a second `ListBox` holding the
+/// pins, and this app shipped that once and removed it in 285b542: two boxes
+/// each keep their own selection, whichever takes focus first selects its own
+/// first row, and it overrode the other after the fact. One list means one
+/// selection, with nothing to keep in sync and no order dependency between
+/// "select this" and "clear that".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SidebarRow {
+    /// One of the five fixed sections.
+    Section(View),
+    /// A pinned playlist, by **library** id. The name is looked up when the row
+    /// is built, so a pin costs nothing to store and cannot go out of date.
+    Pinned(String),
+}
+
+/// Every row the sidebar shows, in order: the sections, then the pins.
+///
+/// The one place that order is decided, and what `SidebarRowChosen` indexes
+/// into — so a row's meaning and its position are established together rather
+/// than a hundred lines apart.
+pub(super) fn sidebar_rows(pins: &[String]) -> Vec<SidebarRow> {
+    View::SIDEBAR
+        .iter()
+        .map(|row| SidebarRow::Section(row.view))
+        .chain(pins.iter().cloned().map(SidebarRow::Pinned))
+        .collect()
+}
+
+/// Where a section sits, for selecting the persisted one at startup.
+pub(super) fn section_index(rows: &[SidebarRow], view: View) -> Option<i32> {
+    rows.iter()
+        .position(|row| row == &SidebarRow::Section(view))
+        .and_then(|i| i32::try_from(i).ok())
+}
+
 impl View {
     /// The sidebar, in order.
     ///
-    /// **This array's order *is* `row`/`from_row`.** They were five hand-written
-    /// `ListBoxRow`s in `view!` and this mapping here, a hundred lines apart,
-    /// with a comment on each row repeating its index — the arrangement where
-    /// inserting a section silently selects the wrong one. The test below pins
-    /// them to each other, so a reorder that forgets one fails `cargo test`
-    /// rather than shipping a sidebar that opens the section next door.
+    /// The sections, and only the sections — [`sidebar_rows`] is what the
+    /// sidebar actually shows, because pins live below these.
     ///
     /// The label is not [`View::title`]: the row says "Search" under a heading
     /// that says "Apple Music", and the narrow header has no heading to lean on.
@@ -75,28 +115,6 @@ impl View {
             label: "Playlists",
         },
     ];
-
-    /// Sidebar row order — the contract `connect_row_selected` reads, and the
-    /// only place the mapping lives.
-    pub(super) fn from_row(index: i32) -> Self {
-        match index {
-            0 => Self::Search,
-            2 => Self::Albums,
-            3 => Self::Artists,
-            4 => Self::Playlists,
-            _ => Self::Songs,
-        }
-    }
-
-    pub(super) fn row(self) -> i32 {
-        match self {
-            Self::Search => 0,
-            Self::Songs => 1,
-            Self::Albums => 2,
-            Self::Artists => 3,
-            Self::Playlists => 4,
-        }
-    }
 
     pub(super) fn scope(self) -> SearchScope {
         match self {
@@ -484,38 +502,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sidebar_row_order_round_trips() {
-        // `connect_row_selected` reads a row index and `row()` writes one back
-        // when restoring the last section. If those two ever disagree the app
-        // opens with one section selected and another one showing — which is
-        // exactly the bug this pins down.
-        for view in [
-            View::Search,
-            View::Songs,
-            View::Albums,
-            View::Artists,
-            View::Playlists,
-        ] {
-            assert_eq!(View::from_row(view.row()), view);
+    fn every_section_can_be_found_again_by_the_row_it_built() {
+        // The replacement for the old index contract. `section_index` is what
+        // selects the persisted section at startup, and `sidebar_rows` is what
+        // built the row it has to find — if those disagree the app opens with
+        // one section selected and another one showing.
+        let rows = sidebar_rows(&[]);
+        for row in &View::SIDEBAR {
+            let index = section_index(&rows, row.view)
+                .unwrap_or_else(|| panic!("{} has no row", row.label));
+            assert_eq!(
+                rows[index as usize],
+                SidebarRow::Section(row.view),
+                "{} was found at somebody else's row",
+                row.label
+            );
         }
     }
 
     #[test]
-    fn the_rows_are_built_in_the_order_the_indices_claim() {
-        // The other half of the same contract. `SIDEBAR` is appended to the
-        // ListBox in array order, so a row's position *is* the index
-        // `connect_row_selected` reports — and `row()` is what selects one when
-        // the last section is restored. Reorder the array without reordering
-        // `row()` and every click opens the section next door.
-        for (index, row) in View::SIDEBAR.iter().enumerate() {
-            assert_eq!(
-                row.view.row(),
-                index as i32,
-                "{} is out of order",
-                row.label
-            );
-            assert_eq!(View::from_row(index as i32), row.view);
-        }
+    fn the_sections_come_first_and_keep_their_order() {
+        // Pins are appended, so a section's position does not move when one is
+        // added — but nothing enforces that except this. A pin landing among
+        // the sections would put a page-pusher where a section switch belongs.
+        let rows = sidebar_rows(&["p.one".to_owned(), "p.two".to_owned()]);
+        let sections: Vec<_> = View::SIDEBAR
+            .iter()
+            .map(|row| SidebarRow::Section(row.view))
+            .collect();
+        assert_eq!(&rows[..sections.len()], &sections[..]);
+        assert_eq!(
+            &rows[sections.len()..],
+            &[
+                SidebarRow::Pinned("p.one".to_owned()),
+                SidebarRow::Pinned("p.two".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pin_is_never_mistaken_for_a_section() {
+        // The whole reason rows carry their meaning. Clicking a pin must push a
+        // page; clicking a section must change the pane. Reading either from a
+        // position is what this design removed.
+        let rows = sidebar_rows(&["p.one".to_owned()]);
+        assert!(section_index(&rows, View::Playlists).is_some());
+        assert!(matches!(rows.last(), Some(SidebarRow::Pinned(_))));
     }
 
     #[test]
@@ -567,9 +599,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_sidebar_row_falls_back_to_songs() {
-        assert_eq!(View::from_row(99), View::Songs);
-        assert_eq!(View::from_row(-1), View::Songs);
+    fn a_position_outside_the_list_names_no_row() {
+        // `ListBox` reports a selection while rows are being rebuilt under it,
+        // so an out-of-range position is ordinary rather than exceptional. It
+        // used to fall back to Songs, which meant a rebuild could silently
+        // change section.
+        let rows = sidebar_rows(&[]);
+        assert!(rows.get(99).is_none());
+        assert!(section_index(&[], View::Songs).is_none());
     }
 
     #[test]

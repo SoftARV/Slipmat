@@ -20,6 +20,7 @@ use relm4::adw::prelude::*;
 use relm4::gtk;
 use relm4::{ComponentSender, RelmWidgetExt};
 
+use super::view::SidebarRow;
 use super::{AppModel, AppMsg, CatalogFilter, SortBy, View};
 
 /// The widgets `view!` generates, spelled without naming the generated type.
@@ -62,32 +63,59 @@ pub(super) fn connect(
 /// them `#[watch]`; a widget built here gets none, so they are kept and driven
 /// by `sync_section_spinners`.
 fn sidebar_rows(model: &mut AppModel, widgets: &Widgets) {
-    for row in &View::SIDEBAR {
+    for entry in model.sidebar_rows.clone() {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         content.set_margin_all(8);
 
-        content.append(&gtk::Image::from_icon_name(super::icon(row.icon)));
+        let (icon, text) = match &entry {
+            SidebarRow::Section(view) => {
+                let row = section_row(*view);
+                (row.icon, row.label.to_owned())
+            }
+            // A pin with no name is a pin whose playlist the library has not
+            // produced — either still loading, or gone. The id is never shown:
+            // `p.EYWrg13SzrKxYBb` tells nobody anything.
+            SidebarRow::Pinned(id) => (
+                "view-list-symbolic",
+                model.pinned_name(id).unwrap_or("Unavailable").to_owned(),
+            ),
+        };
 
-        let label = gtk::Label::new(Some(row.label));
+        content.append(&gtk::Image::from_icon_name(super::icon(icon)));
+
+        let label = gtk::Label::new(Some(&text));
         label.set_hexpand(true);
         label.set_xalign(0.0);
+        // A long playlist name must not widen the sidebar out of its clamp.
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         content.append(&label);
 
         // Apple Music has nothing of its own to load: a catalog search reports
-        // through the content pane, not through a sidebar row.
-        if row.view != View::Search {
+        // through the content pane, not through a sidebar row. A pin has no
+        // spinner either — it opens a page, which carries its own.
+        if let SidebarRow::Section(view) = entry
+            && view != View::Search
+        {
             let spinner = adw::Spinner::new();
             spinner.set_size_request(16, 16);
             spinner.set_valign(gtk::Align::Center);
             spinner.set_visible(false);
             content.append(&spinner);
-            model.section_spinners.push((row.view, spinner));
+            model.section_spinners.push((view, spinner));
         }
 
         let list_row = gtk::ListBoxRow::new();
         list_row.set_child(Some(&content));
         widgets.nav_list.append(&list_row);
     }
+}
+
+/// The static definition behind a section row — its icon and its label.
+fn section_row(view: View) -> &'static super::view::Row {
+    View::SIDEBAR
+        .iter()
+        .find(|row| row.view == view)
+        .unwrap_or(&View::SIDEBAR[0])
 }
 
 fn sidebar_headers(widgets: &Widgets) {
@@ -200,7 +228,10 @@ fn open_on_last_section(model: &AppModel, widgets: &Widgets) {
     // Open on the section we were last in. Selecting fires `row-selected`,
     // which posts SetView — harmless, since the model is already on that
     // view and SetView returns early when unchanged.
-    if let Some(row) = widgets.nav_list.row_at_index(model.view.row()) {
+    let Some(index) = super::view::section_index(&model.sidebar_rows, model.view) else {
+        return;
+    };
+    if let Some(row) = widgets.nav_list.row_at_index(index) {
         widgets.nav_list.select_row(Some(&row));
     }
 }
