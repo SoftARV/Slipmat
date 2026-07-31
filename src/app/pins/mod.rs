@@ -31,6 +31,17 @@ use crate::components::detail_page::PageKind;
 /// was deleted elsewhere — which is what phase five prunes.
 pub(super) const UNAVAILABLE: &str = "Unavailable";
 
+/// Which pins point at playlists the library does not have.
+///
+/// A free function so the rule can be tested without a library or a window: it
+/// is the whole of the pruning decision, and the rest is when to trust it.
+pub(super) fn stale<'a>(pins: &'a [String], have: &[String]) -> Vec<&'a str> {
+    pins.iter()
+        .filter(|id| !have.iter().any(|known| known == *id))
+        .map(String::as_str)
+        .collect()
+}
+
 /// Where a drop on `row` lands, in the list's *original* coordinates.
 ///
 /// Dropping on the lower half of a row means "after this one", which is the
@@ -113,7 +124,11 @@ impl AppModel {
                     Arrival::FromTheSidebar,
                 );
             }
-            SidebarRow::PinButton => sender.input(AppMsg::ShowPinPicker),
+            // Activation opens the picker, not selection — the row is not
+            // selectable, so this arm is only reachable while the rows and the
+            // widgets disagree. Opening the picker from both would open it
+            // twice, and it would have to be closed twice.
+            SidebarRow::PinButton => {}
         }
     }
 
@@ -267,6 +282,73 @@ impl AppModel {
         }
     }
 
+    /// Drop pins whose playlist the library no longer has.
+    ///
+    /// **Only from a load that actually succeeded**, which is the entire
+    /// difficulty. A pin pointing at nothing and a library that has not arrived
+    /// look identical from here, and the difference matters enormously: pruning
+    /// on a 403 or a half-finished fetch would delete somebody's sidebar because
+    /// the network hiccupped. The caller is the `Ok` arm of the playlists load,
+    /// and nowhere else.
+    ///
+    /// The toast counts rather than names. A pin is an id and the name was only
+    /// ever borrowed from the library — which is exactly what just stopped
+    /// having it — so there is no honest name left to say.
+    pub(super) fn prune_stale_pins(&mut self, sender: &ComponentSender<Self>) {
+        // **An empty library prunes nothing, even on a success.** A successful
+        // response carrying zero playlists is far more likely to be Apple having
+        // an odd moment than somebody having deleted every playlist they own —
+        // and the two are indistinguishable from here. Guessing wrong in one
+        // direction leaves stale rows saying "Unavailable", which is visible and
+        // fixable by hand; guessing wrong in the other silently deletes a
+        // sidebar somebody arranged, which is neither.
+        if self.playlists.is_empty() {
+            return;
+        }
+
+        let have: Vec<String> = self.playlists.iter().map(|p| p.id.clone()).collect();
+        let gone: Vec<String> = stale(&self.settings.pinned_playlists, &have)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            count = gone.len(),
+            "dropping pins the library no longer has"
+        );
+        self.settings
+            .pinned_playlists
+            .retain(|id| !gone.contains(id));
+        self.settings.save();
+
+        // Looking at one that just went is the unpin case, and it ends the same
+        // way — see `set_pinned`.
+        if let Some(SidebarRow::Pinned(open)) = &self.selected_row
+            && gone.contains(open)
+        {
+            self.pop_to_results();
+            self.selected_row = Some(SidebarRow::Section(View::Playlists));
+            sender.input(AppMsg::SetView(View::Playlists));
+        }
+
+        self.sidebar_rows = sidebar_rows(&self.settings.pinned_playlists);
+        self.pins_dirty = true;
+        // Reported, not commanded. "Unpinned a playlist…" is the imperative and
+        // reads as an instruction to the person who did not do it — the app did,
+        // and the toast exists to say so rather than to ask for anything.
+        self.toast(&if gone.len() == 1 {
+            "A pinned playlist was removed — it is no longer in your library".to_owned()
+        } else {
+            format!(
+                "{} pinned playlists were removed — they are no longer in your library",
+                gone.len()
+            )
+        });
+    }
+
     /// Reorder the pins after a drag.
     ///
     /// Pin order *is* what the sidebar draws, so this is the whole of the
@@ -417,6 +499,32 @@ mod tests {
         let mut p = pins();
         move_pin(&mut p, 0, 3);
         assert_eq!(p, ["b", "c", "a"]);
+    }
+
+    #[test]
+    fn a_pin_the_library_still_has_is_left_alone() {
+        let pins = pins();
+        assert!(stale(&pins, &pins).is_empty());
+        // Order is irrelevant to the question — a pin is present or it is not.
+        let shuffled: Vec<String> = ["c", "a", "b"].iter().map(|s| (*s).to_owned()).collect();
+        assert!(stale(&pins, &shuffled).is_empty());
+    }
+
+    #[test]
+    fn a_pin_the_library_lost_is_named() {
+        let have: Vec<String> = ["a", "c"].iter().map(|s| (*s).to_owned()).collect();
+        assert_eq!(stale(&pins(), &have), ["b"]);
+    }
+
+    #[test]
+    fn extra_playlists_are_not_pins() {
+        // The library having more than you pinned is the normal case, not a
+        // signal about anything.
+        let have: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert!(stale(&pins(), &have).is_empty());
     }
 
     #[test]

@@ -1757,8 +1757,8 @@ impl Component for AppModel {
         }
     }
 
-    /// Overridden for one reason: [`AppModel::sync_animated`] has to run on
-    /// **both** paths.
+    /// Overridden for one reason: [`AppModel::sync_animated`] and
+    /// [`AppModel::sync_pins`] have to run on **both** paths.
     ///
     /// The default calls `update_cmd` then `update_view`, and command messages
     /// are how the sidecar's events arrive — including the one that moves
@@ -1775,6 +1775,11 @@ impl Component for AppModel {
     ) {
         self.update_cmd(message, sender.clone(), root);
         self.sync_animated(widgets);
+        // Pruning a stale pin happens here, not in `update`: the library load is
+        // a command message. Syncing only on the other path left the pruned row
+        // on screen with nothing behind it — and clicking it opened whatever had
+        // moved into its position.
+        self.sync_pins(widgets, &sender);
         self.sync_section_spinners();
         self.update_view(widgets, sender);
     }
@@ -2648,6 +2653,9 @@ impl AppModel {
                             "library playlists loaded"
                         );
                         self.playlists = playlists;
+                        // Before the names are refreshed, so a pin that is gone
+                        // never gets a chance to draw as "Unavailable".
+                        self.prune_stale_pins(&sender);
                         self.refresh_pin_names();
                         self.maybe_prune_artwork(&sender);
                         if changed {
