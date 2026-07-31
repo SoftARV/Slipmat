@@ -119,6 +119,50 @@ pub struct Settings {
     /// notification for every song is a lot of noise, and the person who wants
     /// it will go and turn it on.
     pub notify_track_change: bool,
+    /// Playlists pinned to the sidebar, in the order they were put there.
+    ///
+    /// **Library ids only** (`p.…`, as `/me/library/playlists` returns them).
+    /// A pinned row is a playlist you own, and the two id spaces are not
+    /// interchangeable — a catalog id 404s against `/me/library`.
+    pub pinned_playlists: Vec<String>,
+}
+
+/// Separates pins in the ini. KeyFile's own list separator, so a hand-edited
+/// file reads the way anyone would expect.
+const PIN_SEP: char = ';';
+
+/// Split the stored pin list, dropping anything that cannot be a pin.
+///
+/// **Both directions are ours, deliberately.** glib 0.22 binds `string_list`
+/// for reading but no `set_string_list` to pair with it, and writing through
+/// `set_string` while reading through `string_list` would put an unescaped
+/// write against an escaping read — which works right up until an id needs
+/// escaping. Owning both sides costs a few lines and cannot drift.
+///
+/// Duplicates are dropped because two pins of one playlist are two identical
+/// rows, and no click could tell them apart.
+fn parse_pins(stored: &str) -> Vec<String> {
+    let mut pins: Vec<String> = Vec::new();
+    for id in stored.split(PIN_SEP) {
+        let id = id.trim();
+        if !id.is_empty() && !pins.iter().any(|seen| seen == id) {
+            pins.push(id.to_owned());
+        }
+    }
+    pins
+}
+
+/// Join pins for storage, dropping any that would corrupt the format.
+///
+/// No real Apple library playlist id contains the separator — measured against
+/// a real library — but an id that did would silently become two broken pins,
+/// and losing one pin beats resurrecting two that point nowhere.
+fn join_pins(pins: &[String]) -> String {
+    pins.iter()
+        .filter(|id| !id.is_empty() && !id.contains(PIN_SEP))
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(&PIN_SEP.to_string())
 }
 
 impl Default for Settings {
@@ -141,6 +185,9 @@ impl Default for Settings {
             // be there to be found.
             show_sidebar: true,
             notify_track_change: false,
+            // Nothing pinned until somebody pins something. An app that
+            // guesses which playlists matter to you gets it wrong.
+            pinned_playlists: Vec::new(),
         }
     }
 }
@@ -207,6 +254,9 @@ impl Settings {
                 *into = value;
             }
         }
+        if let Ok(pinned) = file.string(GROUP, "pinned-playlists") {
+            settings.pinned_playlists = parse_pins(&pinned);
+        }
         tracing::debug!(?settings, "loaded settings");
         settings
     }
@@ -235,6 +285,11 @@ impl Settings {
         file.set_boolean(GROUP, "artist-sort-reversed", self.artist_sort_reversed);
         file.set_string(GROUP, "playlist-sort", &self.playlist_sort);
         file.set_boolean(GROUP, "playlist-sort-reversed", self.playlist_sort_reversed);
+        file.set_string(
+            GROUP,
+            "pinned-playlists",
+            &join_pins(&self.pinned_playlists),
+        );
 
         if let Err(err) = std::fs::create_dir_all(dir) {
             tracing::warn!(?err, "could not create config directory");
@@ -314,5 +369,47 @@ mod tests {
     fn notifications_are_off_by_default() {
         // One notification per song is noise; opting in is the user's choice.
         assert!(!Settings::default().notify_track_change);
+    }
+
+    #[test]
+    fn pins_round_trip_in_the_order_they_were_put_there() {
+        // Order is the feature: pin order is what the sidebar draws, so a round
+        // trip that sorted or reversed them would silently rearrange somebody's
+        // sidebar between launches.
+        let pins = vec![
+            "p.EYWrg13SzrKxYBb".to_owned(),
+            "p.e5Ukqg18xa".to_owned(),
+            "p.rXAJKDruDkOY0Eg".to_owned(),
+        ];
+        assert_eq!(parse_pins(&join_pins(&pins)), pins);
+    }
+
+    #[test]
+    fn nothing_pinned_stays_nothing() {
+        assert_eq!(join_pins(&[]), "");
+        assert!(parse_pins("").is_empty());
+        // A key left behind by hand-editing is the same as no key.
+        assert!(parse_pins(";;  ;").is_empty());
+    }
+
+    #[test]
+    fn a_playlist_cannot_be_pinned_twice() {
+        // Two pins of one playlist are two identical rows, and no click could
+        // tell them apart.
+        let stored = "p.one;p.two;p.one";
+        assert_eq!(parse_pins(stored), vec!["p.one", "p.two"]);
+    }
+
+    #[test]
+    fn an_id_that_would_corrupt_the_format_is_dropped_not_split() {
+        // No real library id contains the separator, but one that did would
+        // come back as two pins pointing nowhere. Losing it beats that.
+        let pins = vec!["p.fine".to_owned(), "p.b;roken".to_owned()];
+        assert_eq!(join_pins(&pins), "p.fine");
+    }
+
+    #[test]
+    fn surrounding_space_from_a_hand_edited_file_is_forgiven() {
+        assert_eq!(parse_pins(" p.one ; p.two "), vec!["p.one", "p.two"]);
     }
 }

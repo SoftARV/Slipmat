@@ -128,6 +128,7 @@ pub struct DetailPage {
     registry: RowRegistry<LibraryRowWidgets>,
 
     header: adw::HeaderBar,
+    sidebar_toggle: gtk::ToggleButton,
     stack: gtk::Stack,
     cover: Cover,
     title: gtk::Label,
@@ -151,6 +152,7 @@ impl DetailPage {
         on_activate: impl Fn(usize) + 'static,
         on_play: impl Fn() + 'static,
         on_shuffle: impl Fn() + 'static,
+        on_toggle_sidebar: impl Fn() + 'static,
     ) -> Self {
         let list: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
         let view = list.view.clone();
@@ -268,6 +270,21 @@ impl DetailPage {
         stack.set_visible_child_name("loading");
 
         let header = adw::HeaderBar::new();
+
+        // **Only a destination shows this.** A page pushed from a grid tile has
+        // a back button and the sidebar is still behind it; a page *chosen* in
+        // the sidebar replaced what was showing, so on a collapsed window the
+        // toggle is the only way back to anywhere. Built always and revealed by
+        // `show_sidebar_toggle`, because the header is assembled here and the
+        // page does not learn how it was opened until later.
+        let sidebar_toggle = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Toggle Sidebar")
+            .visible(false)
+            .build();
+        sidebar_toggle.connect_clicked(move |_| on_toggle_sidebar());
+        header.pack_start(&sidebar_toggle);
+
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&stack));
@@ -289,6 +306,7 @@ impl DetailPage {
             registry: crate::components::row_registry(),
             cover,
             header,
+            sidebar_toggle,
             stack,
             title,
             subtitle,
@@ -307,6 +325,18 @@ impl DetailPage {
     /// queue is open: the queue is then the rightmost pane and they are its.
     pub fn set_end_controls(&self, show: bool) {
         self.header.set_show_end_title_buttons(show);
+    }
+
+    /// Whether this page carries a sidebar toggle — see the note where it is
+    /// built.
+    pub fn show_sidebar_toggle(&self, show: bool) {
+        self.sidebar_toggle.set_visible(show);
+    }
+
+    /// Keep the toggle agreeing with the sidebar it toggles. A toggle drawn
+    /// pressed over a hidden sidebar is a control that lies about its own state.
+    pub fn set_sidebar_shown(&self, shown: bool) {
+        self.sidebar_toggle.set_active(shown);
     }
 
     /// This page's own row widgets, so the play marker can find them.
