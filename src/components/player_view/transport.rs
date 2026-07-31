@@ -121,12 +121,14 @@ pub(super) fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerVi
         .css_classes(["flat", "circular"])
         .adjustment(&gtk::Adjustment::new(1.0, 0.0, 1.0, VOLUME_STEP, 0.1, 0.0))
         .build();
-    {
+    // The id is kept, not discarded: `refresh` blocks this handler while it
+    // writes. See the note there.
+    let volume_handler = {
         let sender = sender.clone();
         volume.connect_value_changed(move |_, v| {
             sender.input(PlayerViewInput::VolumeChanged(v));
-        });
-    }
+        })
+    };
 
     {
         let sender = sender.clone();
@@ -180,6 +182,7 @@ pub(super) fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerVi
         next,
         queue,
         volume,
+        volume_handler,
         shuffle,
         repeat,
     }
@@ -195,6 +198,7 @@ pub(super) struct Bits {
     next: gtk::Button,
     queue: gtk::ToggleButton,
     volume: gtk::ScaleButton,
+    volume_handler: relm4::gtk::glib::SignalHandlerId,
     shuffle: gtk::Button,
     repeat: gtk::Button,
 }
@@ -237,10 +241,16 @@ impl PlayerView {
         bits.repeat
             .set_opacity(mode_opacity(!matches!(self.snap.repeat, Repeat::Off)));
         bits.next.set_sensitive(self.snap.has_next);
-        // Guarded, or the mirror and the widget ping-pong through the reducer —
-        // the #37 loop, which this control is a second chance to reintroduce.
+        // **Silenced while we write.** GTK cannot tell a programmatic write
+        // from a drag, and `sender.input` queues — so an unsilenced write comes
+        // back a lap later against a model that has moved on, passes the guard
+        // honestly, and feeds itself forever. That froze the bar at 100% of a
+        // core; this control is the same shape and was one held key away from
+        // the same fault. The note in `now_playing::post_view` has the numbers.
         if volume_is_new(bits.volume.value(), self.snap.volume) {
+            bits.volume.block_signal(&bits.volume_handler);
             bits.volume.set_value(self.snap.volume);
+            bits.volume.unblock_signal(&bits.volume_handler);
         }
     }
 }

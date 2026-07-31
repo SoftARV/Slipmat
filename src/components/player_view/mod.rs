@@ -732,9 +732,9 @@ impl SimpleComponent for PlayerView {
                 let _ = sender.output(NowPlayingOutput::SetRepeat(self.snap.repeat.next()));
             }
             PlayerViewInput::VolumeChanged(v) => {
-                // Same guard as the bar's: `set_value` and a drag are
-                // indistinguishable to GTK, so a value equal to the one held is
-                // the echo of our own write and must not go back out.
+                // Same shape as the bar's. `refresh` blocks this handler while
+                // it writes, so everything arriving here is a real gesture; the
+                // guard is idempotence, not echo-catching.
                 if crate::components::now_playing::volume_is_new(v, self.snap.volume) {
                     self.snap.volume = v;
                     let _ = sender.output(NowPlayingOutput::SetVolume(v));

@@ -86,11 +86,15 @@ pub struct Snapshot {
 impl Default for Snapshot {
     /// Hand-written for one field: **volume defaults to full, not to zero.**
     ///
-    /// A derived `Default` starts every field at its zero value, and the volume
-    /// button watches this. The bar is built with a default snapshot before the
-    /// first real one arrives, so a zero here would push the button to silent
-    /// and echo that back as a genuine `SetVolume(0.0)` — the app would mute
-    /// itself on launch.
+    /// A derived `Default` starts every field at its zero value, and the bar is
+    /// built with a default snapshot before the first real one arrives — so a
+    /// zero here draws a muted button on a player that is not muted, until the
+    /// first snapshot lands.
+    ///
+    /// It used to be worse than cosmetic: the write was unguarded, so the zero
+    /// went back out as a genuine `SetVolume(0.0)` and the app muted itself on
+    /// launch. `post_view` silences the handler now, so the write no longer
+    /// escapes — but a button that opens on silence is still wrong.
     fn default() -> Self {
         Self {
             narrow: false,
@@ -165,6 +169,10 @@ pub struct NowPlaying {
     /// Drives [`ADVANCE_MS`]. Removed the moment playback stops, so a paused
     /// app is not waking up ten times a second.
     advance: Option<gtk::glib::SourceId>,
+    /// The volume button's `value-changed` handler, so `post_view` can silence
+    /// it while writing to the button. See the note there — without this the
+    /// bar's own write comes back as a message and feeds itself.
+    volume_handler: std::cell::RefCell<Option<gtk::glib::SignalHandlerId>>,
 }
 
 #[derive(Debug)]
@@ -526,6 +534,7 @@ impl SimpleComponent for NowPlaying {
                     connect_clicked => NowPlayingInput::QueueToggled,
                 },
 
+                #[name = "volume"]
                 gtk::ScaleButton {
                     set_icons: &[
                         "audio-volume-muted-symbolic",
@@ -547,15 +556,11 @@ impl SimpleComponent for NowPlaying {
                     // volume, so `Ctrl`+`Up` and the Shell's own slider move it
                     // too.
                     //
-                    // This is a two-way binding, and GTK emits `value-changed`
-                    // for a programmatic `set_value` exactly as it does for a
-                    // drag. `VolumeChanged` is what keeps that from cycling —
-                    // see the note there before touching either.
-                    #[watch]
-                    set_value: model.snap.volume,
-                    connect_value_changed[sender] => move |_, value| {
-                        sender.input(NowPlayingInput::VolumeChanged(value));
-                    },
+                    // **The value is written in `post_view`, and
+                    // `value-changed` is connected in `init`** — see the note
+                    // in `post_view`. Neither can be expressed here: the write
+                    // has to be conditional, and it has to be able to silence
+                    // the handler, which means keeping the handler's id.
                 },
             },
             },
@@ -574,8 +579,21 @@ impl SimpleComponent for NowPlaying {
             shown_ms: std::cell::Cell::new(0),
             synced_at: None,
             advance: None,
+            volume_handler: std::cell::RefCell::new(None),
         };
         let widgets = view_output!();
+
+        // Connected here rather than in `view!` because the handler's id is the
+        // point: `post_view` blocks it while writing, and the macro gives no
+        // way to keep what `connect_*` returns.
+        let handler = {
+            let sender = sender.clone();
+            widgets.volume.connect_value_changed(move |_, value| {
+                sender.input(NowPlayingInput::VolumeChanged(value));
+            })
+        };
+        *model.volume_handler.borrow_mut() = Some(handler);
+
         ComponentParts { model, widgets }
     }
 
@@ -617,21 +635,16 @@ impl SimpleComponent for NowPlaying {
             NowPlayingInput::VolumeChanged(v) => {
                 // **Adopted locally, unlike shuffle and repeat.** Those are
                 // sent and left to come back from the mirror, because nothing
-                // downstream re-asserts them. The volume button is different:
-                // it is a two-way binding, and relm4 runs `update_view` after
-                // *every* message — so the view update that follows this one
-                // would write `self.snap.volume` back into the widget. Without
-                // the line below that is still the **old** volume, GTK emits
-                // `value-changed` for it, and the old and new values ping-pong
-                // through the reducer forever.
+                // downstream re-asserts them. This is a two-way binding, so the
+                // model has to hold what the widget just reported or the next
+                // view update argues with the user.
                 //
-                // That shipped once and took the whole desktop down with it:
-                // 5,721 `setVolume` commands, each one a sidecar write, an
-                // MPRIS property change on the bus, and a journal line.
-                //
-                // The guard is the other half — a programmatic `set_value`
-                // emits too, so every keyboard step and every change from the
-                // Shell arrives back here as an echo that must not be resent.
+                // Every message that reaches here is now a real gesture —
+                // `post_view` blocks this handler while it writes, so nothing
+                // we do ourselves comes back. The guard below is idempotence
+                // rather than echo-catching: a snapshot can move the model
+                // while the widget still holds the same number, and resending
+                // that helps nobody.
                 if !volume_is_new(v, self.snap.volume) {
                     return;
                 }
@@ -672,6 +685,35 @@ impl SimpleComponent for NowPlaying {
         // `set_label` compares internally and no-ops when unchanged, so these
         // are free on a tick that only moved the slider.
         widgets.time.set_label(&self.time_label());
+
+        // **The handler is silenced while we write, and that is the whole fix.**
+        //
+        // GTK emits `value-changed` for a programmatic write exactly as for a
+        // drag, and `sender.input` *queues* — so our own write comes back as a
+        // message one lap later, by which time the model has already adopted
+        // some other value. Comparing the incoming value against the model
+        // therefore passes honestly on both sides, the model flips, this writes
+        // the flipped value, and that write queues the next message. Two
+        // messages stay in flight forever.
+        //
+        // Measured, holding `Ctrl`+`Down` on a playing track: 495,000 laps, one
+        // write per message, the two values a `page_increment` apart and the
+        // adjustment provably the same object throughout. 100% of one core
+        // inside `update_view`, and because this component's task never yields,
+        // the app's own task never runs again — which is why the window dies
+        // and `setVolume` stops reaching the sidecar. It does not stop when the
+        // key is released; only SIGKILL ends it.
+        //
+        // Blocking is what breaks the cycle, not the comparison: the comparison
+        // only skips writes that were already redundant, and a redundant write
+        // was never the problem.
+        if let Some(handler) = self.volume_handler.borrow().as_ref()
+            && volume_is_new(widgets.volume.value(), self.snap.volume)
+        {
+            widgets.volume.block_signal(handler);
+            widgets.volume.set_value(self.snap.volume);
+            widgets.volume.unblock_signal(handler);
+        }
 
         // `gtk_image_set_from_file` does **not** compare — it reloads and
         // re-decodes every time it is called. This function runs on every
@@ -737,13 +779,15 @@ fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) ->
     }
 }
 
-/// Whether a `value-changed` from the volume button is a real move, or the
-/// echo of a value we just wrote into it ourselves.
+/// Whether a volume reading differs from the one already held.
 ///
-/// Exact comparison is right here, not a tolerance: `GtkScaleButton` stores
-/// what it is given without rounding it (measured against GTK 4.22), so an
-/// echo carries bit-identical the value that produced it. A tolerance would
-/// instead start swallowing small deliberate moves.
+/// Used at both ends of the two-way binding: to skip a write the widget does
+/// not need, and to skip resending a value that changed nothing.
+///
+/// Exact comparison, not a tolerance: `GtkScaleButton` stores what it is given
+/// without rounding it (measured against GTK 4.22), so two readings of the same
+/// value are bit-identical. A tolerance would instead start swallowing small
+/// deliberate moves.
 pub(crate) fn volume_is_new(incoming: f64, held: f64) -> bool {
     (incoming - held).abs() >= f64::EPSILON
 }
@@ -862,11 +906,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_volume_button_does_not_answer_its_own_echo() {
-        // The regression that froze a desktop. GTK emits `value-changed` for a
-        // programmatic `set_value` just as it does for a drag, so every
-        // keyboard step and every change from the Shell comes back here. Resend
-        // those and the value ping-pongs through the reducer without end.
+    fn an_unchanged_value_is_not_a_move() {
+        // Cheap idempotence at both ends of the binding. It is *not* what stops
+        // the freeze — blocking the handler is, and no unit test can see that.
+        // See `post_view`.
         assert!(!volume_is_new(0.4, 0.4));
         assert!(!volume_is_new(1.0, 1.0));
         assert!(!volume_is_new(0.0, 0.0));
@@ -907,6 +950,7 @@ mod tests {
             shown_ms: std::cell::Cell::new(0),
             synced_at: None,
             advance: None,
+            volume_handler: std::cell::RefCell::new(None),
         }
     }
 

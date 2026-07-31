@@ -841,26 +841,56 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
   Each lap was one sidecar command, one MPRIS property change on the bus and
   one journal line; it managed 5,721 of them.
 
-  Two halves fix it, and **both** are needed. Adopt the value into the model
-  in the handler, so the following view update writes back what the widget
-  already holds; and ignore an incoming value equal to the one held, which is
-  what a programmatic set arrives as. `now_playing::volume_is_new` is the
-  guard, with the reasoning next to it.
+  **Block the handler while you write.** That is the fix, and comparing values
+  is not — which cost a whole evening to establish, because comparing values
+  *looks* like it should work and even reduces the traffic.
 
-  Note that "it only emits when the value actually changed" is **true and not
-  sufficient** — that was the reasoning that shipped the bug. The stale write
-  *is* a change.
+  `sender.input` **queues**; it does not run inline. So the `value-changed` GTK
+  emits for your own write is processed a lap later, against a model that has
+  already adopted some other value. Every comparison then passes honestly,
+  because by then the two really do differ. Measured on a held `Ctrl`+`Down`
+  with the value comparison in place: **495,000 laps, one write per message**,
+  the two values a `page_increment` apart, the adjustment provably the same
+  object throughout. The component's task never yields, so the *app's* task
+  never runs again — the window dies and commands stop reaching the sidecar
+  entirely, which is why the log goes quiet rather than filling up.
+
+  So a two-way control needs the handler's `SignalHandlerId` kept, and
+  `block_signal` / `unblock_signal` around the write — which means connecting
+  in `init` rather than in `view!`, since the macro discards what `connect_*`
+  returns. `now_playing::post_view` and `player_view::transport::refresh` are
+  the two, and they must stay in step.
+
+  Two things that are **true and not sufficient**, both of which shipped a
+  version of this bug: "it only emits when the value actually changed" (the
+  stale write *is* a change), and "only write when the widget disagrees" (it
+  disagrees every lap, one message behind).
 
   Neither clippy nor the test suite can see this: the cycle only exists once
   GTK, `update_view` and the reducer are wired together. Verify a two-way
   control by counting what reaches the sidecar —
 
   ```bash
-  RUST_LOG=slipmat=info cargo run 2>&1 | grep -c "dispatch setVolume"
+  RUST_LOG=slipmat=debug cargo run >/tmp/vol.log 2>&1
+  sed 's/\x1b\[[0-9;]*m//g' /tmp/vol.log | grep -c "received command cmd=setVolume"
   ```
 
-  One command per change, then silence. Anything that keeps climbing is this
-  bug. Log to a **file, not the journal** while testing, or a regression takes
+  **Strip the colour first.** `tracing` wraps the `=` in escape codes, so a
+  `grep` for `cmd=setVolume` matches nothing and reports a confident **0** on a
+  log full of them. That reads exactly like a fix that worked.
+
+  Then hold the key down for several seconds and let go. A healthy run is one
+  command per change and a **bounded** total — 207 for a long session — and the
+  app still answering afterwards.
+
+  **A frozen app does not fill the log, it stops writing to it.** The loop
+  starves the app's own task, so commands stop reaching the sidecar altogether:
+  the signature is a burst that ends mid-stream and never resumes, not a count
+  that climbs. When a log goes quiet, take a core dump (`ptrace_scope` is 1
+  here, so `kill -ABRT` and `coredumpctl debug` — see the wedge recipe in the
+  animation section) rather than concluding nothing happened.
+
+  Log to a **file, not the journal** while testing, or a regression takes
   journald down with it.
 - **A property that drives an `AdwAnimation` is written on an edge, never on a
   level.** This is the trap next door to the one above, and the one above is
