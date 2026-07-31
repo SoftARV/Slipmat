@@ -13,6 +13,7 @@
 //! whose playlist has been deleted resolves to nothing — see `stale_pins`.
 
 pub(in crate::app) mod drag;
+mod menu;
 
 use relm4::adw::prelude::*;
 use relm4::gtk::glib;

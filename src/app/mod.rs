@@ -622,6 +622,8 @@ pub enum AppMsg {
     },
     /// Pin or unpin every library playlist — the picker's header action.
     SetAllPinned(bool),
+    /// A playlist tile was right-clicked.
+    TileMenu(crate::components::grid_item::TileMenuRequest),
     /// A pinned row was dragged. `slot` is in the coordinates of the list as it
     /// was before the move — see `pins::move_pin`.
     MovePin {
@@ -1434,6 +1436,13 @@ impl Component for AppModel {
             menu_sender.input(AppMsg::ShowRowMenu(req));
         });
 
+        // The same handover, for the grid's tiles — `setup` is static and has no
+        // item to reach the app through. See `pins::menu`.
+        let tile_menu = sender.clone();
+        crate::components::grid_item::set_tile_menu(move |req| {
+            tile_menu.input(AppMsg::TileMenu(req));
+        });
+
         let queue_view = QueueView::builder()
             .launch(())
             .forward(sender.input_sender(), |out| match out {
@@ -1930,6 +1939,7 @@ impl AppModel {
             AppMsg::ShowPinPicker => self.show_pin_picker(&sender, root),
             AppMsg::SetPinned { id, pinned } => self.set_pinned(&id, pinned, &sender),
             AppMsg::SetAllPinned(pinned) => self.set_all_pinned(pinned, &sender),
+            AppMsg::TileMenu(req) => self.show_tile_menu(req),
             AppMsg::MovePin { from, slot } => self.move_pinned(from, slot),
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
