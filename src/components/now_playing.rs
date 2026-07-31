@@ -86,11 +86,15 @@ pub struct Snapshot {
 impl Default for Snapshot {
     /// Hand-written for one field: **volume defaults to full, not to zero.**
     ///
-    /// A derived `Default` starts every field at its zero value, and the volume
-    /// button watches this. The bar is built with a default snapshot before the
-    /// first real one arrives, so a zero here would push the button to silent
-    /// and echo that back as a genuine `SetVolume(0.0)` — the app would mute
-    /// itself on launch.
+    /// A derived `Default` starts every field at its zero value, and the bar is
+    /// built with a default snapshot before the first real one arrives — so a
+    /// zero here draws a muted button on a player that is not muted, until the
+    /// first snapshot lands.
+    ///
+    /// It used to be worse than cosmetic: the write was unguarded, so the zero
+    /// went back out as a genuine `SetVolume(0.0)` and the app muted itself on
+    /// launch. `post_view` silences the handler now, so the write no longer
+    /// escapes — but a button that opens on silence is still wrong.
     fn default() -> Self {
         Self {
             narrow: false,
@@ -631,21 +635,16 @@ impl SimpleComponent for NowPlaying {
             NowPlayingInput::VolumeChanged(v) => {
                 // **Adopted locally, unlike shuffle and repeat.** Those are
                 // sent and left to come back from the mirror, because nothing
-                // downstream re-asserts them. The volume button is different:
-                // it is a two-way binding, and relm4 runs `update_view` after
-                // *every* message — so the view update that follows this one
-                // would write `self.snap.volume` back into the widget. Without
-                // the line below that is still the **old** volume, GTK emits
-                // `value-changed` for it, and the old and new values ping-pong
-                // through the reducer forever.
+                // downstream re-asserts them. This is a two-way binding, so the
+                // model has to hold what the widget just reported or the next
+                // view update argues with the user.
                 //
-                // That shipped once and took the whole desktop down with it:
-                // 5,721 `setVolume` commands, each one a sidecar write, an
-                // MPRIS property change on the bus, and a journal line.
-                //
-                // The guard is the other half — a programmatic `set_value`
-                // emits too, so every keyboard step and every change from the
-                // Shell arrives back here as an echo that must not be resent.
+                // Every message that reaches here is now a real gesture —
+                // `post_view` blocks this handler while it writes, so nothing
+                // we do ourselves comes back. The guard below is idempotence
+                // rather than echo-catching: a snapshot can move the model
+                // while the widget still holds the same number, and resending
+                // that helps nobody.
                 if !volume_is_new(v, self.snap.volume) {
                     return;
                 }
@@ -780,13 +779,15 @@ fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) ->
     }
 }
 
-/// Whether a `value-changed` from the volume button is a real move, or the
-/// echo of a value we just wrote into it ourselves.
+/// Whether a volume reading differs from the one already held.
 ///
-/// Exact comparison is right here, not a tolerance: `GtkScaleButton` stores
-/// what it is given without rounding it (measured against GTK 4.22), so an
-/// echo carries bit-identical the value that produced it. A tolerance would
-/// instead start swallowing small deliberate moves.
+/// Used at both ends of the two-way binding: to skip a write the widget does
+/// not need, and to skip resending a value that changed nothing.
+///
+/// Exact comparison, not a tolerance: `GtkScaleButton` stores what it is given
+/// without rounding it (measured against GTK 4.22), so two readings of the same
+/// value are bit-identical. A tolerance would instead start swallowing small
+/// deliberate moves.
 pub(crate) fn volume_is_new(incoming: f64, held: f64) -> bool {
     (incoming - held).abs() >= f64::EPSILON
 }
@@ -905,11 +906,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_volume_button_does_not_answer_its_own_echo() {
-        // The regression that froze a desktop. GTK emits `value-changed` for a
-        // programmatic `set_value` just as it does for a drag, so every
-        // keyboard step and every change from the Shell comes back here. Resend
-        // those and the value ping-pongs through the reducer without end.
+    fn an_unchanged_value_is_not_a_move() {
+        // Cheap idempotence at both ends of the binding. It is *not* what stops
+        // the freeze — blocking the handler is, and no unit test can see that.
+        // See `post_view`.
         assert!(!volume_is_new(0.4, 0.4));
         assert!(!volume_is_new(1.0, 1.0));
         assert!(!volume_is_new(0.0, 0.0));
@@ -921,42 +921,6 @@ mod tests {
         assert!(volume_is_new(1.0, 0.95));
         // One keyboard step, which is the smallest move that has to survive.
         assert!(volume_is_new(1.0 - VOLUME_STEP, 1.0));
-    }
-
-    /// What the write-site comparison is worth, and what it is not.
-    ///
-    /// It suppresses writes that were already redundant. It does **not** break
-    /// the freeze — blocking the handler does, because `sender.input` queues,
-    /// so an unsilenced write returns a lap later against a model that has
-    /// moved on and passes any comparison honestly. See `post_view`.
-    ///
-    /// That half cannot be tested here: the cycle only exists once GTK,
-    /// `update_view` and the reducer are wired together, which is exactly why
-    /// it shipped past this suite twice.
-    #[test]
-    fn the_volume_write_never_issues_an_echo_of_itself() {
-        // Where the freeze started: one `VOLUME_STEP` apart, in antiphase.
-        let mut widget = 0.8 - VOLUME_STEP;
-        let mut model = 0.8;
-        let mut writes = 0;
-
-        for _ in 0..8 {
-            // `post_view`: ask the widget before writing.
-            if volume_is_new(widget, model) {
-                widget = model;
-                writes += 1;
-                // GTK emits for that write, and it arrives as `VolumeChanged`.
-                if volume_is_new(widget, model) {
-                    model = widget;
-                }
-            }
-        }
-
-        assert_eq!(
-            writes, 1,
-            "the write repeated, so it is feeding itself again"
-        );
-        assert_eq!(widget, model, "widget and model never converged");
     }
 
     #[test]

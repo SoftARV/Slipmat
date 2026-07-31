@@ -38,7 +38,7 @@ src/app/mod.rs                      2945  # the model, the messages, `view!` and
                                           # behind it is a click that appears to do nothing.
                                           # Lowering a number as a file shrinks is the ratchet working;
                                           # this is the third time it has gone down.
-src/components/now_playing.rs       1130  # one component, and the one whose seek arithmetic took
+src/components/now_playing.rs       1080  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
                                           # 1220 -> 1240: `mode_opacity`, shared with the drawer
@@ -50,10 +50,11 @@ src/components/now_playing.rs       1130  # one component, and the one whose see
                                           # 1020 -> 1040: shuffle, repeat and volume stand down on a
                                           # narrow window, and the comment on why a hidden stack child
                                           # was setting the whole window's minimum width.
-                                          # 1040 -> 1130: the volume write moved out of `#[watch]`
-                                          # into `post_view`, with the measurement that forced it
-                                          # (1.7M laps at 100% of a core) and a test for the
-                                          # property that breaks the cycle.
+                                          # 1040 -> 1080: the volume write moved out of `#[watch]`
+                                          # into `post_view`, which has to keep the handler's id and
+                                          # block it while writing, plus the measurement that forced
+                                          # it — 495k laps at 100% of a core, and the note that a
+                                          # value comparison cannot fix it.
 src/music/client.rs                 1020  # one endpoint per method against one API. Long because
                                           # Apple is, and each method is short.
                                           # 980 -> 1020: `song_containers`. A queue item carries no
