@@ -526,6 +526,7 @@ impl SimpleComponent for NowPlaying {
                     connect_clicked => NowPlayingInput::QueueToggled,
                 },
 
+                #[name = "volume"]
                 gtk::ScaleButton {
                     set_icons: &[
                         "audio-volume-muted-symbolic",
@@ -547,12 +548,10 @@ impl SimpleComponent for NowPlaying {
                     // volume, so `Ctrl`+`Up` and the Shell's own slider move it
                     // too.
                     //
-                    // This is a two-way binding, and GTK emits `value-changed`
-                    // for a programmatic `set_value` exactly as it does for a
-                    // drag. `VolumeChanged` is what keeps that from cycling —
-                    // see the note there before touching either.
-                    #[watch]
-                    set_value: model.snap.volume,
+                    // **The value is written in `post_view`, not by a
+                    // `#[watch]`** — see the note there. This is a two-way
+                    // binding and the write has to be conditional on what the
+                    // widget already holds, which the macro cannot express.
                     connect_value_changed[sender] => move |_, value| {
                         sender.input(NowPlayingInput::VolumeChanged(value));
                     },
@@ -672,6 +671,25 @@ impl SimpleComponent for NowPlaying {
         // `set_label` compares internally and no-ops when unchanged, so these
         // are free on a tick that only moved the slider.
         widgets.time.set_label(&self.time_label());
+
+        // **Compared against the widget, not just the model.** A `#[watch]`
+        // here wrote the model's volume on *every* message, and GTK emits
+        // `value-changed` for a programmatic write exactly as for a drag — so
+        // each write came straight back as a `VolumeChanged`.
+        //
+        // The guard in that arm compares the incoming value against the model,
+        // which catches an echo carrying the *same* value and nothing else.
+        // Holding `Ctrl`+`Down` walks the two a step apart, and from there they
+        // swap places forever: measured at 1.7 million laps, widget and model
+        // exactly one `VOLUME_STEP` apart in antiphase, the guard passing on
+        // both sides because each side really is a change. 100% of one core,
+        // inside `update_view`, and it does not stop when the key is released.
+        //
+        // Asking the widget first is what breaks it, and it is what the
+        // drawer's volume button already did (`player_view::transport`).
+        if volume_is_new(widgets.volume.value(), self.snap.volume) {
+            widgets.volume.set_value(self.snap.volume);
+        }
 
         // `gtk_image_set_from_file` does **not** compare — it reloads and
         // re-decodes every time it is called. This function runs on every
@@ -878,6 +896,46 @@ mod tests {
         assert!(volume_is_new(1.0, 0.95));
         // One keyboard step, which is the smallest move that has to survive.
         assert!(volume_is_new(1.0 - VOLUME_STEP, 1.0));
+    }
+
+    /// The freeze that this file's `post_view` guard exists against.
+    ///
+    /// The bar used to write the model's volume into the button on every
+    /// message. GTK emits `value-changed` for a programmatic write exactly as
+    /// for a drag, so each write came back as a `VolumeChanged` — and the arm
+    /// that handles it compares against the *model*, which catches an echo
+    /// carrying the same value and nothing else. Held keys walked the two a
+    /// step apart and they swapped places 1.7 million times without settling.
+    ///
+    /// Modelled here rather than driven through GTK: the real cycle only exists
+    /// once `update_view`, the widget and the reducer are wired together, which
+    /// is why neither clippy nor this suite could see it. What *is* testable is
+    /// the property that breaks it — a write is only ever issued for a value
+    /// the widget does not already hold, so it cannot produce an echo.
+    #[test]
+    fn the_volume_write_never_issues_an_echo_of_itself() {
+        // Where the freeze started: one `VOLUME_STEP` apart, in antiphase.
+        let mut widget = 0.8 - VOLUME_STEP;
+        let mut model = 0.8;
+        let mut writes = 0;
+
+        for _ in 0..8 {
+            // `post_view`: ask the widget before writing.
+            if volume_is_new(widget, model) {
+                widget = model;
+                writes += 1;
+                // GTK emits for that write, and it arrives as `VolumeChanged`.
+                if volume_is_new(widget, model) {
+                    model = widget;
+                }
+            }
+        }
+
+        assert_eq!(
+            writes, 1,
+            "the write repeated, so it is feeding itself again"
+        );
+        assert_eq!(widget, model, "widget and model never converged");
     }
 
     #[test]
