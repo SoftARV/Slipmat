@@ -14,9 +14,17 @@
 
 use relm4::ComponentSender;
 
+use super::pages::Arrival;
 use super::view::SidebarRow;
 use super::{AppModel, AppMsg};
 use crate::components::detail_page::PageKind;
+
+/// What a pin says when the library has never produced its playlist.
+///
+/// Never the id: `p.EYWrg13SzrKxYBb` tells nobody anything. Seen briefly at
+/// startup before the cache is read, and permanently for a pin whose playlist
+/// was deleted elsewhere — which is what phase five prunes.
+pub(super) const UNAVAILABLE: &str = "Unavailable";
 
 impl AppModel {
     /// What a sidebar row selection means.
@@ -37,10 +45,40 @@ impl AppModel {
         };
 
         match row {
-            SidebarRow::Section(view) => sender.input(AppMsg::SetView(view)),
-            SidebarRow::Pinned(id) => {
-                self.push_page(PageKind::LibraryPlaylist(id), sender);
+            SidebarRow::Section(view) => {
+                // **Popped here, not in `SetView`.** That arm returns early when
+                // the section has not changed, which is right for its other
+                // callers and wrong for this one: choosing "All" while a pinned
+                // playlist is open changes no section, so nothing popped and the
+                // grid stayed hidden behind the page until you pressed Back.
+                // Choosing a section always means "show me that", pushed page or
+                // not.
+                self.pop_to_results();
+                sender.input(AppMsg::SetView(view));
             }
+            // A destination, not a drill-down: replaces whatever was open rather
+            // than stacking on top of it, and draws no back button.
+            SidebarRow::Pinned(id) => {
+                self.pop_to_results();
+                self.open_page(
+                    PageKind::LibraryPlaylist(id),
+                    sender,
+                    Arrival::FromTheSidebar,
+                );
+            }
+        }
+    }
+
+    /// Put the right name on every pinned row.
+    ///
+    /// **Labels, not rows.** The sidebar is built before the library cache is
+    /// read, so pins are drawn nameless and have to be filled in afterwards —
+    /// and again whenever the library reloads, so renaming a playlist elsewhere
+    /// renames the row. Rebuilding the rows would do it too, and would clear the
+    /// sidebar's selection on every library load: the failure 285b542 removed.
+    pub(super) fn refresh_pin_names(&self) {
+        for (id, label) in &self.pin_labels {
+            label.set_label(self.pinned_name(id).unwrap_or(UNAVAILABLE));
         }
     }
 

@@ -38,7 +38,10 @@ pub(super) fn connect(
     sender: &ComponentSender<AppModel>,
 ) {
     sidebar_rows(model, widgets);
-    sidebar_headers(widgets);
+    sidebar_headers(
+        widgets,
+        super::view::section_index(&model.sidebar_rows, View::Playlists).unwrap_or_default(),
+    );
     sort_menu(model, widgets, sender);
     catalog_filter_menu(model, widgets, sender);
     open_on_last_section(model, widgets);
@@ -77,7 +80,10 @@ fn sidebar_rows(model: &mut AppModel, widgets: &Widgets) {
             // `p.EYWrg13SzrKxYBb` tells nobody anything.
             SidebarRow::Pinned(id) => (
                 "view-list-symbolic",
-                model.pinned_name(id).unwrap_or("Unavailable").to_owned(),
+                model
+                    .pinned_name(id)
+                    .unwrap_or(super::pins::UNAVAILABLE)
+                    .to_owned(),
             ),
         };
 
@@ -104,6 +110,12 @@ fn sidebar_rows(model: &mut AppModel, widgets: &Widgets) {
             model.section_spinners.push((view, spinner));
         }
 
+        // Kept so `refresh_pin_names` can fill the name in once there is a
+        // library to take it from — see the note there.
+        if let SidebarRow::Pinned(id) = &entry {
+            model.pin_labels.push((id.clone(), label.clone()));
+        }
+
         let list_row = gtk::ListBoxRow::new();
         list_row.set_child(Some(&content));
         widgets.nav_list.append(&list_row);
@@ -118,15 +130,18 @@ fn section_row(view: View) -> &'static super::view::Row {
         .unwrap_or(&View::SIDEBAR[0])
 }
 
-fn sidebar_headers(widgets: &Widgets) {
-    // Sidebar rows, added imperatively so each section is its own ListBox
-    // and the two behave as one selection: picking a row in either clears
-    // the other, which a single ListBox would do for free but two will not.
-    // Section headings, drawn above the row that starts each section.
-    widgets.nav_list.set_header_func(|row, _before| {
+/// The headings drawn above the row that starts each group.
+///
+/// One `ListBox` with a header func, never one box per group — see the note in
+/// `view!` and 285b542. `playlists_row` is passed rather than hard-coded so the
+/// heading follows the row if the sections are ever reordered; everything below
+/// that row is a pin, which is why Playlists is the last group.
+fn sidebar_headers(widgets: &Widgets, playlists_row: i32) {
+    widgets.nav_list.set_header_func(move |row, _before| {
         let title = match row.index() {
             0 => "Apple Music",
             1 => "Library",
+            index if index == playlists_row => "Playlists",
             _ => return,
         };
         let label = gtk::Label::new(Some(title));

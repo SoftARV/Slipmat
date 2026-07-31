@@ -235,6 +235,13 @@ pub struct AppModel {
     /// Every sidebar row, in order — sections then pins. Rebuilt whenever the
     /// pins change, and the only thing `SidebarRowChosen` indexes into.
     sidebar_rows: Vec<SidebarRow>,
+    /// A pinned row's label, by playlist id.
+    ///
+    /// Kept so a name can be filled in *after* the row is drawn. The sidebar is
+    /// built before `seed_from_cache` runs, so at build time no pin has a name
+    /// yet — and rebuilding the rows to fix that would clear the selection,
+    /// which is the bug 285b542 removed. Writing the label leaves it alone.
+    pin_labels: Vec<(String, gtk::Label)>,
     /// The sidebar's per-section spinners, built in `wiring::sidebar_rows`.
     ///
     /// Held because they are built outside `view!` and so get no `#[watch]` —
@@ -1481,6 +1488,7 @@ impl Component for AppModel {
             resume_at: None,
             pruned: false,
             section_spinners: Vec::new(),
+            pin_labels: Vec::new(),
             // Built from the persisted pins before anything is on screen: the
             // library cache has already seeded `playlists`, so a pinned row
             // draws its name at the same moment the sections do.
@@ -1646,6 +1654,9 @@ impl Component for AppModel {
         // still runs the moment the sidecar is up; it lands quietly, or — far
         // more often — finds nothing changed and does not even rebuild.
         model.seed_from_cache();
+        // The rows exist by now but were drawn before the cache was read, so
+        // every pin still says "Unavailable".
+        model.refresh_pin_names();
 
         start_sidecar(&sender);
 
@@ -1805,6 +1816,11 @@ impl AppModel {
         let last = self.animated_shown.get();
         if last.map(|l| l.sidebar) != Some(now.sidebar) {
             widgets.nav_split.set_show_sidebar(now.sidebar);
+            // A destination page carries its own toggle, and a toggle drawn
+            // pressed over a hidden sidebar lies about its own state.
+            for page in &self.pages {
+                page.set_sidebar_shown(now.sidebar);
+            }
         }
         if last.map(|l| l.queue) != Some(now.queue) {
             widgets.player_sheet.set_open(now.queue);
@@ -2598,6 +2614,7 @@ impl AppModel {
                             "library playlists loaded"
                         );
                         self.playlists = playlists;
+                        self.refresh_pin_names();
                         self.maybe_prune_artwork(&sender);
                         if changed {
                             self.built_playlists = None;

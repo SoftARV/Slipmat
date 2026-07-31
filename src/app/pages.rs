@@ -9,8 +9,20 @@
 //! right one — the same lesson `queue.rs` is built around.
 
 use relm4::ComponentSender;
+use relm4::adw::prelude::NavigationPageExt;
 
 use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, DetailPage, PageKind, RowState, artwork};
+
+/// How somebody reached a page, which is the only thing that distinguishes the
+/// two once it is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Arrival {
+    /// Drilled into from the list underneath — a grid tile, a queue row's menu.
+    /// Going back means the thing you came from.
+    PushedOnto,
+    /// Chosen in the sidebar. There is nothing behind it, so no back button.
+    FromTheSidebar,
+}
 use crate::music::client::Client;
 use crate::music::types::{Artwork, Track};
 
@@ -59,6 +71,20 @@ impl AppModel {
     /// request lands: a click that does nothing for a second reads as a click
     /// that did not register, and the second click pushes it twice.
     pub(super) fn push_page(&mut self, kind: PageKind, sender: &ComponentSender<Self>) {
+        self.open_page(kind, sender, Arrival::PushedOnto);
+    }
+
+    /// Open a page, saying how the person got to it.
+    ///
+    /// The two arrivals look identical once the page is up and must not: a
+    /// drill-down has somewhere to go back *to*, and a sidebar destination does
+    /// not — you did not navigate to it, you selected it.
+    pub(super) fn open_page(
+        &mut self,
+        kind: PageKind,
+        sender: &ComponentSender<Self>,
+        arrival: Arrival,
+    ) {
         let Some(tokens) = &self.tokens else {
             self.toast("Not connected yet");
             return;
@@ -75,6 +101,7 @@ impl AppModel {
         let activate = sender.clone();
         let play = sender.clone();
         let shuffle = sender.clone();
+        let sidebar = sender.clone();
         let page = DetailPage::new(
             id,
             kind.heading(),
@@ -96,9 +123,31 @@ impl AppModel {
                     shuffle: true,
                 })
             },
+            move || sidebar.input(AppMsg::ToggleSidebar),
         );
         page.set_end_controls(true);
+
+        let pushed_onto = matches!(arrival, Arrival::PushedOnto);
+        // **A sidebar destination has no back button.** `can_pop(false)` removes
+        // it and disables the back gesture and Escape, while leaving
+        // programmatic `pop` working — which `pop_to_results` still needs when a
+        // section is chosen.
+        page.widget().set_can_pop(pushed_onto);
+        // **And it does not slide in.** A drill-down comes from the list you
+        // were looking at, and the slide says so. A destination came from the
+        // sidebar, the same as a section, and sections do not slide — an
+        // animation that says "you went deeper" is the one thing still claiming
+        // this is a stack.
+        //
+        // Suppressed around the push rather than turned off: pushes from a grid
+        // tile still animate, because for those it is true.
+        self.nav.set_animate_transitions(pushed_onto);
         self.nav.push(page.widget());
+        self.nav.set_animate_transitions(true);
+        // A destination replaces what was showing, so nothing older is reachable
+        // — and the sidebar is how you leave, not a back button.
+        page.show_sidebar_toggle(!pushed_onto);
+        page.set_sidebar_shown(self.show_sidebar);
         self.pages.push(page);
 
         let catalog_id = kind.id().to_owned();
@@ -163,16 +212,29 @@ impl AppModel {
 
     /// Return to the results list, dropping whatever was pushed over it.
     ///
+    ///
     /// Cheap when there is nothing to do, so callers do not have to check.
     pub(super) fn pop_to_results(&mut self) {
         if self.pages.is_empty() {
             return;
         }
         tracing::debug!(depth = self.pages.len(), "returning to results");
+
+        // **A destination leaves the way it arrived: without a slide.** The
+        // push is already silent, so animating only the way out made choosing a
+        // section look like going back — which is the story a destination is
+        // not telling. A drill-down still slides both ways, because for one of
+        // those "back" is exactly what this is.
+        //
+        // `can_pop` is what says which: it is false only on a destination, set
+        // where the page is opened.
+        let leaving_destination = self.nav.visible_page().is_some_and(|page| !page.can_pop());
+        self.nav.set_animate_transitions(!leaving_destination);
         // `connect_popped` fires per page and empties `self.pages` for us —
         // clearing it here as well would be a second source of truth for the
         // same thing.
         self.nav.pop_to_tag("results");
+        self.nav.set_animate_transitions(true);
     }
 
     /// Keep the pushed pages' headers agreeing with the root about who owns the

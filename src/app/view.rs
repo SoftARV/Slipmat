@@ -111,8 +111,17 @@ impl View {
         },
         Row {
             view: Self::Playlists,
-            icon: "view-list-symbolic",
-            label: "Playlists",
+            // A grid, because that is what the row opens — and it sets the row
+            // apart from the pins below it, which are lists.
+            //
+            // Not `grid-filled-symbolic`: adwaita-icon-theme 50 ships no
+            // `*filled*` symbolic icons, and a missing name renders as the
+            // fallback rather than as itself.
+            icon: "view-grid-symbolic",
+            // "All", because the heading above it says Playlists and the pins
+            // below it are the rest of that group. On its own the row would
+            // read as a section; in place it reads as "all of them".
+            label: "All",
         },
     ];
 
