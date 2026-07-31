@@ -284,13 +284,13 @@ impl RelmListItem for QueueItem {
             let paintable = gtk::WidgetPaintable::new(Some(&picture));
             source.set_icon(Some(&paintable), picture.width() / 2, picture.height() / 2);
             if let Some(row) = dimmed.child().and_then(|c| c.parent()) {
-                row.add_css_class("queue-dragging");
+                row.add_css_class("dragging");
             }
         });
         let dimmed = list_item.clone();
         drag.connect_drag_end(move |_, _, _| {
             if let Some(row) = dimmed.child().and_then(|c| c.parent()) {
-                row.remove_css_class("queue-dragging");
+                row.remove_css_class("dragging");
             }
         });
         root.add_controller(drag);
@@ -445,11 +445,11 @@ fn drop_below(row: &gtk::Box, item: &gtk::ListItem, y: f64) -> bool {
 
 /// Draw, or clear, the line a drop would land on.
 fn mark_edge(row: &gtk::Box, below: Option<bool>) {
-    row.remove_css_class("queue-drop-above");
-    row.remove_css_class("queue-drop-below");
+    row.remove_css_class("drop-above");
+    row.remove_css_class("drop-below");
     match below {
-        Some(true) => row.add_css_class("queue-drop-below"),
-        Some(false) => row.add_css_class("queue-drop-above"),
+        Some(true) => row.add_css_class("drop-below"),
+        Some(false) => row.add_css_class("drop-above"),
         None => {}
     }
 }

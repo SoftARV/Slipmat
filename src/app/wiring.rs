@@ -37,7 +37,7 @@ pub(super) fn connect(
     root: &adw::ApplicationWindow,
     sender: &ComponentSender<AppModel>,
 ) {
-    sidebar_rows(model, widgets);
+    sidebar_rows(model, widgets, sender);
     sidebar_selection(model, widgets, sender);
     sidebar_headers(
         widgets,
@@ -66,7 +66,10 @@ pub(super) fn connect(
 /// The spinners are the reason this needs anything beyond a loop. `view!` gave
 /// them `#[watch]`; a widget built here gets none, so they are kept and driven
 /// by `sync_section_spinners`.
-fn sidebar_rows(model: &mut AppModel, widgets: &Widgets) {
+fn sidebar_rows(model: &mut AppModel, widgets: &Widgets, sender: &ComponentSender<AppModel>) {
+    // A pin's position among the *pins*, which is what a reorder moves — not its
+    // position among the rows, which counts the five sections above it.
+    let mut pin_index = 0usize;
     for entry in model.sidebar_rows.clone() {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         content.set_margin_all(8);
@@ -124,6 +127,15 @@ fn sidebar_rows(model: &mut AppModel, widgets: &Widgets) {
         list_row.set_selectable(!matches!(entry, SidebarRow::PinButton));
         list_row.set_child(Some(&content));
         widgets.nav_list.append(&list_row);
+
+        // **Only pins are draggable, and only pins are drop targets.** A section
+        // simply has no controller, so a drag over one does nothing and lands
+        // nowhere — there is no range to police mid-gesture, which is what made
+        // one list cheaper than two here.
+        if matches!(entry, SidebarRow::Pinned(_)) {
+            super::pins::drag::attach(&list_row, pin_index, sender);
+            pin_index += 1;
+        }
     }
 }
 
@@ -151,7 +163,11 @@ fn sidebar_selection(model: &mut AppModel, widgets: &Widgets, sender: &Component
 /// consequences: clearing a `ListBox` clears its selection, and both the
 /// clearing and the reselect emit `row-selected`, so the handler is silenced
 /// across the whole operation and the selection is put back by hand.
-pub(super) fn rebuild_sidebar(model: &mut AppModel, widgets: &Widgets) {
+pub(super) fn rebuild_sidebar(
+    model: &mut AppModel,
+    widgets: &Widgets,
+    sender: &ComponentSender<AppModel>,
+) {
     // Taken out rather than borrowed: the rebuild below needs `model` mutably,
     // and a live borrow of one of its fields would stop that.
     let handler = model.nav_selected.borrow_mut().take();
@@ -162,7 +178,7 @@ pub(super) fn rebuild_sidebar(model: &mut AppModel, widgets: &Widgets) {
     widgets.nav_list.remove_all();
     model.section_spinners.clear();
     model.pin_labels.clear();
-    sidebar_rows(model, widgets);
+    sidebar_rows(model, widgets, sender);
     model.refresh_pin_names();
 
     // Back to the same *row*, wherever it moved to — tracked on the model

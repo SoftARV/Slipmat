@@ -247,14 +247,19 @@ pub fn set_accent(accent: Accent) {
              background: none;
          }}
 
-         /* Dragging a queue row. The argument CLAUDE.md asks for: libadwaita has
-            no reorderable list, and a drop has to say where it will land before
-            it happens. An inset shadow rather than a border, because a border
-            would change the row's height and shove the list down 2px as the
-            pointer crossed it. */
-         .queue-drop-above {{ box-shadow: inset 0 2px 0 var(--accent-bg-color); }}
-         .queue-drop-below {{ box-shadow: inset 0 -2px 0 var(--accent-bg-color); }}
-         .queue-dragging {{ opacity: 0.35; }}
+         /* Dragging a row in a reorderable list — the queue, and the sidebar's
+            pinned playlists. The argument CLAUDE.md asks for: libadwaita has no
+            reorderable list, and a drop has to say where it will land before it
+            happens. An inset shadow rather than a border, because a border would
+            change the row's height and shove the list down 2px as the pointer
+            crossed it.
+
+            Named for what they do rather than for the queue: two lists reorder
+            now, and a second copy of these three rules would be two places to
+            change the colour. */
+         .drop-above {{ box-shadow: inset 0 2px 0 var(--accent-bg-color); }}
+         .drop-below {{ box-shadow: inset 0 -2px 0 var(--accent-bg-color); }}
+         .dragging {{ opacity: 0.35; }}
 
          /* The volume panel's shape. GTK's `.osd` brings the colours — the
             translucent slab the Shell uses — and stops there, so the corners
