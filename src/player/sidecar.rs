@@ -6,7 +6,7 @@
 //! This is the piece Dockyard and Pitwall never needed. Both talked to
 //! something that already existed (a socket, an API); Slipmat *owns a process*.
 //! So the module's job is lifetime: start it, read its stdout forever, notice
-//! when it dies, and let `app.rs` restart it (CLAUDE.md rule 6).
+//! when it dies, and let `app/mod.rs` restart it (CLAUDE.md rule 6).
 //!
 //! ## Ownership note (Rust, for a React brain)
 //!
@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 
 use super::protocol::{Command, Event};
 
-/// What the reader task pushes up to `app.rs`.
+/// What the reader task pushes up to `app/mod.rs`.
 #[derive(Debug)]
 pub enum Incoming {
     Event(Event),
@@ -264,7 +264,7 @@ fn electron_binary(sidecar: &Path) -> Result<PathBuf> {
 
 /// Start the sidecar. Returns a handle for commands and a receiver of events.
 ///
-/// The receiver ends with exactly one `Incoming::Died`, which is `app.rs`'s cue
+/// The receiver ends with exactly one `Incoming::Died`, which is `app/mod.rs`'s cue
 /// to restart with backoff.
 pub fn spawn() -> Result<(Handle, mpsc::UnboundedReceiver<Incoming>)> {
     let dir = locate()?;

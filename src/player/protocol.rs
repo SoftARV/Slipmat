@@ -4,7 +4,7 @@
 //! The entire sidecar contract, in one file (CLAUDE.md rule 9).
 //!
 //! Newline-delimited JSON over the child's stdin/stdout. Nothing outside
-//! `player/` should ever see these types — `app.rs` translates them into
+//! `player/` should ever see these types — `app/mod.rs` translates them into
 //! `AppMsg`/`PlayerState`, and `components/` never sees them at all.
 //!
 //! The variant renames below must match `sidecar/preload.js` and
