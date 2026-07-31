@@ -9,7 +9,7 @@
 //!
 //! M1 is the playback handshake, so nothing here is wired to the UI yet — the
 //! types and the client are proven by their unit tests until M5 calls them.
-//! Remove this allow the moment `app.rs` makes its first request.
+//! Remove this allow the moment `app/mod.rs` makes its first request.
 #![allow(dead_code)]
 
 pub mod client;

@@ -425,8 +425,12 @@ pub struct AppModel {
     notify_when_art_lands: Option<String>,
 }
 
-/// Logs how long a rebuild took, on the way out. Temporary instrumentation for
-/// "switching sections is slow" — it needs a number before it needs a fix.
+/// Logs how long a rebuild took, on the way out.
+///
+/// **Kept, not temporary.** It was added to answer "switching sections is
+/// slow" with a number, found ~500ms of re-decoding covers, and is what the
+/// section fingerprints are checked against — so it stays, and CLAUDE.md points
+/// at it as the way this stays measurable rather than remembered.
 pub(crate) struct Timed(pub &'static str, pub std::time::Instant);
 
 impl Drop for Timed {
@@ -1408,7 +1412,7 @@ impl Component for AppModel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        // The bar emits intent, never commands — `app.rs` is the only place
+        // The bar emits intent, never commands — `app/mod.rs` is the only place
         // that talks to the sidecar (rule 9).
         let now_playing = NowPlaying::builder()
             .launch(())

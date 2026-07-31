@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      3080  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      3085  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole.
                                           # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
@@ -48,6 +48,9 @@ src/app/mod.rs                      3080  # the model, the messages, `view!` and
                                           # syncing the pins on the command path too — the library
                                           # load that prunes them arrives there, not in `update`.
                                           # 3070 -> 3080: the tile menu's message and handover.
+                                          # 3080 -> 3085: `Timed` says what it is for now — it called
+                                          # itself temporary while CLAUDE.md pointed at it as the way
+                                          # rebuild cost stays measured.
                                           # 2945 -> 2995 for #120: the volume panel's overlay in
                                           # `view!`, its three model fields, a message, two reducer
                                           # arms and a fourth animated property. The panel itself is

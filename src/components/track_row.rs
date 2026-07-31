@@ -18,7 +18,7 @@ use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry, TrackOverrides, overridden};
-use crate::music::types::{Album, Artist, Playlist, Track, format_duration};
+use crate::music::types::{Album, Artist, Playlist, Track};
 
 /// What a row stands for. Songs play; everything else opens a page.
 #[derive(Debug, Clone)]
@@ -470,9 +470,7 @@ impl RelmListItem for LibraryItem {
 
         match &self.entry {
             Entry::Song(track) => {
-                widgets
-                    .trailing
-                    .set_label(&format_duration(track.duration_ms));
+                widgets.trailing.set_label(&track.duration_label());
 
                 let playable = self.playable();
                 let playing = track.catalog_id.is_some()

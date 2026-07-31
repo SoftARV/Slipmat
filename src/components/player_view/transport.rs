@@ -76,27 +76,27 @@ pub(super) fn build_transport(into: &gtk::Box, sender: &ComponentSender<PlayerVi
         .halign(gtk::Align::Center)
         .build();
 
-    let button = |icon: &str, classes: &[&str]| {
+    fn button<const N: usize>(icon: &str, classes: [&str; N]) -> gtk::Button {
         gtk::Button::builder()
             .icon_name(icon)
-            .css_classes(classes.iter().map(|c| c.to_string()).collect::<Vec<_>>())
+            .css_classes(classes)
             .build()
-    };
+    }
 
     // Flanking the transport, and only while the queue is closed — the queue's
     // own header carries them once it is open, and two live copies of one
     // control on screen at once is the redundancy this drawer keeps avoiding.
-    let shuffle = button("media-playlist-shuffle-symbolic", &["flat", "circular"]);
+    let shuffle = button("media-playlist-shuffle-symbolic", ["flat", "circular"]);
     shuffle.set_tooltip_text(Some("Shuffle"));
-    let repeat = button("media-playlist-repeat-symbolic", &["flat", "circular"]);
-    let previous = button("media-skip-backward-symbolic", &["flat", "circular"]);
+    let repeat = button("media-playlist-repeat-symbolic", ["flat", "circular"]);
+    let previous = button("media-skip-backward-symbolic", ["flat", "circular"]);
     let play = button(
         "media-playback-start-symbolic",
-        &["suggested-action", "circular"],
+        ["suggested-action", "circular"],
     );
     play.set_width_request(56);
     play.set_height_request(56);
-    let next = button("media-skip-forward-symbolic", &["flat", "circular"]);
+    let next = button("media-skip-forward-symbolic", ["flat", "circular"]);
     // **A toggle, and always visible.** It was a one-way button that hid once
     // the queue was open, with the queue's own header carrying the way out —
     // which cost 34px of drawer height every time it vanished, and left volume

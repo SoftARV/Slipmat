@@ -48,7 +48,7 @@ impl PlayerState {
     /// Fold one sidecar event into the mirror.
     ///
     /// Returns `true` when something the *MPRIS metadata* depends on changed,
-    /// so `app.rs` knows whether to re-export properties. Position ticks alone
+    /// so `app/mod.rs` knows whether to re-export properties. Position ticks alone
     /// return `false` — MPRIS `Position` is polled, not signalled, and emitting
     /// `PropertiesChanged` every second is what makes Shell applets stutter.
     pub fn apply(&mut self, event: &Event) -> bool {
