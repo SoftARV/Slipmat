@@ -12,6 +12,8 @@
 //! the row, and nothing here can go quietly out of date. The cost is that a pin
 //! whose playlist has been deleted resolves to nothing — see `stale_pins`.
 
+pub(in crate::app) mod drag;
+
 use relm4::adw::prelude::*;
 use relm4::gtk::glib;
 use relm4::{ComponentSender, adw, gtk};
@@ -28,6 +30,32 @@ use crate::components::detail_page::PageKind;
 /// startup before the cache is read, and permanently for a pin whose playlist
 /// was deleted elsewhere — which is what phase five prunes.
 pub(super) const UNAVAILABLE: &str = "Unavailable";
+
+/// Where a drop on `row` lands, in the list's *original* coordinates.
+///
+/// Dropping on the lower half of a row means "after this one", which is the
+/// slot one past it. Expressed as a slot rather than an index so it can name
+/// the end of the list, which no index can.
+pub(super) fn drop_slot(row: usize, below: bool) -> usize {
+    row + usize::from(below)
+}
+
+/// Move a pin to `slot`, where `slot` is in the coordinates of the list as it
+/// was *before* the move.
+///
+/// The subtraction is the whole subtlety: removing the dragged pin shifts
+/// everything after it down one, so a slot past the original position is one
+/// too far by the time the insert happens. Getting this wrong moves a row one
+/// place further than the line said it would, which is the kind of bug that
+/// only shows when dragging downward.
+pub(super) fn move_pin(pins: &mut Vec<String>, from: usize, slot: usize) {
+    if from >= pins.len() {
+        return;
+    }
+    let pin = pins.remove(from);
+    let at = if slot > from { slot - 1 } else { slot };
+    pins.insert(at.min(pins.len()), pin);
+}
 
 impl AppModel {
     /// What a sidebar row selection means.
@@ -206,12 +234,16 @@ impl AppModel {
     /// Runs on the way out of every message, like `sync_animated`, and does
     /// nothing unless something actually changed — a rebuild throws away seven
     /// widgets and the selection with them.
-    pub(super) fn sync_pins(&mut self, widgets: &<Self as relm4::Component>::Widgets) {
+    pub(super) fn sync_pins(
+        &mut self,
+        widgets: &<Self as relm4::Component>::Widgets,
+        sender: &ComponentSender<Self>,
+    ) {
         if !self.pins_dirty {
             return;
         }
         self.pins_dirty = false;
-        super::wiring::rebuild_sidebar(self, widgets);
+        super::wiring::rebuild_sidebar(self, widgets, sender);
     }
 
     /// A click on a sidebar row, as opposed to a selection.
@@ -233,6 +265,23 @@ impl AppModel {
         if self.sidebar_collapsed {
             self.show_sidebar = false;
         }
+    }
+
+    /// Reorder the pins after a drag.
+    ///
+    /// Pin order *is* what the sidebar draws, so this is the whole of the
+    /// feature — there is no separate order to keep in step.
+    pub(super) fn move_pinned(&mut self, from: usize, slot: usize) {
+        let before = self.settings.pinned_playlists.clone();
+        move_pin(&mut self.settings.pinned_playlists, from, slot);
+        if self.settings.pinned_playlists == before {
+            // Dropping a row on its own edge is a drag that meant nothing, and
+            // rewriting settings for it is a save nobody asked for.
+            return;
+        }
+        self.settings.save();
+        self.sidebar_rows = sidebar_rows(&self.settings.pinned_playlists);
+        self.pins_dirty = true;
     }
 
     /// Pin or unpin every library playlist at once.
@@ -315,5 +364,66 @@ impl AppModel {
             .iter()
             .find(|playlist| playlist.id == id)
             .map(|playlist| playlist.name.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pins() -> Vec<String> {
+        ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_drop_lands_between_the_two_rows_the_line_was_drawn_between() {
+        // The lower half of row 1 is the slot after it, which is 2 — the same
+        // slot as the upper half of row 2. One line, one answer.
+        assert_eq!(drop_slot(1, true), 2);
+        assert_eq!(drop_slot(2, false), 2);
+        assert_eq!(drop_slot(0, false), 0);
+    }
+
+    #[test]
+    fn dragging_downward_lands_where_the_line_was() {
+        // The case the shift correction exists for: without it `a` would end up
+        // one place further than the line promised.
+        let mut p = pins();
+        move_pin(&mut p, 0, 2);
+        assert_eq!(p, ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn dragging_upward_lands_where_the_line_was() {
+        let mut p = pins();
+        move_pin(&mut p, 2, 0);
+        assert_eq!(p, ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn dropping_a_row_on_itself_changes_nothing() {
+        // Both edges of the dragged row are the same place it already is, and a
+        // reorder that rewrites settings for no change is a save nobody asked
+        // for.
+        for slot in [1, 2] {
+            let mut p = pins();
+            move_pin(&mut p, 1, slot);
+            assert_eq!(p, ["a", "b", "c"], "slot {slot} moved something");
+        }
+    }
+
+    #[test]
+    fn a_drop_past_the_end_lands_at_the_end() {
+        let mut p = pins();
+        move_pin(&mut p, 0, 3);
+        assert_eq!(p, ["b", "c", "a"]);
+    }
+
+    #[test]
+    fn a_position_that_no_longer_exists_is_ignored() {
+        // The list can change under a drag — the picker is one dialog away.
+        let mut p = pins();
+        move_pin(&mut p, 9, 0);
+        assert_eq!(p, ["a", "b", "c"]);
     }
 }

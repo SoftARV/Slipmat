@@ -622,6 +622,12 @@ pub enum AppMsg {
     },
     /// Pin or unpin every library playlist — the picker's header action.
     SetAllPinned(bool),
+    /// A pinned row was dragged. `slot` is in the coordinates of the list as it
+    /// was before the move — see `pins::move_pin`.
+    MovePin {
+        from: usize,
+        slot: usize,
+    },
     ShowAbout,
     /// Open the Ko-fi page in a browser.
     OpenSupport,
@@ -1715,7 +1721,7 @@ impl Component for AppModel {
         let view_before = self.view;
         self.update(msg, sender.clone(), root);
         self.sync_animated(widgets);
-        self.sync_pins(widgets);
+        self.sync_pins(widgets, &sender);
         self.sync_section_spinners();
 
         if self.view != view_before {
@@ -1919,6 +1925,7 @@ impl AppModel {
             AppMsg::ShowPinPicker => self.show_pin_picker(&sender, root),
             AppMsg::SetPinned { id, pinned } => self.set_pinned(&id, pinned, &sender),
             AppMsg::SetAllPinned(pinned) => self.set_all_pinned(pinned, &sender),
+            AppMsg::MovePin { from, slot } => self.move_pinned(from, slot),
             AppMsg::Tick => self.push_snapshot(),
             AppMsg::SearchChanged(query) => {
                 if query == self.query() {
