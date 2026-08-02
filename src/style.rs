@@ -111,10 +111,17 @@ thread_local! {
     /// reason the module opens with: this one is replaced on every track, and
     /// recolouring the player should not reparse the accent rules.
     static BACKDROP: gtk::CssProvider = gtk::CssProvider::new();
+    /// Whether that cover is painted at all — the Preferences toggle (#145).
+    ///
+    /// Here rather than gated at the call site because this module already owns
+    /// *what is on screen*. `SHOWN_ART` is what the theme-flip handler repaints
+    /// from, so a caller-side gate would put the cover back on the next
+    /// light/dark flip with nothing having asked for it.
+    static BACKDROP_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 /// Install the providers. Called once, before the window is shown.
-pub fn init(accent: Accent) {
+pub fn init(accent: Accent, backdrop: bool) {
     let Some(display) = gdk::Display::default() else {
         // No display means no styling to do, and certainly nothing to fail on.
         return;
@@ -135,6 +142,7 @@ pub fn init(accent: Accent) {
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
         )
     });
+    BACKDROP_ON.with(|c| c.set(backdrop));
     set_accent(accent);
 
     // **Repaint the backdrop when the theme flips.** The veil's alphas differ
@@ -355,6 +363,17 @@ pub fn set_backdrop(path: Option<&std::path::Path>) {
     let to = path.map(std::path::Path::to_path_buf);
     SHOWN_ART.with(|c| *c.borrow_mut() = to.clone());
 
+    if !BACKDROP_ON.with(std::cell::Cell::get) {
+        // Nothing to paint, and no fade to run for a third of a second at 60fps
+        // to arrive at the same nothing. The provider is already empty — either
+        // it was never loaded, or `set_backdrop_enabled(false)` cleared it.
+        //
+        // `SHOWN_ART` is current above this, deliberately: it is what turning
+        // the preference back on paints from, and skipping it here would land
+        // on whatever was showing when it was switched off.
+        return;
+    }
+
     let (Some(from), Some(to)) = (from, to) else {
         // Nothing to fade between — the first cover of a session, or playback
         // stopping. Snap, exactly as the colour does.
@@ -474,7 +493,22 @@ fn painting_dark() -> bool {
     adw::StyleManager::default().is_dark()
 }
 
+/// Show the cover behind the player, or stop showing it (#145). Live, from
+/// Preferences — the same surfaces and the same provider, so turning it back on
+/// picks up the track that is playing now rather than the one that was.
+pub fn set_backdrop_enabled(on: bool) {
+    BACKDROP_ON.with(|c| c.set(on));
+    // Snapped, not faded. Fading a preference would say the app was thinking
+    // about it; a switch should land the moment it is flipped.
+    let shown = SHOWN_ART.with(|c| c.borrow().clone());
+    paint_backdrop(shown.as_deref().map(image_of));
+}
+
 fn paint_backdrop(image: Option<String>) {
+    // The one place every path funnels through — a track change, the fade's
+    // per-frame repaint, the theme-flip handler — so the preference holds by
+    // construction rather than at three call sites that could each forget it.
+    let image = image.filter(|_| BACKDROP_ON.with(std::cell::Cell::get));
     let css = backdrop_css(image.as_deref(), painting_dark());
     BACKDROP.with(|p| p.load_from_string(&css));
 }

@@ -115,9 +115,10 @@ pub struct Settings {
     pub playlist_sort_reversed: bool,
     pub section: Section,
     pub show_sidebar: bool,
-    /// Notify when the track changes. Off by default (`bool`'s default): a
-    /// notification for every song is a lot of noise, and the person who wants
-    /// it will go and turn it on.
+    /// Whether the current cover is painted behind the player, blurred. On by
+    /// default.
+    pub player_backdrop: bool,
+    /// Notify when the track changes. Off by default (`bool`'s default).
     pub notify_track_change: bool,
     /// Playlists pinned to the sidebar, in the order they were put there.
     ///
@@ -184,6 +185,9 @@ impl Default for Settings {
             // Visible on a first run: a sidebar nobody has hidden yet should
             // be there to be found.
             show_sidebar: true,
+            // Not `bool`'s default: the backdrop is the app's own look, and
+            // #145 explicitly asked for it to stay on for everyone else.
+            player_backdrop: true,
             notify_track_change: false,
             // Nothing pinned until somebody pins something. An app that
             // guesses which playlists matter to you gets it wrong.
@@ -223,6 +227,9 @@ impl Settings {
         }
         if let Ok(show) = file.boolean(GROUP, "show-sidebar") {
             settings.show_sidebar = show;
+        }
+        if let Ok(on) = file.boolean(GROUP, "player-backdrop") {
+            settings.player_backdrop = on;
         }
         if let Ok(accent) = file.string(GROUP, "accent") {
             settings.accent = accent.into();
@@ -276,6 +283,7 @@ impl Settings {
         file.set_boolean(GROUP, "notify-track-change", self.notify_track_change);
         file.set_string(GROUP, "section", self.section.as_str());
         file.set_boolean(GROUP, "show-sidebar", self.show_sidebar);
+        file.set_boolean(GROUP, "player-backdrop", self.player_backdrop);
         file.set_string(GROUP, "accent", &self.accent);
         file.set_string(GROUP, "sort", &self.sort);
         file.set_boolean(GROUP, "sort-reversed", self.sort_reversed);
@@ -363,6 +371,14 @@ mod tests {
     fn the_sidebar_starts_visible() {
         // Not bool's default: a sidebar nobody has hidden should be findable.
         assert!(Settings::default().show_sidebar);
+    }
+
+    #[test]
+    fn the_backdrop_starts_on() {
+        // Not `bool`'s default. #145 asked for a way *out* of the backdrop and
+        // said to leave it on for everyone else, so a forgotten `..default()`
+        // that silently turned it off would be the opposite of the request.
+        assert!(Settings::default().player_backdrop);
     }
 
     #[test]

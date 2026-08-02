@@ -456,7 +456,7 @@ impl AppModel {
         dialog.present(Some(parent));
     }
 
-    /// Preferences: theme and the track-change notification.
+    /// Preferences: appearance, and the track-change notification.
     ///
     /// Built imperatively rather than in `view!` because it is presented on
     /// demand and owns no state of its own — every change goes straight back
@@ -496,6 +496,23 @@ impl AppModel {
             });
         }
         appearance.add(&accent);
+
+        // #145: a photograph behind small type is distracting to some people,
+        // and libadwaita's own surfaces are plain. Off, the two surfaces fall
+        // back to the bar and sheet backgrounds they had before the backdrop
+        // existed — there is nothing to draw instead.
+        let backdrop = adw::SwitchRow::builder()
+            .title("Album Art Backdrop")
+            .subtitle("The current cover, blurred, behind the player")
+            .active(self.settings.player_backdrop)
+            .build();
+        {
+            let sender = sender.clone();
+            backdrop.connect_active_notify(move |row| {
+                sender.input(AppMsg::SetPlayerBackdrop(row.is_active()));
+            });
+        }
+        appearance.add(&backdrop);
 
         // No group description. It carried a caveat about notifications needing
         // the app to be installed, which is a **developer's** problem — anyone
