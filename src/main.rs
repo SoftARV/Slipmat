@@ -37,7 +37,10 @@ fn main() {
     let settings = settings::Settings::load();
     settings.apply_theme();
     // Before the window exists, so nothing is ever drawn in the wrong accent.
-    style::init(style::Accent::parse(&settings.accent));
+    style::init(
+        style::Accent::parse(&settings.accent),
+        settings.player_backdrop,
+    );
     app.run::<app::AppModel>(settings);
 }
 

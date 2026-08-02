@@ -639,6 +639,8 @@ pub enum AppMsg {
     OpenSupport,
     SetTheme(u32),
     SetAccent(crate::style::Accent),
+    /// Whether the cover is painted behind the player (#145).
+    SetPlayerBackdrop(bool),
     SetNotifyTrackChange(bool),
     ToggleQueue,
     /// A library row was activated; the position is resolved immediately.
@@ -2355,7 +2357,6 @@ impl AppModel {
                 self.last_item = None;
                 crate::session::clear();
                 crate::style::set_backdrop(None);
-                crate::style::set_backdrop(None);
             }
             AppMsg::JumpTo { at, id } => match self.queue_index_at(at, &id) {
                 Some(index) => {
@@ -2381,6 +2382,13 @@ impl AppModel {
                 // Live: the provider is replaced, and every widget already
                 // referencing the accent variables repaints itself.
                 crate::style::set_accent(accent);
+            }
+            AppMsg::SetPlayerBackdrop(on) => {
+                self.settings.player_backdrop = on;
+                self.settings.save();
+                // Live, like the accent. `style` still knows which cover is
+                // showing, so turning it back on needs no track change first.
+                crate::style::set_backdrop_enabled(on);
             }
             AppMsg::SetSort(sort) => {
                 let mut current = self.sorts.get(self.view);
