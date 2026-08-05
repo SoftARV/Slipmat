@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      3095  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      3100  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole.
                                           # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
@@ -62,6 +62,9 @@ src/app/mod.rs                      3095  # the model, the messages, `view!` and
                                           # 3085 -> 3095 for #145: `SetPlayerBackdrop` and its reducer
                                           # arm. The model, the messages and the reducer — what this
                                           # file is for.
+                                          # 3095 -> 3100 for #147: choosing the row `PlayPage` starts
+                                          # on. The choosing itself is in `queue.rs`, which owns
+                                          # resolving which row a click meant.
 src/components/now_playing.rs       1080  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
@@ -158,11 +161,16 @@ src/style.rs                         660  # the accent, and the cover behind the
                                           # owns what is on screen — `SHOWN_ART` is what the
                                           # theme-flip handler repaints from, so a caller-side gate
                                           # would put the cover back on the next light/dark flip.
-src/app/queue.rs                     640  # click -> setQueue, healing a queue MusicKit rejected, and
+src/app/queue.rs                     735  # click -> setQueue, healing a queue MusicKit rejected, and
                                           # resolving which row a click meant.
                                           # 600 -> 640 for #88: `index_at` and the three tests that
                                           # pin it — a duplicated track, a shifted queue, and a
                                           # position past the end.
+                                          # 640 -> 735 for #147: `playable_rows`, `shuffle_start` and
+                                          # four tests. Mostly the tests, and they are the point —
+                                          # the bug was a hard-coded row 0, so what needs pinning is
+                                          # which rows a shuffle may open on and which would fall
+                                          # back to the top.
 sidecar/preload.js                   610  # the injected hook (rule 4), and the one file that is
                                           # deliberately defensive line by line: every property
                                           # feature-detected, every silent failure made loud.
