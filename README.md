@@ -34,8 +34,7 @@ filtering and its own sorting. Click anything and the list you are looking at
 becomes the queue.
 
 **A player worth the name.** Gapless, with a full-size view you can pull up, the
-queue beside it, and the cover behind it. [Measured, not
-hoped for](#gapless-verified).
+queue beside it, and the cover behind it.
 
 **Controls where you already look.** Play, pause and skip from the GNOME top
 bar, from the lock screen, or with your keyboard's media keys — cover and title
