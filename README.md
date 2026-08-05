@@ -224,7 +224,7 @@ make check                                   # fmt + clippy + test
 Debug in layers — `make sidecar-run` first. If a track won't play with the
 window visible, the problem is DRM or Apple, not Rust.
 
-The module headers in `src/` say what each file is for, 
+The module headers in `src/` say what each file is for,
 the long comments are the traps and the measurements behind them,
 and the merged PRs carry the reasoning for each change.
 
