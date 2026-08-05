@@ -23,3 +23,5 @@ packaging/flatpak/.flatpak-cargo-generator.py
 # the app once, which un-ignored the 94 MB artefact it had been protecting and
 # a `git add -A` committed it on the spot.
 *.flatpak
+
+CLAUDE.md

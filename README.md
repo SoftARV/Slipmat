@@ -211,19 +211,6 @@ Slipmat plays through Apple's own MusicKit player with Google's official CDM. It
 is a native front-end and a remote control for a licensed session. It does not
 strip DRM, does not use extracted CDMs, and does not download anything.
 
-## Gapless, verified
-
-Verified 2026-07-26 across four consecutive boundaries of a segued album:
-
-- Every transition happened **unprompted** — Slipmat sent nothing at any
-  boundary. MusicKit advanced a queue it already held, which is the only way the
-  transition can be seamless.
-- Wall-clock between transitions matched each track's length to the second, so
-  no track was cut short.
-- The PipeWire stream was **created once and never torn down**. One sink-input
-  survived all four boundaries, which means the decoder ran continuously.
-- No audible gap.
-
 ## Development
 
 ```bash
@@ -238,13 +225,11 @@ make check                                   # fmt + clippy + test
 Debug in layers — `make sidecar-run` first. If a track won't play with the
 window visible, the problem is DRM or Apple, not Rust.
 
-See [CLAUDE.md](CLAUDE.md) for the full architecture, the rules the code
-follows, and the traps that cost real debugging time.
+The module headers in `src/` say what each file is for, 
+the long comments are the traps and the measurements behind them,
+and the merged PRs carry the reasoning for each change.
 
 ## Related
-
-Slipmat is the third in a series of native GNOME apps: **Dockyard** (Docker) and
-**Pitwall** (GitHub Actions).
 
 Prior art worth crediting: [Sidra](https://github.com/wimpysworld/sidra) and
 [Cider](https://cider.sh) worked out the castLabs Electron path first, which is

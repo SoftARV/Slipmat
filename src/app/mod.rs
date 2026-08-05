@@ -2324,11 +2324,17 @@ impl AppModel {
                 };
                 let entries = target.entries.clone();
                 // Shuffle mode goes to MusicKit *before* the queue, so its own
-                // shuffle applies to the queue as it loads. Shuffling the ids
-                // ourselves would work once and then leave the player in
-                // sequential mode, which is not what pressing Shuffle means.
+                // shuffle applies to the queue as it loads.
                 self.send(Command::SetShuffle { shuffle });
-                self.play_entries(&entries, 0);
+                // ...and the row we name is the one MusicKit will pin as the
+                // head, which is why Shuffle needs a random one (#147). See
+                // `shuffle_start`.
+                let start = if shuffle {
+                    self.shuffle_start(&entries)
+                } else {
+                    0
+                };
+                self.play_entries(&entries, start);
             }
             AppMsg::MoveQueueItem { from, to } => {
                 // **Optimistic.** The row is already where the user dropped it,

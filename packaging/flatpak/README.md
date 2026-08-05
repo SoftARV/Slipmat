@@ -79,6 +79,7 @@ It is fetched, not bundled — by Chromium's own component updater, into
 proprietary is redistributed here: Electron is MIT, Slipmat is GPL-3, and the
 CDM arrives on the user's machine through their own updater.
 
-This was measured rather than assumed — see CLAUDE.md. The original plan
-deferred Flatpak on the grounds that a sandboxed component updater was
-"genuinely hard"; it is not.
+This was measured rather than assumed: Slipmat was run inside a real
+`org.gnome.Platform//49` sandbox with `--nofilesystem=home` and a private `HOME`
+carrying no CDM, and a track played. The original plan deferred Flatpak on the
+grounds that a sandboxed component updater was "genuinely hard"; it is not.

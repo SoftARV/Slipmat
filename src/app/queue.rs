@@ -84,6 +84,27 @@ pub(super) fn queue_from(
     (songs, start_id)
 }
 
+/// The rows a shuffled queue could open on: those holding a track that can
+/// actually be streamed.
+///
+/// **Chosen among the playable rows rather than over the whole list**, because
+/// `queue_from` walks *forward* from the row it is given. An index landing on
+/// an album heading or a dead track slides to the next song, which is fine
+/// everywhere except at the end of the list — there is nothing to slide to
+/// there, `start_id` comes back `None`, and `start_index` falls back to 0.
+/// That is #147 reappearing on the last track, at 1/n odds instead of always.
+pub(super) fn playable_rows(
+    visible: &[Entry],
+    dead: &std::collections::HashSet<String>,
+) -> Vec<usize> {
+    visible
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.catalog_id().is_some_and(|id| !dead.contains(id)))
+        .map(|(row, _)| row)
+        .collect()
+}
+
 /// Whether MusicKit is already holding exactly this set of songs.
 ///
 /// Compared **unordered**: with shuffle on, MusicKit's order is deliberately
@@ -187,6 +208,29 @@ impl AppModel {
     ///
     /// Shared by the results list and every pushed page — one enqueue path, so
     /// a fix to it cannot land on one list and miss the other.
+    /// Which row a shuffled queue opens on.
+    ///
+    /// **#147: Shuffle used to open on track 1 every time.** The order really
+    /// was shuffled; the entry point was not. MusicKit pins the item you start
+    /// on and shuffles what is left — right for the toggle in the bar, where
+    /// the track you are hearing should keep playing, and wrong at queue
+    /// creation, where `startPosition: 0` pinned the first track and shuffled
+    /// only what came after it.
+    ///
+    /// So the entry point is the random part and the order stays MusicKit's.
+    /// Shuffling the ids here instead would work once and then leave the player
+    /// in sequential mode, which is not what pressing Shuffle means.
+    pub(super) fn shuffle_start(&self, entries: &[Entry]) -> usize {
+        let rows = playable_rows(entries, &self.dead_ids);
+        if rows.is_empty() {
+            // Nothing here can be streamed. `play_entries` says so a moment
+            // later; any row will do until it does.
+            return 0;
+        }
+        let pick = relm4::gtk::glib::random_int_range(0, rows.len() as i32) as usize;
+        rows[pick]
+    }
+
     pub(super) fn play_entries(&mut self, entries: &[Entry], row: usize) {
         let (songs, start_id) = queue_from(entries, row, &self.dead_ids);
         if songs.is_empty() {
@@ -576,6 +620,64 @@ mod tests {
         let (songs, start_id) = queue_from(&visible, 3, &dead(&[]));
         assert_eq!(songs, vec!["1", "2"], "browse rows are not tracks");
         assert_eq!(songs[start_index(&songs, start_id.as_ref())], "2");
+    }
+
+    #[test]
+    fn a_shuffle_can_start_on_any_streamable_row_and_only_those() {
+        // #147: Shuffle named row 0 every time, so MusicKit pinned track 1 as
+        // the head and shuffled only what came after it.
+        let visible = vec![
+            song("a", Some("1")),
+            song("b", None), // no catalog id
+            song("c", Some("3")),
+            song("d", Some("4")), // dead
+            song("e", Some("5")),
+        ];
+        assert_eq!(playable_rows(&visible, &dead(&["4"])), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn a_shuffle_never_starts_on_a_row_that_would_fall_back_to_the_top() {
+        // The subtle half. `queue_from` walks *forward* for the first playable
+        // track, so an unplayable row usually slides to the next one — but at
+        // the end of the list there is nothing to slide to and the start falls
+        // back to 0. Picking only among playable rows is what keeps #147 from
+        // reappearing on the last track at 1/n odds.
+        let visible = vec![song("a", Some("1")), song("b", None)];
+        let rows = playable_rows(&visible, &dead(&[]));
+        assert_eq!(rows, vec![0], "row 1 would have fallen back to the top");
+
+        for row in rows {
+            let (songs, start_id) = queue_from(&visible, row, &dead(&[]));
+            assert!(start_id.is_some(), "row {row} names no track");
+            assert_eq!(songs[start_index(&songs, start_id.as_ref())], "1");
+        }
+    }
+
+    #[test]
+    fn browse_rows_are_not_somewhere_a_shuffle_can_start() {
+        // Same reason they are not enqueued: they are doors, not tracks.
+        let visible = vec![
+            Entry::Album(Album {
+                date_added: String::new(),
+                id: "al1".into(),
+                name: "Superestrella".into(),
+                artist: "Aitana".into(),
+                artwork: None,
+                year: "2020".into(),
+                library: false,
+                track_count: 12,
+            }),
+            song("a", Some("1")),
+        ];
+        assert_eq!(playable_rows(&visible, &dead(&[])), vec![1]);
+    }
+
+    #[test]
+    fn a_list_with_nothing_playable_offers_no_shuffle_start() {
+        // `shuffle_start` falls back to row 0 here, and `play_entries` toasts
+        // "Nothing here can be streamed" a moment later.
+        assert!(playable_rows(&[song("a", None)], &dead(&[])).is_empty());
     }
 
     #[test]
