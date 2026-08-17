@@ -8,6 +8,13 @@
 //! MPRIS is the most common failure of the Apple Music wrappers; this has to be
 //! bidirectional and correct or it isn't worth shipping.
 //!
+//! GNOME is not the only consumer, and the ones that are not it read more of
+//! the interface: a Quickshell or Waybar bar draws `Shuffle` and `LoopStatus`
+//! next to the transport, and offers `Raise` to get back to the window — which
+//! on those desktops is the *only* offer, since there is no Shell applet
+//! underneath it. So the export is the whole player, not the parts GNOME
+//! happens to render.
+//!
 //! ## Why `Rc<RefCell<…>>` here, of all places
 //!
 //! CLAUDE.md says reaching for `Rc<RefCell<>>` usually means state belongs in a
@@ -36,10 +43,11 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use mpris_server::{Metadata, PlaybackStatus, Player, Time, TrackId};
+use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player, Time, TrackId};
 use relm4::ComponentSender;
 
 use crate::app::{AppModel, AppMsg};
+use crate::components::now_playing::Repeat;
 
 /// Bus name suffix — the full name becomes `org.mpris.MediaPlayer2.Slipmat`.
 const BUS_SUFFIX: &str = "Slipmat";
@@ -60,6 +68,8 @@ pub struct MprisState {
     pub can_next: bool,
     pub can_previous: bool,
     pub volume: f64,
+    pub shuffle: bool,
+    pub repeat: Repeat,
 }
 
 impl MprisState {
@@ -70,6 +80,18 @@ impl MprisState {
             PlaybackStatus::Playing
         } else {
             PlaybackStatus::Paused
+        }
+    }
+
+    /// MPRIS names the two loop modes after what they loop over, not after how
+    /// many times: `Track` is our One, `Playlist` is our All. The queue is the
+    /// list either way — MusicKit has one notion of repeat, not a separate one
+    /// per source.
+    fn loop_status(&self) -> LoopStatus {
+        match self.repeat {
+            Repeat::Off => LoopStatus::None,
+            Repeat::All => LoopStatus::Playlist,
+            Repeat::One => LoopStatus::Track,
         }
     }
 
@@ -178,6 +200,14 @@ impl Mpris {
                 .can_pause(true)
                 .can_seek(true)
                 .can_control(true)
+                // Both of these describe a player that outlives its window, and
+                // that is exactly what `close_window` leaves behind: a hidden,
+                // still-playing Slipmat holding the sidecar open. Without
+                // `CanRaise` the controller showing that player has no way to
+                // bring it back, and without `CanQuit` no way to end it either —
+                // the Background portal was the only route to both.
+                .can_raise(true)
+                .can_quit(true)
                 .build()
                 .await
             {
@@ -244,6 +274,15 @@ impl Mpris {
             if (state.volume - prev.volume).abs() > f64::EPSILON {
                 log_err("volume", player.set_volume(state.volume).await);
             }
+            if state.shuffle != prev.shuffle {
+                log_err("shuffle", player.set_shuffle(state.shuffle).await);
+            }
+            if state.loop_status() != prev.loop_status() {
+                log_err(
+                    "loop status",
+                    player.set_loop_status(state.loop_status()).await,
+                );
+            }
         });
     }
 
@@ -274,6 +313,11 @@ async fn apply_all(player: Rc<Player>, state: MprisState) {
         player.set_can_go_previous(state.can_previous).await,
     );
     log_err("volume", player.set_volume(state.volume).await);
+    log_err("shuffle", player.set_shuffle(state.shuffle).await);
+    log_err(
+        "loop status",
+        player.set_loop_status(state.loop_status()).await,
+    );
 }
 
 /// A failed property update is worth a log line and nothing more — the bus
@@ -300,6 +344,12 @@ fn wire_controls(player: &Player, sender: ComponentSender<AppModel>) {
     on!(connect_stop, AppMsg::Pause);
     on!(connect_next, AppMsg::Next);
     on!(connect_previous, AppMsg::Previous);
+    on!(connect_raise, AppMsg::Raise);
+
+    // Straight to the shared exit rather than through an `AppMsg`: this runs on
+    // the main thread like every other route out, and quitting has nothing to
+    // ask the model first.
+    player.connect_quit(|_| crate::notify::quit_cleanly());
 
     // Relative seek, in microseconds, and it can be negative.
     let s = sender.clone();
@@ -313,6 +363,24 @@ fn wire_controls(player: &Player, sender: ComponentSender<AppModel>) {
     let s = sender.clone();
     player.connect_set_position(move |_, _track, position| {
         s.input(AppMsg::Seek(position.as_millis().max(0) as u64));
+    });
+
+    let s = sender.clone();
+    player.connect_set_shuffle(move |_, shuffle| {
+        s.input(AppMsg::SetShuffle(shuffle));
+    });
+
+    // Writable properties, so a controller can set one we do not offer — MPRIS
+    // has no way to advertise a partial set. Every `LoopStatus` maps onto a
+    // `Repeat`, so there is nothing to reject; the mirror still comes back from
+    // MusicKit rather than from here (rule 3), which is why this only sends.
+    let s = sender.clone();
+    player.connect_set_loop_status(move |_, status| {
+        s.input(AppMsg::SetRepeat(match status {
+            LoopStatus::None => Repeat::Off,
+            LoopStatus::Playlist => Repeat::All,
+            LoopStatus::Track => Repeat::One,
+        }));
     });
 
     player.connect_set_volume(move |_, volume| {
@@ -392,6 +460,42 @@ mod tests {
             art.starts_with("file:///"),
             "GNOME Shell needs a file:// path, got {art}"
         );
+    }
+
+    #[test]
+    fn repeat_maps_onto_the_loop_status_that_means_the_same_thing() {
+        // The names invert: repeat-one is `Track`, repeat-all is `Playlist`.
+        // Swapping them is silent — both are valid values — and leaves a bar
+        // showing the wrong glyph for a mode the player really is in.
+        let mode = |repeat| {
+            MprisState {
+                repeat,
+                ..Default::default()
+            }
+            .loop_status()
+        };
+
+        assert_eq!(mode(Repeat::Off), LoopStatus::None);
+        assert_eq!(mode(Repeat::All), LoopStatus::Playlist);
+        assert_eq!(mode(Repeat::One), LoopStatus::Track);
+    }
+
+    #[test]
+    fn shuffle_and_repeat_are_not_part_of_the_metadata_diff() {
+        // They are properties of the player, not of the track. Folding them
+        // into the metadata dict would re-send the whole thing — artwork url
+        // included — every time the shuffle button was pressed.
+        let off = MprisState {
+            title: "Roundabout".into(),
+            ..Default::default()
+        };
+        let on = MprisState {
+            shuffle: true,
+            repeat: Repeat::One,
+            ..off.clone()
+        };
+        assert_eq!(off.metadata_fields(), on.metadata_fields());
+        assert_ne!(off.loop_status(), on.loop_status());
     }
 
     #[test]

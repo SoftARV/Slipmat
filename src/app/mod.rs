@@ -539,6 +539,10 @@ pub enum AppMsg {
     Unfavorite {
         catalog_id: String,
     },
+    /// MPRIS `Raise` — a controller asking for the window back. The counterpart
+    /// to `close_window`'s hide, and the only way back from it that does not go
+    /// through the launcher.
+    Raise,
     /// The window's close button, or the WM. Not a quit: see the handler.
     WindowCloseRequested,
     /// The window is on screen again, however that happened.
@@ -2408,6 +2412,14 @@ impl AppModel {
                 // A rebuild resets the scroll, which is right here: the list
                 // the user was looking at no longer exists in that order.
                 self.resort();
+            }
+            AppMsg::Raise => {
+                // `present` covers both states this can arrive in: hidden after
+                // a close, or open behind something else. The background hold is
+                // dropped by `WindowShown`, which `connect_show` raises from
+                // here — one path back, however the window was reached.
+                tracing::info!("raising the window for MPRIS");
+                root.present();
             }
             AppMsg::WindowCloseRequested => self.close_window(root, &sender),
             AppMsg::PlayerDrawer(open) => {

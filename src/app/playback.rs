@@ -230,6 +230,11 @@ impl AppModel {
             can_next: self.player.has_next(),
             can_previous: self.player.has_previous(),
             volume: self.volume,
+            // The same two the bar is drawing, from the same mirror — a bar and
+            // a shell widget disagreeing about shuffle is the seam that made
+            // this worth exporting at all.
+            shuffle: self.player.shuffle,
+            repeat,
         });
     }
 
