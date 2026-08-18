@@ -84,6 +84,7 @@ mod wiring;
 mod writes;
 
 use chrome::{icon, register_actions, show_about, show_shortcuts};
+use queue::Start;
 use supervise::{respawn_sidecar, start_sidecar};
 
 pub use view::{CatalogFilter, SearchScope, SortBy, View};
@@ -2317,7 +2318,7 @@ impl AppModel {
                     }
                     Some(Entry::Song(_)) => {
                         let entries = page.entries.clone();
-                        self.play_entries(&entries, row);
+                        self.play_entries(&entries, row, Start::Clicked);
                     }
                     None => {}
                 }
@@ -2327,18 +2328,19 @@ impl AppModel {
                     return;
                 };
                 let entries = target.entries.clone();
-                // Shuffle mode goes to MusicKit *before* the queue, so its own
-                // shuffle applies to the queue as it loads.
-                self.send(Command::SetShuffle { shuffle });
-                // ...and the row we name is the one MusicKit will pin as the
-                // head, which is why Shuffle needs a random one (#147). See
+                // The row we name is the one MusicKit will pin as the head,
+                // which is why Shuffle needs a random one (#147). See
                 // `shuffle_start`.
-                let start = if shuffle {
-                    self.shuffle_start(&entries)
+                let (row, start) = if shuffle {
+                    (self.shuffle_start(&entries), Start::Shuffled)
                 } else {
-                    0
+                    (0, Start::InOrder)
                 };
-                self.play_entries(&entries, start);
+                // `play_entries` sends the mode, ahead of the queue it applies
+                // to. Both buttons state one: a Play that inherited the shuffle
+                // left on by something else is the same bug as a row click that
+                // did.
+                self.play_entries(&entries, row, start);
             }
             AppMsg::MoveQueueItem { from, to } => {
                 // **Optimistic.** The row is already where the user dropped it,
@@ -2519,6 +2521,9 @@ impl AppModel {
                     // "add to queue" with no queue plainly means "make one",
                     // and refusing was a worse answer than doing it.
                     tracing::info!("starting a queue from one track");
+                    // A queue being created, so it says what it starts as
+                    // rather than inheriting the last one's mode.
+                    self.send(Command::SetShuffle { shuffle: false });
                     self.pending_start = songs.first().cloned();
                     self.last_queue = Some((songs.clone(), songs.first().cloned()));
                     self.send(Command::SetQueue {
@@ -2554,7 +2559,7 @@ impl AppModel {
             }
             AppMsg::PlayFrom(index) => {
                 let visible = self.visible_entries();
-                self.play_entries(&visible, index);
+                self.play_entries(&visible, index, Start::Clicked);
             }
         }
     }
