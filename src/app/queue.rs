@@ -132,6 +132,45 @@ pub(super) fn start_index(songs: &[String], start_id: Option<&String>) -> usize 
         .unwrap_or(0)
 }
 
+/// What a queue is **created** in, stated by whoever asked for it.
+///
+/// Shuffle is a *player* mode in MusicKit, not a property of the queue it was
+/// turned on for, so a queue built while it is on comes out shuffled whatever
+/// the person meant. Nothing said so at two of the three call sites, and a
+/// playlist shuffled an hour ago went on shuffling every list clicked after it.
+///
+/// So the mode is a parameter rather than ambient state: a caller cannot enqueue
+/// without saying which of these it meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Start {
+    /// A **row click** — this list, from here.
+    ///
+    /// Sequential when it creates a queue. On a queue already loaded it is a
+    /// move within it rather than a new queue, and the bar's toggle goes on
+    /// saying what it said: turning shuffle off there would restore the
+    /// original order and reorder the queue out from under a playing track.
+    Clicked,
+    /// The page's **Play** button: this list, in order, whatever was on before.
+    InOrder,
+    /// The page's **Shuffle** button. A mode request either way, so it states
+    /// itself on a queue already loaded too.
+    Shuffled,
+}
+
+impl Start {
+    /// The mode to state, or `None` to leave the player's alone.
+    ///
+    /// `creating` is whether this is a new queue rather than a move within the
+    /// one MusicKit already holds — the only thing the three cases differ on.
+    fn mode(self, creating: bool) -> Option<bool> {
+        match self {
+            Self::Clicked => creating.then_some(false),
+            Self::InOrder => Some(false),
+            Self::Shuffled => Some(true),
+        }
+    }
+}
+
 impl AppModel {
     /// Remember the queue and where we are in it.
     ///
@@ -183,6 +222,11 @@ impl AppModel {
 
         self.pending_start = wanted.clone();
         self.last_queue = Some((session.songs.clone(), wanted));
+        // Sequential, and not because a restore is unshuffled: the order saved
+        // *is* whatever MusicKit was playing, shuffled or not, and `start`
+        // indexes into it. Shuffling again would reshuffle a settled order and
+        // land the position on a different track than the one being restored.
+        self.send(Command::SetShuffle { shuffle: false });
         self.send(Command::SetQueue {
             songs: session.songs,
             start_position: start,
@@ -203,11 +247,6 @@ impl AppModel {
             .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()))
     }
 
-    /// Enqueue a list and start at `row`, per rule 3: the whole thing goes to
-    /// MusicKit in one `setQueue`, and the starting track is named by id.
-    ///
-    /// Shared by the results list and every pushed page — one enqueue path, so
-    /// a fix to it cannot land on one list and miss the other.
     /// Which row a shuffled queue opens on.
     ///
     /// **#147: Shuffle used to open on track 1 every time.** The order really
@@ -231,7 +270,13 @@ impl AppModel {
         rows[pick]
     }
 
-    pub(super) fn play_entries(&mut self, entries: &[Entry], row: usize) {
+    /// Enqueue a list and start at `row`, per rule 3: the whole thing goes to
+    /// MusicKit in one `setQueue`, and the starting track is named by id.
+    ///
+    /// Shared by the results list and every pushed page — one enqueue path, so
+    /// a fix to it cannot land on one list and miss the other. `start` is what
+    /// makes that true of the shuffle mode as well: see [`Start`].
+    pub(super) fn play_entries(&mut self, entries: &[Entry], row: usize, start: Start) {
         let (songs, start_id) = queue_from(entries, row, &self.dead_ids);
         if songs.is_empty() {
             self.toast("Nothing here can be streamed");
@@ -251,19 +296,33 @@ impl AppModel {
             && let Some(index) = self.queue_index_of(wanted)
         {
             tracing::info!(index, "already loaded; moving within the queue");
+            // A button that names a mode still names it here — this is the same
+            // queue, played a different way. A row click does not: `Clicked`
+            // yields `None` and the toggle in the bar keeps its answer.
+            if let Some(shuffle) = start.mode(false) {
+                self.send(Command::SetShuffle { shuffle });
+            }
             // Nothing pending: there is no new queue to verify against.
             self.pending_start = None;
             self.send(Command::ChangeToIndex { index });
             return;
         }
 
-        let start = start_index(&songs, start_id.as_ref());
-        tracing::info!(queue = songs.len(), start, "enqueuing");
+        // **Before the queue, so MusicKit's own shuffle applies as it loads** —
+        // and unconditionally, because the mode a new queue starts in cannot be
+        // left to whatever the last one was turned to.
+        if let Some(shuffle) = start.mode(true) {
+            self.send(Command::SetShuffle { shuffle });
+        }
+
+        // Not `start`: that is the mode. This is where in the list it begins.
+        let position = start_index(&songs, start_id.as_ref());
+        tracing::info!(queue = songs.len(), position, "enqueuing");
         self.pending_start = start_id.clone();
         self.last_queue = Some((songs.clone(), start_id));
         self.send(Command::SetQueue {
             songs,
-            start_position: start,
+            start_position: position,
             start_playing: true,
             start_time_ms: 0,
         });
@@ -404,6 +463,20 @@ impl AppModel {
             if theirs != ours {
                 return; // not our queue yet
             }
+        }
+
+        // **Not while it is still working towards audio.** `changeToMediaAtIndex`
+        // starts a new load, and starting one over the load `setQueue` is still
+        // running rejects that play: `changeToIndex: The play() request was
+        // interrupted by a new load request`. `play_did_nothing` learned the
+        // same lesson against the `pause()` variant of the message.
+        //
+        // Returning rather than giving up: `pending_start` stays set and the
+        // state change out of `Loading` is itself an event, so the correction
+        // still happens — a moment later, and audible as a late jump instead of
+        // as an error with the track stopped.
+        if self.player.state.is_busy() {
+            return;
         }
 
         // One shot either way: acting or giving up both clear the flag, so a
@@ -678,6 +751,39 @@ mod tests {
         // `shuffle_start` falls back to row 0 here, and `play_entries` toasts
         // "Nothing here can be streamed" a moment later.
         assert!(playable_rows(&[song("a", None)], &dead(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_row_click_states_sequential_when_it_builds_a_queue() {
+        // The bug: shuffle is a *player* mode, so a queue built while it is on
+        // comes out shuffled whether or not anyone asked. A click on a song in
+        // a list is not a mode request, but it does have to stop inheriting
+        // one — otherwise a playlist shuffled an hour ago goes on shuffling
+        // every list clicked after it.
+        assert_eq!(Start::Clicked.mode(true), Some(false));
+    }
+
+    #[test]
+    fn a_row_click_leaves_the_mode_alone_when_it_only_moves_within_a_queue() {
+        // The other half, and the reason this is not just `Some(false)`.
+        // Clicking a track in the list already playing is a move, not a new
+        // queue: turning shuffle off there would restore MusicKit's original
+        // order and reorder the queue out from under the track being played.
+        // The toggle in the bar owns the mode of a queue that already exists.
+        assert_eq!(Start::Clicked.mode(false), None);
+    }
+
+    #[test]
+    fn both_buttons_state_a_mode_either_way() {
+        // These *are* mode requests, so they say so on a queue MusicKit already
+        // holds too — pressing Shuffle on the playlist you are hearing has to
+        // shuffle it. Play is the same argument pointed the other way, and it
+        // is the one that was already right before this: it has always turned
+        // shuffle off, which is what made the row clicks beside it look wrong.
+        for creating in [true, false] {
+            assert_eq!(Start::Shuffled.mode(creating), Some(true));
+            assert_eq!(Start::InOrder.mode(creating), Some(false));
+        }
     }
 
     #[test]

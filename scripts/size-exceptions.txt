@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      3110  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      3115  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole.
                                           # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
@@ -69,6 +69,10 @@ src/app/mod.rs                      3110  # the model, the messages, `view!` and
                                           # that presents the window. It lands here rather than in
                                           # `background.rs` beside the hide it undoes because the
                                           # reducer is the only place holding the root window.
+                                          # 3110 -> 3115 for #152: the three enqueue sites each name
+                                          # the mode their queue starts in. The naming is the fix —
+                                          # a call site that says nothing is what let shuffle carry
+                                          # from one queue to the next.
 src/components/now_playing.rs       1080  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.
@@ -165,7 +169,7 @@ src/style.rs                         660  # the accent, and the cover behind the
                                           # owns what is on screen — `SHOWN_ART` is what the
                                           # theme-flip handler repaints from, so a caller-side gate
                                           # would put the cover back on the next light/dark flip.
-src/app/queue.rs                     735  # click -> setQueue, healing a queue MusicKit rejected, and
+src/app/queue.rs                     835  # click -> setQueue, healing a queue MusicKit rejected, and
                                           # resolving which row a click meant.
                                           # 600 -> 640 for #88: `index_at` and the three tests that
                                           # pin it — a duplicated track, a shifted queue, and a
@@ -175,6 +179,11 @@ src/app/queue.rs                     735  # click -> setQueue, healing a queue M
                                           # the bug was a hard-coded row 0, so what needs pinning is
                                           # which rows a shuffle may open on and which would fall
                                           # back to the top.
+                                          # 735 -> 835 for #152: `Start`, which makes the shuffle
+                                          # mode a thing each enqueue has to state, and the three
+                                          # tests pinning what a row click does on a queue being
+                                          # built versus one already loaded. It belongs here because
+                                          # this file is already where a click becomes a queue.
 sidecar/preload.js                   610  # the injected hook (rule 4), and the one file that is
                                           # deliberately defensive line by line: every property
                                           # feature-detected, every silent failure made loud.
