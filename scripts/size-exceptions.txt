@@ -169,7 +169,7 @@ src/style.rs                         660  # the accent, and the cover behind the
                                           # owns what is on screen — `SHOWN_ART` is what the
                                           # theme-flip handler repaints from, so a caller-side gate
                                           # would put the cover back on the next light/dark flip.
-src/app/queue.rs                     835  # click -> setQueue, healing a queue MusicKit rejected, and
+src/app/queue.rs                     885  # click -> setQueue, healing a queue MusicKit rejected, and
                                           # resolving which row a click meant.
                                           # 600 -> 640 for #88: `index_at` and the three tests that
                                           # pin it — a duplicated track, a shifted queue, and a
@@ -179,11 +179,15 @@ src/app/queue.rs                     835  # click -> setQueue, healing a queue M
                                           # the bug was a hard-coded row 0, so what needs pinning is
                                           # which rows a shuffle may open on and which would fall
                                           # back to the top.
-                                          # 735 -> 835 for #152: `Start`, which makes the shuffle
-                                          # mode a thing each enqueue has to state, and the three
+                                          # 735 -> 885 for #152: `Start`, which makes the shuffle
+                                          # mode a thing each enqueue has to state, and the four
                                           # tests pinning what a row click does on a queue being
-                                          # built versus one already loaded. It belongs here because
-                                          # this file is already where a click becomes a queue.
+                                          # built versus one already loaded, and which queues are
+                                          # worth verifying the start of at all. It belongs here
+                                          # because this file is already where a click becomes a
+                                          # queue. Most of the growth is the two comments recording
+                                          # what was measured against a live player — the guard was
+                                          # wrong twice before it was right.
 sidecar/preload.js                   610  # the injected hook (rule 4), and the one file that is
                                           # deliberately defensive line by line: every property
                                           # feature-detected, every silent failure made loud.

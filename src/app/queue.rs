@@ -169,6 +169,13 @@ impl Start {
             Self::Shuffled => Some(true),
         }
     }
+
+    /// Whether the queue this builds comes back in MusicKit's order rather than
+    /// ours — which is what makes "did it start the right track" a question with
+    /// no answer. See `play_entries`, where it decides whether to verify at all.
+    fn reorders(self) -> bool {
+        matches!(self, Self::Shuffled)
+    }
 }
 
 impl AppModel {
@@ -318,7 +325,22 @@ impl AppModel {
         // Not `start`: that is the mode. This is where in the list it begins.
         let position = start_index(&songs, start_id.as_ref());
         tracing::info!(queue = songs.len(), position, "enqueuing");
-        self.pending_start = start_id.clone();
+        // **Nothing to verify when the order is not ours.** Shuffle makes the
+        // question `verify_start` asks unanswerable: MusicKit reorders as it
+        // loads, so the row we named is not the row it opens on, and there is
+        // no *wrong* track to be corrected to — any of them is a shuffle
+        // starting somewhere, which is the whole of what #147 asked for.
+        //
+        // Measured: it corrected every time, always to index 0, and the
+        // correction is what produced `The play() request was interrupted by a
+        // new load request`. Made to wait for a current item instead, it stopped
+        // erroring and became visible — MusicKit's pick on screen, then a jump
+        // to ours. Both are the same mistake, which is verifying at all here.
+        self.pending_start = if start.reorders() {
+            None
+        } else {
+            start_id.clone()
+        };
         self.last_queue = Some((songs.clone(), start_id));
         self.send(Command::SetQueue {
             songs,
@@ -465,16 +487,31 @@ impl AppModel {
             }
         }
 
-        // **Not while it is still working towards audio.** `changeToMediaAtIndex`
-        // starts a new load, and starting one over the load `setQueue` is still
-        // running rejects that play: `changeToIndex: The play() request was
-        // interrupted by a new load request`. `play_did_nothing` learned the
-        // same lesson against the `pause()` variant of the message.
+        // **Nothing to correct until MusicKit is on something.** The queue
+        // arrives before the item does: measured on a 112-track playlist, the
+        // items landed at .568 with `now_playing` still empty, the item itself
+        // only at .894. In that gap `queue_position` is left over from the
+        // `setQueue` we sent and names no track, so comparing an index against
+        // it is comparing against nothing — and it disagreed, so the correction
+        // fired into a queue that had not started playing:
         //
-        // Returning rather than giving up: `pending_start` stays set and the
-        // state change out of `Loading` is itself an event, so the correction
+        //     changeToIndex: The play() request was interrupted by a new load request
+        //
+        // A state check alone does not cover this. The swap runs
+        // `Paused -> Seeking -> Stopped` *before* the new load begins, and
+        // `Stopped` is not one of the busy states — an earlier version of this
+        // guard tested `is_busy` only and the correction went out anyway.
+        //
+        // Returning rather than giving up: `pending_start` survives and the
+        // item's own arrival is the event that retries this, so the correction
         // still happens — a moment later, and audible as a late jump instead of
         // as an error with the track stopped.
+        if self.player.now_playing.is_none() {
+            return;
+        }
+
+        // And not mid-load either, for the reason `play_did_nothing` already
+        // carries against the `pause()` variant of the same message.
         if self.player.state.is_busy() {
             return;
         }
@@ -784,6 +821,19 @@ mod tests {
             assert_eq!(Start::Shuffled.mode(creating), Some(true));
             assert_eq!(Start::InOrder.mode(creating), Some(false));
         }
+    }
+
+    #[test]
+    fn only_a_queue_that_keeps_our_order_is_worth_verifying() {
+        // `verify_start` asks "did MusicKit open on the track we named", and
+        // under shuffle that has no answer: the order comes back MusicKit's, so
+        // the row we named is not the row it opens on and every track is a
+        // legitimate place for a shuffle to start. Asking anyway corrected on
+        // every shuffled play — always to index 0 — which is what interrupted
+        // the load `setQueue` was still running.
+        assert!(Start::Shuffled.reorders());
+        assert!(!Start::Clicked.reorders(), "a click keeps the list's order");
+        assert!(!Start::InOrder.reorders(), "so does Play");
     }
 
     #[test]
