@@ -6,7 +6,7 @@
 # needs to be a deliberate line in a diff.
 #
 # path                              max   why
-src/app/mod.rs                      3100  # the model, the messages, `view!` and both reducers.
+src/app/mod.rs                      3110  # the model, the messages, `view!` and both reducers.
                                           # CLAUDE.md says those three belong together and the
                                           # reducer stays whole.
                                           # 2910 -> 2760 for #78: 185 lines of `init` wiring moved to
@@ -65,6 +65,10 @@ src/app/mod.rs                      3100  # the model, the messages, `view!` and
                                           # 3095 -> 3100 for #147: choosing the row `PlayPage` starts
                                           # on. The choosing itself is in `queue.rs`, which owns
                                           # resolving which row a click meant.
+                                          # 3100 -> 3110: MPRIS `Raise` — a message and a reducer arm
+                                          # that presents the window. It lands here rather than in
+                                          # `background.rs` beside the hide it undoes because the
+                                          # reducer is the only place holding the root window.
 src/components/now_playing.rs       1080  # one component, and the one whose seek arithmetic took
                                           # four rounds to get right. Splitting it is a design
                                           # question, not a move.

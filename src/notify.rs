@@ -105,9 +105,11 @@ pub fn clear(app: &gio::Application) {
 
 /// Leave, taking the now-playing notification with us.
 ///
-/// **Every route out of the app goes through here**, and there are four of
+/// **Every route out of the app goes through here**, and there are five of
 /// them — the close button with nothing loaded, the primary menu, the
-/// first-run gate's own Quit, and `Ctrl`+`Q`. Withdrawing has to happen while
+/// first-run gate's own Quit, `Ctrl`+`Q`, and MPRIS `Quit`. The last one is the
+/// only one that can arrive with no window on screen, which is exactly the
+/// state that made it worth answering. Withdrawing has to happen while
 /// the application is still registered on the bus, and `shutdown` is after
 /// that, so the only place it can work is immediately before quitting.
 pub fn quit_cleanly() {

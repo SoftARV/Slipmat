@@ -2,12 +2,16 @@
 Type=Application
 Name=Slipmat
 GenericName=Music Player
-Comment=Play your Apple Music library natively on GNOME
+Comment=Play your Apple Music library natively on Linux
 Exec=slipmat
 Icon=dev.miguelrincon.Slipmat
 Terminal=false
 Categories=AudioVideo;Audio;Player;GTK;
 Keywords=Music;Apple;Player;Audio;Playlist;Streaming;
 StartupNotify=true
-StartupWMClass=slipmat
+# The Wayland app_id, which GTK takes from the application id and not from the
+# binary name. GNOME matches on this file's own id and never reads the line, so
+# the old `slipmat` looked right there while every wlroots-style bar and
+# taskbar failed to tie the window to this entry.
+StartupWMClass=dev.miguelrincon.Slipmat
 X-GNOME-UsesNotifications=true
