@@ -22,7 +22,7 @@ use relm4::prelude::*;
 
 use super::{PlayerView, PlayerViewInput};
 use crate::components::now_playing::{Repeat, VOLUME_STEP, mode_opacity, volume_is_new};
-use crate::music::types::format_duration;
+use slipmat_core::music::types::format_duration;
 
 /// The widest the scrubber may get before it stops growing and centres.
 const SCRUB_MAX_W: i32 = 520;

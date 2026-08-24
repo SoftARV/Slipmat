@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use relm4::gtk::gdk_pixbuf;
 
 use super::artwork::{cache_dir, fetch, write_atomically};
-use crate::music::types::Artwork;
+use slipmat_core::music::types::Artwork;
 
 /// Where a mosaic lands, named after the covers it is made of.
 ///

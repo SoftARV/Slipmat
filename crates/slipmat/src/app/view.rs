@@ -10,8 +10,8 @@
 //! live together.
 
 use super::AppModel;
-use crate::music::types::{Album, Artist, Playlist, Track};
 use crate::settings::Section;
+use slipmat_core::music::types::{Album, Artist, Playlist, Track};
 
 /// Which sidebar section is showing.
 ///
@@ -700,7 +700,7 @@ mod tests {
 
     fn track(title: &str, album: &str, n: u32, added: &str, year: &str) -> Track {
         Track {
-            id: crate::music::types::TrackId(title.into()),
+            id: slipmat_core::music::types::TrackId(title.into()),
             catalog_id: Some(title.into()),
             title: title.into(),
             artist: String::new(),

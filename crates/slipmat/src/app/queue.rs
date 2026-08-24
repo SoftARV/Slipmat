@@ -11,7 +11,7 @@
 
 use super::AppModel;
 use crate::components::track_row::{Entry, apply_row_state};
-use crate::player::protocol::Command;
+use slipmat_core::player::protocol::Command;
 
 /// Pull the catalog ids out of MusicKit's `NOT_FOUND` error.
 ///
@@ -110,7 +110,7 @@ pub(super) fn playable_rows(
 /// Compared **unordered**: with shuffle on, MusicKit's order is deliberately
 /// not ours, and it is still the same queue. A free function so it can be
 /// tested without building an `AppModel`, which owns GTK widgets.
-pub(super) fn holds(queue: &[crate::player::protocol::Item], songs: &[String]) -> bool {
+pub(super) fn holds(queue: &[slipmat_core::player::protocol::Item], songs: &[String]) -> bool {
     if queue.len() != songs.len() {
         return false;
     }
@@ -430,7 +430,7 @@ impl AppModel {
             return; // queue hasn't arrived yet; try again on the next event
         }
 
-        let id_of = |item: &crate::player::protocol::Item| {
+        let id_of = |item: &slipmat_core::player::protocol::Item| {
             item.catalog_id.clone().or_else(|| item.id.clone())
         };
 
@@ -507,8 +507,8 @@ impl AppModel {
 /// has it — so resolving by id alone found the first copy and acted on that
 /// instead (#88). If the queue moved since the click the position is wrong, and
 /// searching by id is the better wrong answer: it is what this did before.
-fn index_at(queue: &[crate::player::protocol::Item], at: usize, id: &str) -> Option<usize> {
-    let is_it = |item: &crate::player::protocol::Item| {
+fn index_at(queue: &[slipmat_core::player::protocol::Item], at: usize, id: &str) -> Option<usize> {
+    let is_it = |item: &slipmat_core::player::protocol::Item| {
         item.catalog_id.as_deref() == Some(id) || item.id.as_deref() == Some(id)
     };
     match queue.get(at) {
@@ -520,12 +520,12 @@ fn index_at(queue: &[crate::player::protocol::Item], at: usize, id: &str) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::music::types::{Album, Artist, Track, TrackId};
+    use slipmat_core::music::types::{Album, Artist, Track, TrackId};
 
     /// A queue holding `ids` in order, duplicates included.
-    fn queue(ids: &[&str]) -> Vec<crate::player::protocol::Item> {
+    fn queue(ids: &[&str]) -> Vec<slipmat_core::player::protocol::Item> {
         ids.iter()
-            .map(|id| crate::player::protocol::Item {
+            .map(|id| slipmat_core::player::protocol::Item {
                 catalog_id: Some((*id).to_owned()),
                 ..Default::default()
             })
@@ -795,8 +795,8 @@ mod tests {
     }
 
     /// A MusicKit queue item, as the mirror holds it.
-    fn item(catalog: &str) -> crate::player::protocol::Item {
-        crate::player::protocol::Item {
+    fn item(catalog: &str) -> slipmat_core::player::protocol::Item {
+        slipmat_core::player::protocol::Item {
             id: None,
             catalog_id: Some(catalog.into()),
             title: catalog.into(),

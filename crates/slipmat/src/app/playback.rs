@@ -19,8 +19,8 @@ use crate::components::now_playing::{NowPlayingInput, Repeat, Snapshot};
 use crate::components::player_view::PlayerViewInput;
 use crate::components::queue_view::{QueueEntry, QueueViewInput};
 use crate::mpris::MprisState;
-use crate::music::types::Artwork;
-use crate::player::protocol::{Command, RepeatMode};
+use slipmat_core::music::types::Artwork;
+use slipmat_core::player::protocol::{Command, RepeatMode};
 
 impl AppModel {
     /// Tell the rows which one is playing, so the list shows a play marker.
@@ -102,7 +102,7 @@ impl AppModel {
     /// The bar only empties when there is genuinely nothing loaded, which is
     /// also what makes a stopped player keep its last track on screen rather
     /// than wiping itself.
-    fn showing(&self) -> Option<&crate::player::protocol::Item> {
+    fn showing(&self) -> Option<&slipmat_core::player::protocol::Item> {
         self.player
             .now_playing
             .as_ref()
@@ -186,7 +186,7 @@ impl AppModel {
         // and a restored session has it wherever the last one stopped. The
         // queue folds everything before it away, and says "earlier" rather
         // than "played" for exactly that reason.
-        let queue_id = |item: &crate::player::protocol::Item| {
+        let queue_id = |item: &slipmat_core::player::protocol::Item| {
             item.catalog_id
                 .clone()
                 .or_else(|| item.id.clone())

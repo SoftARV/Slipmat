@@ -160,7 +160,7 @@ impl Handle {
 /// costs nothing on a real install because the check cannot fire there.
 #[cfg(debug_assertions)]
 fn warn_if_shadowing_a_build_tree(chosen: &Path) {
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar");
+    let dev = PathBuf::from(env!("SLIPMAT_WORKSPACE_ROOT")).join("sidecar");
     if dev.join("main.js").is_file() {
         tracing::warn!(
             using = %chosen.display(),
@@ -198,13 +198,13 @@ pub fn locate() -> Result<PathBuf> {
         tried.push(p);
     }
 
-    // The dev tree, and only in a dev build: `CARGO_MANIFEST_DIR` is where the
-    // binary was compiled, which for a package is a build root that will not
-    // exist on the machine running it. Baking it into a release binary is both
-    // useless and what makes `makepkg` warn about a reference to `$srcdir`.
+    // The dev tree, and only in a dev build: the workspace root is where this
+    // was compiled, which for a package is a build root that will not exist on
+    // the machine running it. Baking it into a release binary is both useless
+    // and what makes `makepkg` warn about a reference to `$srcdir`.
     #[cfg(debug_assertions)]
     {
-        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar");
+        let dev = PathBuf::from(env!("SLIPMAT_WORKSPACE_ROOT")).join("sidecar");
         if dev.join("main.js").is_file() {
             return Ok(dev);
         }

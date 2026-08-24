@@ -18,7 +18,7 @@ use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry, TrackOverrides, overridden};
-use crate::music::types::{Album, Artist, Playlist, Track};
+use slipmat_core::music::types::{Album, Artist, Playlist, Track};
 
 /// What a row stands for. Songs play; everything else opens a page.
 #[derive(Debug, Clone)]
@@ -511,7 +511,7 @@ impl RelmListItem for LibraryItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::music::types::TrackId;
+    use slipmat_core::music::types::TrackId;
 
     fn song(artist: &str, album: &str) -> Entry {
         Entry::Song(Track {

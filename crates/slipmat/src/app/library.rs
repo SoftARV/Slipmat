@@ -21,8 +21,8 @@ use super::{
 };
 use crate::components::grid_item::{ArtRegistry, GridItem};
 use crate::components::track_row::{Entry, LibraryItem, apply_row_state};
-use crate::music::client::{Client, SearchResults};
-use crate::music::types::Track;
+use slipmat_core::music::client::{Client, SearchResults};
+use slipmat_core::music::types::Track;
 
 /// Fold one page of catalog results into rows, and report how many of the
 /// **paging kind** came back.
@@ -694,7 +694,7 @@ impl AppModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::music::types::TrackId;
+    use slipmat_core::music::types::TrackId;
 
     fn track(title: &str, catalog: Option<&str>) -> Track {
         Track {
@@ -717,7 +717,7 @@ mod tests {
     /// A page of results with a distinct count per kind, so a test that reads
     /// the wrong one fails loudly rather than coincidentally passing.
     fn page(songs: usize, albums: usize, artists: usize, playlists: usize) -> SearchResults {
-        use crate::music::types::{Album, Artist, Playlist};
+        use slipmat_core::music::types::{Album, Artist, Playlist};
         SearchResults {
             songs: (0..songs)
                 .map(|i| track(&format!("s{i}"), Some("1")))
