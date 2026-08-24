@@ -21,10 +21,6 @@ tracing.workspace = true
 # so their versions can never drift apart; do not add them as direct deps.
 relm4 = { version = "0.11", features = ["libadwaita", "gnome_49"] }
 
-# NOTE: 0.9 -> 0.10 (Apr 2026) changed the API. Do not trust training data for
-# it; check https://docs.rs/mpris-server/0.10 before writing a call.
-mpris-server = "0.10"
-
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ashpd = { version = "0.13.13", default-features = false, features = [
     "background",

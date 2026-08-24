@@ -15,7 +15,7 @@ use relm4::RelmApp;
 use relm4::gtk;
 use tracing_subscriber::EnvFilter;
 
-pub(crate) const APP_ID: &str = "dev.miguelrincon.Slipmat";
+pub(crate) use slipmat_core::APP_ID;
 
 fn main() {
     tracing_subscriber::fmt()

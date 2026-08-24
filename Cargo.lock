@@ -1709,7 +1709,6 @@ version = "0.11.0-dev"
 dependencies = [
  "anyhow",
  "ashpd",
- "mpris-server",
  "relm4",
  "reqwest",
  "serde",
@@ -1725,6 +1724,7 @@ name = "slipmat-core"
 version = "0.11.0-dev"
 dependencies = [
  "anyhow",
+ "mpris-server",
  "reqwest",
  "serde",
  "serde_json",

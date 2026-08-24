@@ -234,7 +234,10 @@ impl AppModel {
             // a shell widget disagreeing about shuffle is the seam that made
             // this worth exporting at all.
             shuffle: self.player.shuffle,
-            repeat,
+            // The mirror's own type: `MprisState` speaks the protocol, not the
+            // UI's `Repeat`. See rule 9 — the conversion above is for
+            // `components/`, and MPRIS is not one.
+            repeat: self.player.repeat,
         });
     }
 
