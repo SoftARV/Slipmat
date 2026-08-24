@@ -87,6 +87,9 @@ pub struct Daemon {
     pub idle: std::cell::Cell<bool>,
     /// Rung when a client turns up and the sidecar is not running.
     pub wake: tokio::sync::Notify,
+    /// Rung by [`Request::Quit`], and answered where SIGTERM is — so leaving on
+    /// purpose and being stopped by a service manager take the same path.
+    pub quitting: tokio::sync::Notify,
 }
 
 impl Daemon {
@@ -172,6 +175,7 @@ pub async fn run() -> Result<()> {
         clients: std::cell::Cell::new(0),
         idle: std::cell::Cell::new(false),
         wake: tokio::sync::Notify::new(),
+        quitting: tokio::sync::Notify::new(),
     });
 
     // After the `Rc` exists: MPRIS holds one so a button on a bar can reach the
@@ -281,6 +285,7 @@ pub async fn run() -> Result<()> {
         let why = tokio::select! {
             _ = term.recv() => "SIGTERM",
             _ = interrupt.recv() => "SIGINT",
+            _ = leaving.quitting.notified() => "a client quit",
         };
         tracing::info!(why, "shutting down");
         save_session(&leaving);
@@ -671,6 +676,23 @@ fn answer(
             // and a client waiting on one must not stop the daemon answering
             // everyone else.
             open_page(daemon, kind, id);
+            None
+        }
+        Request::Quit => {
+            // Counted around the connection, so this client is in the total.
+            // Anyone else attached is a window that would lose its player.
+            if daemon.clients.get() > 1 {
+                return Some(Event::Error {
+                    detail: "Another Slipmat client is still open".into(),
+                });
+            }
+            tracing::info!("a client asked to quit");
+            // **Through the same door a service manager uses.** Saving the
+            // session and clearing the socket are already done properly on
+            // SIGTERM; a second copy of that here is a second one to keep
+            // right. Raising it on ourselves also lets this return first, so
+            // the client is not writing into a socket that is already gone.
+            daemon.quitting.notify_one();
             None
         }
         Request::Play { ids, index, start } => {

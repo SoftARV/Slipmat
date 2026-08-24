@@ -224,6 +224,16 @@ pub enum Request {
         #[serde(default)]
         start: PlayMode,
     },
+
+    /// Stop the daemon: stop playing, save the session, exit.
+    ///
+    /// **Refused while another client is attached.** Quitting takes the player
+    /// from every window on this machine, so a client can only ask for it when
+    /// it is the last one holding the socket — otherwise the answer is an
+    /// [`Event::Error`] and the client should just leave. That is also why
+    /// MPRIS `Quit` is ignored outright: a media key must never mean this.
+    #[serde(rename = "quit")]
+    Quit,
 }
 
 /// Which kinds a catalog search should answer for.
@@ -473,10 +483,12 @@ pub struct Snapshot {
 }
 
 /// How far along the daemon is. A client draws something different for each.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "stage", rename_all = "camelCase")]
 pub enum Stage {
-    /// The sidecar is up but MusicKit has not attached yet.
+    /// The sidecar is up but MusicKit has not attached yet. Also what a client
+    /// assumes before it has asked.
+    #[default]
     Connecting,
     /// Ready to play.
     Ready,
