@@ -3,13 +3,10 @@
 
 mod app;
 mod components;
-mod library_cache;
 mod mpris;
 mod notify;
-mod session;
 mod settings;
 mod style;
-mod unplayable;
 
 use relm4::RelmApp;
 use relm4::gtk;

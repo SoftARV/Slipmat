@@ -23,13 +23,7 @@ use slipmat_core::music::types::Artwork;
 pub const ART_SIZE: u32 = 512;
 
 /// `$XDG_CACHE_HOME/slipmat/artwork`, else `~/.cache/slipmat/artwork`.
-pub fn cache_dir() -> Option<PathBuf> {
-    let base = match std::env::var("XDG_CACHE_HOME") {
-        Ok(x) if !x.is_empty() => PathBuf::from(x),
-        _ => PathBuf::from(std::env::var("HOME").ok()?).join(".cache"),
-    };
-    Some(base.join("slipmat/artwork"))
-}
+pub use slipmat_core::paths::artwork_dir as cache_dir;
 
 fn cache_path(art: &Artwork, size: u32) -> Option<PathBuf> {
     Some(cache_dir()?.join(format!("{}-{size}.jpg", art.cache_key())))

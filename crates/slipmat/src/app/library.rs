@@ -540,7 +540,7 @@ impl AppModel {
     /// loaders' `!is_empty()` guards do that on their own, which is the same
     /// rule that makes revisiting a section instant.
     pub(super) fn seed_from_cache(&mut self) {
-        let cached = crate::library_cache::load();
+        let cached = slipmat_core::library_cache::load();
         if cached.is_empty() {
             return;
         }
@@ -623,7 +623,7 @@ impl AppModel {
     /// library is a refresh whose result is already the file on disk, and four
     /// of those per launch is 1.7 MB of writing to say nothing.
     pub(super) fn save_cache(&self) {
-        crate::library_cache::save(
+        slipmat_core::library_cache::save(
             &self.all_tracks,
             &self.albums,
             &self.artists,

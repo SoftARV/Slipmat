@@ -185,11 +185,11 @@ impl AppModel {
             .collect();
 
         if songs.is_empty() {
-            crate::session::clear();
+            slipmat_core::session::clear();
             return;
         }
 
-        crate::session::save(&crate::session::Session {
+        slipmat_core::session::save(&slipmat_core::session::Session {
             start: self
                 .player
                 .queue_position
@@ -204,7 +204,7 @@ impl AppModel {
     /// Loaded **paused**, and the position is applied only once MusicKit
     /// confirms it is holding the queue we asked for.
     pub(super) fn restore_session(&mut self) {
-        let Some(session) = crate::session::load() else {
+        let Some(session) = slipmat_core::session::load() else {
             return;
         };
         let start = session.start.min(session.songs.len() - 1);
@@ -335,7 +335,7 @@ impl AppModel {
         self.dead_ids.extend(dead);
         if newly_dead > 0 {
             // Remember them, so the next run starts already knowing.
-            crate::unplayable::save(&self.dead_ids);
+            slipmat_core::unplayable::save(&self.dead_ids);
         }
 
         // Nothing new: the retry already happened and failed again. Stop, or we

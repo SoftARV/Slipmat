@@ -7,9 +7,13 @@
 //! draws nothing at all still needs all of it: the sidecar contract, the child's
 //! lifetime, our mirror of its state, and the catalog client.
 
+pub mod library_cache;
 pub mod mpris;
 pub mod music;
+pub mod paths;
 pub mod player;
+pub mod session;
+pub mod unplayable;
 
 /// The application id. It must match the `.desktop` file name, the GResource
 /// prefix, `RelmApp::new()` and the MPRIS bus name suffix.
