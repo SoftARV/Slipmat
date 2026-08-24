@@ -96,17 +96,11 @@ const TICK_MS: u32 = 500;
 /// network request, and firing one per character would be both slow and rude.
 const SEARCH_DEBOUNCE_MS: u64 = 350;
 
-/// Apple caps search at 25 results per request, so this is its ceiling rather
-/// than a choice. More than that means paging with an offset.
-const CATALOG_LIMIT: u32 = 25;
+pub(crate) use slipmat_core::catalog::CATALOG_LIMIT;
 
 /// Tile covers are fetched at twice their drawn size, so they stay sharp on a
 /// HiDPI screen without paying for the 512px the Now Playing bar needs.
 const TILE_ART: u32 = 320;
-
-/// How many artists and albums to show above the songs. Enough to be a way in,
-/// few enough that the songs are still visible without scrolling.
-const CATALOG_BROWSE_ROWS: usize = 3;
 
 /// Stop paging here. Nobody scrolls 400 search results, and an unbounded list
 /// is an unbounded number of requests.
@@ -2786,8 +2780,11 @@ impl AppModel {
                 match result {
                     Ok(found) => {
                         let first_page = offset == 0;
-                        let (rows, paged) =
-                            library::catalog_rows(self.catalog_filter, found, first_page);
+                        let (rows, paged) = slipmat_core::catalog::catalog_rows(
+                            self.catalog_filter.into(),
+                            found,
+                            first_page,
+                        );
 
                         // A short page of the **paging kind** means Apple has
                         // no more. Which kind that is depends on the filter,

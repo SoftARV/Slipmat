@@ -8,8 +8,11 @@ use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use slipmat_core::artwork;
+use slipmat_core::catalog;
 use slipmat_core::entry::Entry;
-use slipmat_core::ipc::{self, Event, PageKind, Request, Stage, Transport, WriteAction};
+use slipmat_core::ipc::{
+    self, CatalogFilter, Event, PageKind, Request, Stage, Transport, WriteAction,
+};
 use slipmat_core::music::client::Client;
 use slipmat_core::music::types::Artwork;
 use slipmat_core::player::protocol::{Command, Event as PlayerEvent};
@@ -646,6 +649,14 @@ fn answer(
                 total,
             })
         }
+        Request::Search {
+            query,
+            filter,
+            offset,
+        } => {
+            search(daemon, query, filter, offset);
+            None
+        }
         Request::Open { kind, id } => {
             // Answered off this task: opening a page is a network round trip,
             // and a client waiting on one must not stop the daemon answering
@@ -878,6 +889,48 @@ fn refresh_library(daemon: &Rc<Daemon>) {
                 daemon.publish(Event::LibraryChanged);
             }
             _ => tracing::warn!("library refresh failed; keeping what was cached"),
+        }
+    });
+}
+
+/// Search the catalog and announce what came back.
+///
+/// Spawned like `open_page`, and for the same reason: this is a network round
+/// trip, and a client waiting on one must not stop the daemon answering anyone
+/// else. The answer carries the query it belongs to, because somebody types
+/// faster than Apple replies.
+fn search(daemon: &Rc<Daemon>, query: String, filter: CatalogFilter, offset: usize) {
+    let Some(client) = daemon.client() else {
+        daemon.publish(Event::Error {
+            detail: "Not signed in yet".into(),
+        });
+        return;
+    };
+
+    let daemon = daemon.clone();
+    tokio::task::spawn_local(async move {
+        let found = client
+            .search(&query, filter.types(), catalog::CATALOG_LIMIT, offset)
+            .await;
+        match found {
+            Ok(results) => {
+                let (entries, paged) = catalog::catalog_rows(filter, results, offset == 0);
+                tracing::info!(%query, ?filter, offset, rows = entries.len(), "searched");
+                daemon.publish(Event::Results {
+                    query,
+                    entries,
+                    offset,
+                    // A short page is the last page: Apple gave us fewer than
+                    // it caps at, so there is nothing behind it.
+                    more: paged >= catalog::CATALOG_LIMIT as usize,
+                });
+            }
+            Err(err) => {
+                tracing::warn!(?err, %query, "search failed");
+                daemon.publish(Event::Error {
+                    detail: format!("{err}"),
+                });
+            }
         }
     });
 }

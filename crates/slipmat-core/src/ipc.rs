@@ -121,6 +121,20 @@ pub enum Request {
         limit: usize,
     },
 
+    /// Search all of Apple Music, not just the library.
+    ///
+    /// **Here rather than in a client, because this is what needs the tokens**,
+    /// and rule 7 keeps those in one process. `offset` pages the same way the
+    /// catalog does — a client asks for more as somebody scrolls.
+    #[serde(rename = "search")]
+    Search {
+        query: String,
+        #[serde(default)]
+        filter: CatalogFilter,
+        #[serde(default)]
+        offset: usize,
+    },
+
     /// Open an album, artist or playlist. Fetched from Apple if it is not
     /// already known, which is why the answer arrives as an event rather than
     /// a return value.
@@ -177,6 +191,35 @@ pub enum Request {
         #[serde(default)]
         start: PlayMode,
     },
+}
+
+/// Which kinds a catalog search should answer for.
+///
+/// Apple answers only for the kinds named, and leaves a key out entirely rather
+/// than returning it empty — so this is a filter on the request, not on what
+/// comes back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CatalogFilter {
+    #[default]
+    All,
+    Songs,
+    Albums,
+    Artists,
+    Playlists,
+}
+
+impl CatalogFilter {
+    /// The `types=` value Apple wants.
+    pub fn types(self) -> &'static str {
+        match self {
+            Self::All => "songs,albums,artists,playlists",
+            Self::Songs => "songs",
+            Self::Albums => "albums",
+            Self::Artists => "artists",
+            Self::Playlists => "playlists",
+        }
+    }
 }
 
 /// Something we can ask Apple to do to this account.
@@ -293,6 +336,20 @@ pub enum Event {
         /// How many matched before `offset`/`limit`, so a client can show a
         /// scrollbar without asking for everything.
         total: usize,
+    },
+
+    /// Catalog results, answering a [`Request::Search`].
+    ///
+    /// Carries the query it answers: a client types faster than Apple replies,
+    /// and a result for two keystrokes ago must not replace one for the word
+    /// that is actually in the box.
+    #[serde(rename = "results")]
+    Results {
+        query: String,
+        entries: Vec<Entry>,
+        offset: usize,
+        /// Whether asking again at a higher offset is worth it.
+        more: bool,
     },
 
     /// An opened album, artist or playlist.
