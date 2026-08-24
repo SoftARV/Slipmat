@@ -78,7 +78,11 @@ impl AppModel {
                 self.redials = 0;
                 self.daemon = Some(handle);
                 // Everything at once, so the window is right before the first
-                // change rather than after it.
+                // change rather than after it. **The stage especially**: it is
+                // only broadcast when it changes, so a client attaching to a
+                // daemon that has been ready for an hour has to ask — otherwise
+                // it draws its startup screen with music playing behind it.
+                self.ask(Request::Stage);
                 self.ask(Request::Snapshot);
                 self.ask(Request::Queue);
             }
@@ -105,6 +109,12 @@ impl AppModel {
                 self.mirror.snap = snap;
                 self.sync_tick(sender);
                 self.push_snapshot();
+                // **Here, not on the queue event.** The cover belongs to the
+                // snapshot that carries its path, and the two events arrive
+                // separately — syncing on the queue read whichever snapshot
+                // happened to be current, which is the one *before* the track
+                // changed. `art_for` makes the repeat calls free.
+                self.sync_artwork(sender);
             }
             Event::Queue { items, position } => {
                 let moved = position != self.mirror.queue_position;
@@ -116,7 +126,8 @@ impl AppModel {
                     // A track change is where a notification belongs, and the
                     // queue's position is what says one happened — the snapshot
                     // arrives twice a second and says nothing about *change*.
-                    let in_flight = self.sync_artwork(sender);
+                    let in_flight = self.mirror.snap.art_path.is_some()
+                        && self.art_for != self.mirror.snap.art_path;
                     self.maybe_notify(in_flight);
                 }
             }

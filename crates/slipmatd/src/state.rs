@@ -62,7 +62,14 @@ impl Model {
             // A local file, already fetched. A client never talks to Apple for
             // a cover, and never resolves a template itself.
             art_path: self.art_path.as_ref().map(|p| p.display().to_string()),
-            position_ms: self.player.interpolated_position_ms(),
+            // **Reported, not interpolated.** Clients extrapolate between
+            // snapshots themselves — a bar redraws at 60fps against a 500ms
+            // tick — and two interpolations of the same clock fight each other:
+            // every tick looks like a reading that moved, so the client rebases
+            // on it, and the slider walks backwards and forwards. MPRIS gets
+            // the interpolated one, because a polled property has no other
+            // chance to be current.
+            position_ms: self.player.position_ms,
             duration_ms: self.player.duration_ms,
             playing: self.player.state.is_playing(),
             busy: self.player.state.is_busy(),

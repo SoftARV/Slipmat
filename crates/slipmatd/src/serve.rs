@@ -620,6 +620,7 @@ fn answer(
             Some(Event::Snapshot(daemon.model.borrow().snapshot()))
         }
         Request::Snapshot => Some(Event::Snapshot(daemon.model.borrow().snapshot())),
+        Request::Stage => Some(Event::Stage(daemon.model.borrow().stage.clone())),
         Request::Queue => {
             let (items, position) = daemon.model.borrow().queue();
             Some(Event::Queue { items, position })
@@ -743,10 +744,27 @@ fn answer(
             let command = command_for(transport);
             tracing::debug!(cmd = command.name(), "transport");
             daemon.send(command);
-            if let Transport::SetVolume { volume } = transport {
-                // MusicKit does not report volume back, so this is the only
-                // record of it — the same reason the GTK client keeps its own.
-                daemon.model.borrow_mut().volume = volume;
+            match transport {
+                Transport::SetVolume { volume } => {
+                    // MusicKit does not report volume back, so this is the only
+                    // record of it — the same reason the GTK client keeps its own.
+                    daemon.model.borrow_mut().volume = volume;
+                }
+                // **Adopted before MusicKit confirms it.** A seek takes a
+                // moment to land, and the tick in between would otherwise
+                // publish the position the track was at *before* the drag —
+                // pulling the slider back under the finger that just moved it,
+                // then throwing it forward when the real reading arrives.
+                Transport::Seek { position_ms } => {
+                    daemon.model.borrow_mut().player.seeked_to(position_ms);
+                    // **Said immediately, not on the next tick.** A client that
+                    // has just dragged the slider is extrapolating from where
+                    // the track *was*; leaving it to do that for half a second
+                    // is what snaps the handle back under the finger before it
+                    // jumps forward again.
+                    daemon.publish_snapshot();
+                }
+                _ => {}
             }
             None
         }

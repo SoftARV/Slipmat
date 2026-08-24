@@ -18,6 +18,19 @@ use std::time::Instant;
 
 use super::protocol::{Event, Item, PlaybackState, Queue, QueueChange, RepeatMode};
 
+/// How long to wait for a seek to show up in MusicKit's own reports.
+///
+/// Generous: it is a ceiling on how long a *failed* seek can hold the position,
+/// not a deadline the ordinary case runs against — that resolves in about a
+/// second, which is MusicKit's reporting interval.
+const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How close a reading has to be to count as the seek having landed.
+///
+/// Wider than one reporting interval, because the first reading after a seek is
+/// already a moment old by the time it arrives.
+const SEEK_TOLERANCE_MS: u64 = 1_500;
+
 #[derive(Debug, Default)]
 pub struct PlayerState {
     pub state: PlaybackState,
@@ -35,6 +48,14 @@ pub struct PlayerState {
     /// When `position_ms` was last set, so the UI can interpolate between the
     /// sidecar's coarse `playbackTimeDidChange` ticks without lying when paused.
     last_tick: Option<Instant>,
+    /// A seek we asked for and MusicKit has not confirmed yet.
+    ///
+    /// Reports keep arriving from *before* the seek for a moment — MusicKit
+    /// emits roughly once a second and does not stop while it moves — and each
+    /// one used to drag the position back to where the track was, then forward
+    /// again when the real reading landed. That is the slider jumping under the
+    /// finger that moved it.
+    seeking_to: Option<(u64, Instant)>,
 }
 
 impl PlayerState {
@@ -72,10 +93,15 @@ impl PlayerState {
                 position_ms,
                 duration_ms,
             } => {
-                self.position_ms = *position_ms;
                 if *duration_ms > 0 {
                     self.duration_ms = *duration_ms;
                 }
+                if self.settling(*position_ms) {
+                    // Still hearing about where the track was. Keep what we
+                    // asked for; the duration above is true either way.
+                    return false;
+                }
+                self.position_ms = *position_ms;
                 self.last_tick = Some(Instant::now());
                 false
             }
@@ -146,6 +172,38 @@ impl PlayerState {
     /// The sidecar only ticks a few times a second; without this the seek bar
     /// visibly steps. Clamping matters because a stale `last_tick` across a
     /// suspend/resume would otherwise report a position past the end.
+    /// Adopt a position we asked for, before MusicKit has confirmed it.
+    ///
+    /// The base *and* the clock, together: moving one without the other makes
+    /// the next interpolation extrapolate from the new position using the old
+    /// track's elapsed time, which is a jump in the opposite direction.
+    pub fn seeked_to(&mut self, position_ms: u64) {
+        self.position_ms = position_ms;
+        self.last_tick = Some(Instant::now());
+        self.seeking_to = Some((position_ms, Instant::now()));
+    }
+
+    /// Whether `reported` is a reading from before a seek we are still waiting
+    /// on, and should be ignored.
+    ///
+    /// Cleared as soon as a reading lands near the target, and abandoned after
+    /// [`SEEK_SETTLE`] regardless — a seek that never arrives must not freeze
+    /// the position for the rest of the track.
+    fn settling(&mut self, reported: u64) -> bool {
+        let Some((target, asked_at)) = self.seeking_to else {
+            return false;
+        };
+        if asked_at.elapsed() > SEEK_SETTLE {
+            self.seeking_to = None;
+            return false;
+        }
+        if reported.abs_diff(target) <= SEEK_TOLERANCE_MS {
+            self.seeking_to = None;
+            return false;
+        }
+        true
+    }
+
     pub fn interpolated_position_ms(&self) -> u64 {
         let base = self.position_ms;
         if !self.state.is_playing() {
@@ -263,6 +321,57 @@ mod tests {
             ["a", "b", "c", "d", "e"]
         );
         assert_eq!(s.queue_position, 2);
+    }
+
+    #[test]
+    fn a_reading_from_before_a_seek_does_not_drag_the_position_back() {
+        // MusicKit keeps reporting while it moves, so the first reading after a
+        // seek is usually from *before* it. Taking that one is what snapped the
+        // slider back under the finger that had just moved it.
+        let mut s = PlayerState::new();
+        s.apply(&Event::Position {
+            position_ms: 30_000,
+            duration_ms: 240_000,
+        });
+        s.seeked_to(120_000);
+
+        s.apply(&Event::Position {
+            position_ms: 30_400,
+            duration_ms: 240_000,
+        });
+        assert_eq!(s.position_ms, 120_000, "a stale reading was taken");
+
+        // And the moment one lands near the target, reports are trusted again.
+        s.apply(&Event::Position {
+            position_ms: 120_300,
+            duration_ms: 240_000,
+        });
+        assert_eq!(s.position_ms, 120_300);
+        s.apply(&Event::Position {
+            position_ms: 121_300,
+            duration_ms: 240_000,
+        });
+        assert_eq!(
+            s.position_ms, 121_300,
+            "still ignoring after the seek landed"
+        );
+    }
+
+    #[test]
+    fn a_seek_that_never_lands_does_not_freeze_the_position() {
+        // Otherwise a seek MusicKit quietly refused would hold the slider still
+        // for the rest of the track, which reads as a dead player.
+        let mut s = PlayerState::new();
+        s.seeked_to(120_000);
+        s.seeking_to = Some((120_000, Instant::now() - SEEK_SETTLE * 2));
+        s.apply(&Event::Position {
+            position_ms: 31_000,
+            duration_ms: 240_000,
+        });
+        assert_eq!(
+            s.position_ms, 31_000,
+            "gave up waiting and took the reading"
+        );
     }
 
     #[test]

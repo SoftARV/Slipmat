@@ -14,12 +14,13 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 
-use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, TICK_MS, artwork, notify};
+use super::{AppModel, AppMsg, CommandMsg, TICK_MS, artwork, notify};
 use crate::components::now_playing::{NowPlayingInput, Snapshot};
 use crate::components::player_view::PlayerViewInput;
 use crate::components::queue_view::{QueueEntry, QueueViewInput};
+use std::path::PathBuf;
+
 use slipmat_core::ipc::Transport;
-use slipmat_core::music::types::Artwork;
 
 impl AppModel {
     /// Tell the rows which one is playing, so the list shows a play marker.
@@ -231,27 +232,36 @@ impl AppModel {
     /// Returns whether a fetch is now in flight, so the caller knows that
     /// `art_path` is stale until `CommandMsg::Artwork` arrives.
     pub(super) fn sync_artwork(&mut self, sender: &ComponentSender<Self>) -> bool {
-        // The same resolved item the bar renders, so the cover does not blank
-        // on its own while a queue reloads — see `showing`.
-        let template = self.showing().and_then(|s| s.art_path.clone());
+        // **A path, not a template.** The daemon fetched this cover and put it
+        // on disk; asking Apple for it again would be a second download of a
+        // file we already have — and passing a local path to `fetch` is exactly
+        // the bug that left the bar blank, because it tried to resolve one as a
+        // URL and failed quietly.
+        let path = self.showing().and_then(|snap| snap.art_path.clone());
 
-        if template == self.art_for {
+        if path == self.art_for {
             // Same cover as the last track — usually the next song on the same
             // album. `art_path` is already correct.
             return false;
         }
-        self.art_for = template.clone();
+        self.art_for = path.clone();
 
-        match template {
-            Some(t) => {
-                let art = Artwork::new(t);
+        match path {
+            Some(path) => {
+                let path = PathBuf::from(path);
                 sender.oneshot_command(async move {
-                    let path = artwork::fetch(art, ART_SIZE).await.ok();
-                    // Scaled here, not on the GTK thread (rule 8), and carried
-                    // in the same message: the cover and the backdrop taken
-                    // from it must never be applied a frame apart.
-                    let backdrop = path.as_deref().and_then(artwork::backdrop);
-                    CommandMsg::Artwork { path, backdrop }
+                    // Off the GTK thread (rule 8): the blur is a decode and a
+                    // downscale, and it rides in the same message as the cover
+                    // so the two are never applied a frame apart.
+                    let blurred = path.clone();
+                    let backdrop = relm4::spawn_blocking(move || artwork::backdrop(&blurred))
+                        .await
+                        .ok()
+                        .flatten();
+                    CommandMsg::Artwork {
+                        path: Some(path),
+                        backdrop,
+                    }
                 });
                 true
             }

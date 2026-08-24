@@ -58,11 +58,23 @@ pub fn connect_or_spawn(exe: &std::path::Path) -> std::io::Result<std::os::unix:
     }
 
     tracing::info!(daemon = %exe.display(), "no daemon listening — starting one");
-    std::process::Command::new(exe)
+    let child = std::process::Command::new(exe)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
+
+    // **Reaped, or it becomes a zombie.** Dropping a `Child` neither kills nor
+    // waits, so a daemon that dies while this client is still running would sit
+    // in the process table until the client exited — and a daemon that keeps
+    // crashing would leave one behind each time. The thread costs nothing: it
+    // blocks for the daemon's whole life and then ends.
+    let mut child = child;
+    std::thread::Builder::new()
+        .name("slipmatd-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })?;
 
     // It binds the socket before it does anything else, so this is the daemon
     // coming up rather than the sidecar — a fraction of a second, not the
@@ -102,6 +114,14 @@ pub enum Request {
     /// The queue as the daemon mirrors it.
     #[serde(rename = "queue")]
     Queue,
+
+    /// Where the daemon stands right now.
+    ///
+    /// **Asked for, because [`Event::Stage`] only fires on a change.** A client
+    /// attaching to a daemon that has been ready for an hour would otherwise
+    /// never be told it was ready, and would draw its startup screen forever.
+    #[serde(rename = "stage")]
+    Stage,
 
     /// Start receiving [`Event`]s on this connection. Idempotent.
     #[serde(rename = "subscribe")]
