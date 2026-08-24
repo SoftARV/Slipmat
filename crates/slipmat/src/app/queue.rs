@@ -15,12 +15,13 @@ use slipmat_core::entry::Entry;
 use slipmat_core::ipc::{PlayMode, Request};
 
 impl AppModel {
-    /// The catalog id of the track the player is on, if any.
+    /// The id of the track the player is on, if any.
+    ///
+    /// From the snapshot rather than the queue, so it always agrees with the
+    /// title beside it. Asking the queue while holding an older snapshot is how
+    /// a notification came to announce the song that had just finished.
     pub(super) fn playing_catalog_id(&self) -> Option<String> {
-        self.mirror
-            .queue
-            .get(self.mirror.queue_position)
-            .and_then(|item| item.id.clone())
+        self.mirror.snap.track_id.clone()
     }
 
     /// Ask the daemon to play this list, starting at `row`.

@@ -56,6 +56,9 @@ impl Model {
             .as_ref()
             .or_else(|| self.player.queue.get(self.player.queue_position));
         Snapshot {
+            // From the same item as the title beside it, which is the whole
+            // point: one object, one answer.
+            track_id: item.and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone())),
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
             album: item.map(|i| i.album.clone()).unwrap_or_default(),

@@ -114,22 +114,18 @@ impl AppModel {
                 // separately — syncing on the queue read whichever snapshot
                 // happened to be current, which is the one *before* the track
                 // changed. `art_for` makes the repeat calls free.
-                self.sync_artwork(sender);
+                let in_flight = self.sync_artwork(sender);
+                // **Here, with the title.** `maybe_notify` decides from the id
+                // and draws from the title; taking them from different events
+                // is what announced the previous song. `notified_for` is what
+                // keeps a twice-a-second snapshot from notifying twice.
+                self.maybe_notify(in_flight);
             }
             Event::Queue { items, position } => {
-                let moved = position != self.mirror.queue_position;
                 self.mirror.queue = items;
                 self.mirror.queue_position = position;
                 self.push_snapshot();
                 self.mark_now_playing();
-                if moved {
-                    // A track change is where a notification belongs, and the
-                    // queue's position is what says one happened — the snapshot
-                    // arrives twice a second and says nothing about *change*.
-                    let in_flight = self.mirror.snap.art_path.is_some()
-                        && self.art_for != self.mirror.snap.art_path;
-                    self.maybe_notify(in_flight);
-                }
             }
             Event::Stage(stage) => {
                 self.mirror.stage = Some(stage.clone());

@@ -450,6 +450,11 @@ impl From<&Item> for QueueItem {
 /// What is playing, flattened for a client that only draws.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Snapshot {
+    /// Which track this is, so a client can tell one snapshot from the next
+    /// without consulting the queue. **They arrive as separate events**, and a
+    /// client that asks the queue "what is playing" while holding a snapshot
+    /// from before the change gets one answer from each.
+    pub track_id: Option<String>,
     pub title: String,
     pub artist: String,
     pub album: String,
