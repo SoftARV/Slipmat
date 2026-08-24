@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/slipmat-core", "crates/slipmat"]
+members = ["crates/slipmat-core", "crates/slipmatd", "crates/slipmat"]
 
 # Shared so the two crates cannot drift apart on a version.
 [workspace.package]
@@ -17,5 +17,15 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util"] }
+# `net` and `sync` are the daemon's: a Unix socket, and a broadcast channel to
+# fan events out to every connected client.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "process",
+    "io-util",
+    "net",
+    "sync",
+    "macros",
+    "time",
+] }
 tracing = "0.1"
