@@ -692,7 +692,19 @@ the specific traps; do not re-introduce them.
   rule this out before doubting the change.
 
 ```
-src/
+crates/slipmat-core/   # the engine. No toolkit reaches in here.
+  build.rs           # emits SLIPMAT_WORKSPACE_ROOT for the dev-tree sidecar path
+  src/lib.rs
+  src/player/
+    protocol.rs      # serde types for both directions. The whole contract, one file.
+    sidecar.rs       # locate / spawn / supervise the Electron child; NDJSON codec
+    state.rs         # PlayerState: now playing, position, queue *projection* (+ tests)
+  src/music/
+    client.rs        # reqwest → api.music.apple.com; storefront; errors that name the fix
+    types.rs         # Track / Album / Artist / Playlist / Artwork (+ tests). JSON stops here.
+
+crates/slipmat/        # the GTK client. One frontend of several to come.
+  src/
   main.rs            # RelmApp bootstrap, tracing, icon; locate + spawn the sidecar
   app/
     mod.rs           # root Component: AppModel, AppMsg, CommandMsg, update, view!
@@ -712,15 +724,6 @@ src/
   style.rs           # accent colour + the cover behind the player. The only CSS.
   mpris.rs           # mpris-server 0.10 ↔ AppMsg bridge (both directions)
   notify.rs          # gio::Notification on track change (opt-in)
-  player/
-    mod.rs
-    protocol.rs      # serde types for both directions. The whole contract, one file.
-    sidecar.rs       # locate / spawn / supervise the Electron child; NDJSON codec
-    state.rs         # PlayerState: now playing, position, queue *projection* (+ tests)
-  music/
-    mod.rs
-    client.rs        # reqwest → api.music.apple.com; storefront; errors that name the fix
-    types.rs         # Track / Album / Artist / Playlist / Artwork (+ tests). JSON stops here.
   components/
     mod.rs
     now_playing.rs   # the persistent bottom bar

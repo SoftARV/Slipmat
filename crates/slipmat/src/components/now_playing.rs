@@ -16,7 +16,7 @@ use relm4::adw::prelude::*;
 use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
 
 use super::cover::SWAP_MS;
-use crate::music::types::format_duration;
+use slipmat_core::music::types::format_duration;
 
 /// How often the slider redraws itself between snapshots.
 ///

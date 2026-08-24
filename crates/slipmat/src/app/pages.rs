@@ -23,8 +23,8 @@ pub(super) enum Arrival {
     /// Chosen in the sidebar. There is nothing behind it, so no back button.
     FromTheSidebar,
 }
-use crate::music::client::Client;
-use crate::music::types::{Artwork, Track};
+use slipmat_core::music::client::Client;
+use slipmat_core::music::types::{Artwork, Track};
 
 /// The most covers a mosaic uses. Fewer is fine — they divide the square
 /// between them rather than leaving holes; see `artwork::layout`.

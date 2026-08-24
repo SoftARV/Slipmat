@@ -56,11 +56,11 @@ use crate::components::{
     row_registry, track_overrides,
 };
 use crate::mpris::Mpris;
-use crate::music::types::{Album, Artist, Artwork, Playlist, Track};
 use crate::notify;
-use crate::player::protocol::{Command, RepeatMode, Tokens};
-use crate::player::{Incoming, PlayerState, sidecar};
 use crate::settings::{Section, Settings, Theme};
+use slipmat_core::music::types::{Album, Artist, Artwork, Playlist, Track};
+use slipmat_core::player::protocol::{Command, RepeatMode, Tokens};
+use slipmat_core::player::{Incoming, PlayerState, sidecar};
 
 /// How often the seek bar redraws while playing.
 ///
@@ -153,7 +153,7 @@ pub struct AppModel {
 
     /// The last track MusicKit reported, kept so the bar can hold it through a
     /// queue reload — see `push_snapshot::showing`.
-    last_item: Option<crate::player::protocol::Item>,
+    last_item: Option<slipmat_core::player::protocol::Item>,
 
     /// Kept for the row context menu, whose GTK actions outlive the `update`
     /// call that built them.
@@ -696,7 +696,7 @@ pub enum CommandMsg {
         /// Where this page started, so a first page replaces and a later page
         /// appends.
         offset: usize,
-        result: Result<crate::music::client::SearchResults, String>,
+        result: Result<slipmat_core::music::client::SearchResults, String>,
     },
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
     /// cosmetic and must not become a toast.
@@ -3000,7 +3000,7 @@ impl AppModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::music::types::TrackId;
+    use slipmat_core::music::types::TrackId;
 
     fn track(title: &str, catalog: Option<&str>) -> Track {
         Track {

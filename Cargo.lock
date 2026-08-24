@@ -1714,10 +1714,23 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror",
+ "slipmat-core",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "slipmat-core"
+version = "0.11.0-dev"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

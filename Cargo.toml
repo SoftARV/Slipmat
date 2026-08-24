@@ -1,46 +1,21 @@
-[package]
-name = "slipmat"
+[workspace]
+resolver = "3"
+members = ["crates/slipmat-core", "crates/slipmat"]
+
+# Shared so the two crates cannot drift apart on a version.
+[workspace.package]
 version = "0.11.0-dev"
 edition = "2024"
-description = "A native GNOME client for Apple Music"
 license = "GPL-3.0-or-later"
-readme = "README.md"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1"
-
-# `gnome_49` == libadwaita 1.8 / GTK 4.20 — the same install floor as the sibling
-# apps. Take gtk4/libadwaita *through* relm4 so their versions can never drift
-# apart; do not add them as direct dependencies.
-relm4 = { version = "0.11", features = ["libadwaita", "gnome_49"] }
-
-# MPRIS server side — this is the headline feature (M3), not a nicety.
-# NOTE: 0.9 -> 0.10 (Apr 2026) changed the API. Do not trust training data for
-# it; check https://docs.rs/mpris-server/0.10 before writing a call.
-# `mpris-player` is unmaintained and explicitly points here instead.
-mpris-server = "0.10"
-
-# Secret Service (GNOME Keyring). The Music User Token lives here, never in the
-# config file and never in a log. 0.6 is the current stable line (0.7 is alpha).
-
-# api.music.apple.com. rustls so we don't drag in a system OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
 ] }
-
-# The sidecar protocol (player/protocol.rs) and the Apple Music JSON responses.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# relm4 owns the tokio runtime and runs our commands on it. We need `process`
-# and `io-util` directly: the sidecar is a long-lived child whose stdout we read
-# line by line, which is the one thing Pitwall never had to do.
-tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util"] }
-
-# Track durations and the position clock.
 thiserror = "2"
-
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ashpd = { version = "0.13.13", default-features = false, features = ["background", "tokio"] }

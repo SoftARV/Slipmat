@@ -1,0 +1,11 @@
+// SPDX-FileCopyrightText: 2026 Miguel Rincon
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Everything a client of Apple Music needs that is not drawing.
+//!
+//! No toolkit reaches in here — that is the point of the split. A frontend that
+//! draws nothing at all still needs all of it: the sidecar contract, the child's
+//! lifetime, our mirror of its state, and the catalog client.
+
+pub mod music;
+pub mod player;

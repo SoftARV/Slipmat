@@ -29,7 +29,7 @@ use relm4::typed_view::list::RelmListItem;
 use relm4::{RelmWidgetExt, gtk, view};
 
 use super::QueueViewInput;
-use crate::music::types::format_duration;
+use slipmat_core::music::types::format_duration;
 
 /// What a row draws. **No id and no index** — deliberately.
 ///

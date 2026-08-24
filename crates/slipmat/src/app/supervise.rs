@@ -11,8 +11,8 @@
 use relm4::ComponentSender;
 
 use super::{AppModel, CommandMsg, Stage};
-use crate::player::protocol::{Command, Event};
-use crate::player::{Incoming, sidecar};
+use slipmat_core::player::protocol::{Command, Event};
+use slipmat_core::player::{Incoming, sidecar};
 
 pub(super) fn start_sidecar(sender: &ComponentSender<AppModel>) {
     respawn_sidecar(sender, std::time::Duration::ZERO);

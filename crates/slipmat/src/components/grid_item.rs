@@ -46,7 +46,7 @@ use relm4::typed_view::grid::RelmGridItem;
 use relm4::{gtk, view};
 
 use crate::components::cover::Cover;
-use crate::music::types::{Album, Artist, Artwork, Playlist};
+use slipmat_core::music::types::{Album, Artist, Artwork, Playlist};
 
 /// Tile artwork, in logical pixels. Big enough to read, small enough that a
 /// library of a few hundred albums is a few hundred small JPEGs.

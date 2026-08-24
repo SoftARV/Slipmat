@@ -26,7 +26,7 @@ use relm4::{adw, gtk};
 use crate::components::cover::Cover;
 use crate::components::track_row::{Entry, LibraryItem, LibraryRowWidgets};
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry, TrackOverrides};
-use crate::music::types::{Album, Artist, Artwork, Playlist};
+use slipmat_core::music::types::{Album, Artist, Artwork, Playlist};
 
 /// Header artwork, in logical pixels. The widget is pinned to exactly this so
 /// the `card` background cannot outgrow the picture inside it.

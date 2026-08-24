@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use relm4::gtk::{gdk, gdk_pixbuf, glib};
 
-use crate::music::types::Artwork;
+use slipmat_core::music::types::Artwork;
 
 /// The size we fetch for the Now Playing bar and for MPRIS. One size keeps the
 /// cache simple; the Shell scales it down and nobody notices.

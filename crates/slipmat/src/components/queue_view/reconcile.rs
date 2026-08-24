@@ -189,7 +189,7 @@ pub fn shares_a_track<'a>(
 
 /// Where "Play Next" puts an item **already in the queue**.
 ///
-/// Not [`crate::player::protocol::Command::PlayNext`], which inserts songs that
+/// Not [`slipmat_core::player::protocol::Command::PlayNext`], which inserts songs that
 /// are not in the queue yet: this is a move, so it keeps the gapless buffer and
 /// cannot duplicate the track.
 ///

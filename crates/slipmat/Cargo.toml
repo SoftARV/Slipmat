@@ -1,0 +1,32 @@
+[package]
+name = "slipmat"
+description = "A native GNOME client for Apple Music"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme = "../../README.md"
+
+[dependencies]
+slipmat-core = { path = "../slipmat-core" }
+
+anyhow.workspace = true
+# One call: fetching a cover in `components/artwork.rs`.
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+# `gnome_49` == libadwaita 1.8 / GTK 4.20. Take gtk4/libadwaita *through* relm4
+# so their versions can never drift apart; do not add them as direct deps.
+relm4 = { version = "0.11", features = ["libadwaita", "gnome_49"] }
+
+# NOTE: 0.9 -> 0.10 (Apr 2026) changed the API. Do not trust training data for
+# it; check https://docs.rs/mpris-server/0.10 before writing a call.
+mpris-server = "0.10"
+
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ashpd = { version = "0.13.13", default-features = false, features = [
+    "background",
+    "tokio",
+] }
