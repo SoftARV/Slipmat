@@ -25,8 +25,8 @@ use super::{AppModel, Stage, View};
 /// resolution that is not coming.
 fn startup_page(stage: &Stage) -> &'static str {
     match stage {
-        Stage::Starting | Stage::InstallingWidevine | Stage::Connecting => "loading",
-        Stage::SignedOut | Stage::Broken(_) | Stage::Restarting(_) | Stage::Ready => "status",
+        Stage::Starting | Stage::Connecting => "loading",
+        Stage::SignedOut | Stage::Broken(_) | Stage::Ready => "status",
     }
 }
 
@@ -216,15 +216,12 @@ impl AppModel {
     pub(super) fn headline(&self) -> String {
         match &self.stage {
             Stage::Starting => "Starting the playback engine".into(),
-            Stage::InstallingWidevine => "Preparing playback".into(),
             Stage::Connecting => "Connecting to Apple Music".into(),
             Stage::SignedOut => "Welcome to Slipmat".into(),
-            Stage::Restarting(n) => format!("Reconnecting (attempt {n})"),
             Stage::Broken(_) => "Playback unavailable".into(),
             Stage::Ready => self
-                .player
-                .now_playing
-                .as_ref()
+                .mirror
+                .now_playing()
                 .map(|i| i.title.clone())
                 .unwrap_or_else(|| "Ready".into()),
         }
@@ -232,11 +229,6 @@ impl AppModel {
 
     pub(super) fn detail(&self) -> String {
         match &self.stage {
-            Stage::InstallingWidevine => {
-                "Downloading the components needed for protected playback. \
-                 This only happens once."
-                    .into()
-            }
             // The onboarding proper. Two things a first-time reader needs and
             // cannot find out by clicking: that a subscription is required —
             // Slipmat is a front-end, not a source — and that everything after
@@ -246,9 +238,8 @@ impl AppModel {
                 .into(),
             Stage::Broken(why) => why.clone(),
             Stage::Ready => self
-                .player
-                .now_playing
-                .as_ref()
+                .mirror
+                .now_playing()
                 // adw::StatusPage always parses its description as Pango
                 // markup — there is no use-markup to turn off — so a track like
                 // "Mercury - Acts 1 & 2" has to be escaped. It warns even while
@@ -264,11 +255,9 @@ impl AppModel {
 
     pub(super) fn subtitle(&self) -> String {
         match &self.stage {
-            Stage::Ready => self
-                .tokens
-                .as_ref()
-                .map(|t| t.storefront.to_uppercase())
-                .unwrap_or_default(),
+            // The storefront came off the tokens, and those live in the daemon
+            // now (rule 7). Not worth a wire field of its own for a subtitle.
+            Stage::Ready => String::new(),
             _ => String::new(),
         }
     }
@@ -283,17 +272,12 @@ mod tests {
         // Motion promises "wait and this will finish". True while the sidecar
         // is coming up; a lie for the three that need the user to read or do
         // something, and a spinner over those is how a stuck app looks busy.
-        for stage in [
-            Stage::Starting,
-            Stage::InstallingWidevine,
-            Stage::Connecting,
-        ] {
+        for stage in [Stage::Starting, Stage::Connecting] {
             assert_eq!(startup_page(&stage), "loading", "{stage:?}");
         }
         for stage in [
             Stage::SignedOut,
             Stage::Broken("Apple changed the page".into()),
-            Stage::Restarting(2),
         ] {
             assert_eq!(startup_page(&stage), "status", "{stage:?}");
         }

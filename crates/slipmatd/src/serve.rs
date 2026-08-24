@@ -649,6 +649,14 @@ fn answer(
                 total,
             })
         }
+        Request::SignIn => {
+            daemon.send(Command::ShowLogin);
+            None
+        }
+        Request::SignOut => {
+            daemon.send(Command::SignOut);
+            None
+        }
         Request::Search {
             query,
             filter,
@@ -893,6 +901,11 @@ fn refresh_library(daemon: &Rc<Daemon>) {
     });
 }
 
+/// Tracks as rows.
+fn songs(tracks: Vec<slipmat_core::music::types::Track>) -> Vec<Entry> {
+    tracks.into_iter().map(Entry::Song).collect()
+}
+
 /// Search the catalog and announce what came back.
 ///
 /// Spawned like `open_page`, and for the same reason: this is a network round
@@ -951,29 +964,52 @@ fn open_page(daemon: &Rc<Daemon>, kind: PageKind, id: String) {
 
     let daemon = daemon.clone();
     tokio::task::spawn_local(async move {
+        // **An artist page is their albums, not their tracks**, which is why
+        // this is not one call with a different id. Catalog and library are
+        // separate for the other reason: the two id spaces are not
+        // interchangeable, and a catalog id 404s against `/me/library`.
         let fetched = match kind {
             PageKind::Album => client
-                .library_album(&id)
-                .await
-                .map(|(album, tracks)| (album.name, tracks)),
-            PageKind::Playlist => client
-                .library_playlist(&id)
-                .await
-                .map(|(list, tracks)| (list.name, tracks)),
-            // An artist page is their albums, not their tracks — the same
-            // shape the GTK client shows.
-            PageKind::Artist => client
                 .album(&id)
                 .await
-                .map(|(album, tracks)| (album.name, tracks)),
+                .map(|(album, tracks)| (Entry::Album(album), songs(tracks))),
+            PageKind::LibraryAlbum => client
+                .library_album(&id)
+                .await
+                .map(|(album, tracks)| (Entry::Album(album), songs(tracks))),
+            PageKind::Playlist => client
+                .playlist(&id)
+                .await
+                .map(|(list, tracks)| (Entry::Playlist(list), songs(tracks))),
+            PageKind::LibraryPlaylist => client
+                .library_playlist(&id)
+                .await
+                .map(|(list, tracks)| (Entry::Playlist(list), songs(tracks))),
+            PageKind::Artist => client.artist_albums(&id).await.map(|(artist, albums)| {
+                (
+                    Entry::Artist(artist),
+                    albums.into_iter().map(Entry::Album).collect(),
+                )
+            }),
+            PageKind::LibraryArtist => {
+                client
+                    .library_artist_albums(&id)
+                    .await
+                    .map(|(artist, albums)| {
+                        (
+                            Entry::Artist(artist),
+                            albums.into_iter().map(Entry::Album).collect(),
+                        )
+                    })
+            }
         };
 
         match fetched {
-            Ok((title, tracks)) => daemon.publish(Event::Page {
+            Ok((header, entries)) => daemon.publish(Event::Page {
                 kind,
                 id,
-                title,
-                entries: tracks.into_iter().map(Entry::Song).collect(),
+                header,
+                entries,
             }),
             Err(err) => {
                 tracing::warn!(?err, %id, "opening a page failed");

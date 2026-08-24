@@ -45,7 +45,16 @@ impl Model {
     /// `position_ms` is interpolated rather than last-reported: MusicKit reports
     /// about once a second, and a bar redrawing at that rate visibly steps.
     pub fn snapshot(&self) -> Snapshot {
-        let item = self.player.now_playing.as_ref();
+        // **A queue loaded but never started has no now-playing item** —
+        // MusicKit only sets one when something begins, which is exactly the
+        // state a restored session is in. The queue's own current entry is the
+        // honest answer to "what is this player on", and answering it here
+        // means no client has to work it out again.
+        let item = self
+            .player
+            .now_playing
+            .as_ref()
+            .or_else(|| self.player.queue.get(self.player.queue_position));
         Snapshot {
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),

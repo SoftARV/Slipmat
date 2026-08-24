@@ -36,14 +36,14 @@ impl AppModel {
         // The queue, not the playback state: paused-with-a-queue is still "you
         // are in the middle of something", and quitting on it would lose the
         // position for no reason.
-        if self.player.queue.is_empty() {
+        if self.mirror.queue.is_empty() {
             tracing::info!("closing: nothing loaded, quitting");
             crate::notify::quit_cleanly();
             return;
         }
 
         tracing::info!(
-            queue = self.player.queue.len(),
+            queue = self.mirror.queue.len(),
             "closing: staying in the background"
         );
         root.set_visible(false);

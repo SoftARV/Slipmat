@@ -42,7 +42,7 @@ use relm4::typed_view::grid::TypedGridView;
 use relm4::typed_view::list::TypedListView;
 
 use crate::components::artwork::{self, ART_SIZE};
-use crate::components::detail_page::{DetailPage, PageKind, RowState};
+use crate::components::detail_page::{DetailPage, PageKind};
 use crate::components::grid_item::{ArtRegistry, ArtRequest, GridItem, Tile, art_registry};
 use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, VOLUME_STEP};
 use crate::components::player_view::{PlayerView, PlayerViewInput};
@@ -53,12 +53,13 @@ use crate::components::{
     CurrentTrack, DeadTracks, RowRegistry, TrackOverrides, current_track, dead_tracks,
     row_registry, track_overrides,
 };
-use crate::mpris::Mpris;
+use crate::daemon;
+use crate::mirror::Mirror;
 use crate::notify;
 use crate::settings::{Section, Settings, Theme};
+use slipmat_core::ipc::{PlayMode, Request, Transport, WriteAction};
 use slipmat_core::music::types::{Album, Artist, Artwork, Playlist, Track};
-use slipmat_core::player::protocol::{Command, RepeatMode, Tokens};
-use slipmat_core::player::{Incoming, PlayerState, sidecar};
+use slipmat_core::player::protocol::RepeatMode;
 
 /// How often the seek bar redraws while playing.
 ///
@@ -82,8 +83,7 @@ mod wiring;
 mod writes;
 
 use chrome::{icon, register_actions, show_about, show_shortcuts};
-use slipmat_core::queue::Start;
-use supervise::{respawn_sidecar, start_sidecar};
+use supervise::connect;
 
 pub use view::{CatalogFilter, SearchScope, SortBy, View};
 use view::{SidebarRow, sidebar_rows};
@@ -96,8 +96,6 @@ const TICK_MS: u32 = 500;
 /// network request, and firing one per character would be both slow and rude.
 const SEARCH_DEBOUNCE_MS: u64 = 350;
 
-pub(crate) use slipmat_core::catalog::CATALOG_LIMIT;
-
 /// Tile covers are fetched at twice their drawn size, so they stay sharp on a
 /// HiDPI screen without paying for the 512px the Now Playing bar needs.
 const TILE_ART: u32 = 320;
@@ -106,11 +104,6 @@ const TILE_ART: u32 = 320;
 /// is an unbounded number of requests.
 const CATALOG_MAX: usize = 200;
 
-/// Upper bound on the library load. Apple pages at 100, so this is 25 requests
-/// worst case. Generous for one laptop, and bounded so a very large library
-/// cannot spin forever on first run.
-const LIBRARY_MAX: usize = 2_500;
-
 /// Where we are in bringing the sidecar up. Each variant is a distinct
 /// `StatusPage`, because "it's just spinning" is the failure mode this whole
 /// module exists to avoid (rule 4).
@@ -118,30 +111,21 @@ const LIBRARY_MAX: usize = 2_500;
 pub enum Stage {
     #[default]
     Starting,
-    /// Chromium's component updater is fetching the CDM. First run only, but it
-    /// needs network and can take a minute — so it gets to say so.
-    InstallingWidevine,
     /// Loaded music.apple.com; waiting for the hook to attach.
     Connecting,
     /// Signed out. Apple's own login window is one click away.
     SignedOut,
     Ready,
-    /// The sidecar died; a restart is scheduled (rule 6).
-    Restarting(u32),
     /// Apple changed the page, or the CDM is unavailable. Names the fix.
     Broken(String),
 }
 
 pub struct AppModel {
     stage: Stage,
-    player: PlayerState,
+    mirror: Mirror,
     /// The first-run gate, while it is up. `Some` exactly when the app is
     /// blocked, which is what stops it being presented twice.
     onboarding: Option<adw::Dialog>,
-
-    /// Whether the restore has been attempted this session, so a later token
-    /// refresh cannot start it again.
-    restored: bool,
 
     /// The last track MusicKit reported, kept so the bar can hold it through a
     /// queue reload — see `push_snapshot::showing`.
@@ -151,25 +135,10 @@ pub struct AppModel {
     /// call that built them.
     menu_sender: ComponentSender<AppModel>,
 
-    /// The last command sent to the sidecar, and when. Read only by the
-    /// gapless diagnostic, which needs to distinguish a transition **we** asked
-    /// for from one MusicKit made on its own — the second is the gapless path
-    /// and the first is not. `RefCell` because `send` takes `&self`.
-    last_command: std::cell::RefCell<Option<(std::time::Instant, String)>>,
-
-    /// Furthest position reached in the current track, and that track's length.
-    ///
-    /// A high-water mark rather than a live read, because at the moment
-    /// `nowPlayingItemDidChange` arrives MusicKit has usually already zeroed
-    /// the position — and sometimes has not. Sampling it there gave a number
-    /// that was the full duration on three boundaries and zero on a fourth,
-    /// depending purely on which event won the race.
-    progress_mark: std::cell::Cell<(u64, u64)>,
-
-    /// Live for the process lifetime, never persisted (rule 7).
-    tokens: Option<Tokens>,
-    sidecar: Option<sidecar::Handle>,
-    restarts: u32,
+    /// The daemon, once connected. `None` while it is coming up.
+    daemon: Option<daemon::Handle>,
+    /// Consecutive failed dials, for the redial backoff.
+    redials: u32,
     toaster: adw::ToastOverlay,
     /// The volume panel. Its widgets rather than its state, which is the two
     /// fields below — see `osd.rs`.
@@ -254,22 +223,6 @@ pub struct AppModel {
     /// `sync_section_spinners` is what replaces it. Apple Music has no entry:
     /// it has nothing of its own to load.
     section_spinners: Vec<(View, adw::Spinner)>,
-    /// Whether the current track has already been reloaded to recover a
-    /// playback that would not start. One attempt; a second failure is real.
-    healed: bool,
-    /// The reorder in flight, so it can be undone if the sidecar refuses it.
-    ///
-    /// An optimistic edit needs a way back or the list quietly stops matching
-    /// what is playing — which is what a stale sidecar produced: fourteen
-    /// `unknown-command` errors, fourteen rows left where they were dropped,
-    /// and a queue that reverted the moment anything asked MusicKit for the
-    /// next track.
-    pending_move: Option<(usize, usize)>,
-    /// Where to seek back to once a reloaded track becomes current.
-    resume_at: Option<u64>,
-    /// Whether the artwork cache has been swept this run. Once is enough: the
-    /// library does not change under us, and the sweep touches ~1000 files.
-    pruned: bool,
     /// Which library row currently carries the play marker.
     marked_playing: Option<String>,
     /// Icons of the library rows currently on screen, so the marker can move
@@ -355,6 +308,10 @@ pub struct AppModel {
     /// that moved between the click and the handler is exactly the class of bug
     /// that produced the wrong song four times over.
     pages: Vec<DetailPage>,
+    /// Which page asked for which Apple id, so an answer finds the page that
+    /// wanted it. **By id, never by depth** — the stack can move between the
+    /// request and the reply.
+    page_for: std::collections::HashMap<String, u64>,
     /// Never reused, never reset. A popped page's id must not come back and
     /// collect a response meant for it.
     next_page_id: u64,
@@ -375,9 +332,6 @@ pub struct AppModel {
     /// Keeps the process alive while the window is hidden. `None` means the
     /// app is only alive because a window is open, which is the normal state.
     background: Option<gtk::gio::ApplicationHoldGuard>,
-    /// Removals sent to the sidecar and not yet confirmed, by the id each
-    /// command carried. See [`PendingWrite`].
-    pending_writes: std::collections::HashMap<String, PendingWrite>,
     searching_catalog: bool,
     /// How many catalog results we already hold, and whether Apple has run out.
     /// Together these decide whether scrolling to the end fetches more.
@@ -398,7 +352,6 @@ pub struct AppModel {
     /// it. See `verify_start`: the queue MusicKit builds is not always the list
     /// we sent, so the position we asked for is not always the track we meant.
     pending_start: Option<String>,
-    mpris: Mpris,
     /// Volume is the one piece of player state the sidecar never echoes back,
     /// so we hold it here to keep the bar and MPRIS agreeing.
     volume: f64,
@@ -409,6 +362,9 @@ pub struct AppModel {
     art_for: Option<String>,
     /// Live only while playing; see `TICK_MS`.
     tick: Option<gtk::glib::SourceId>,
+    /// Whether the artwork sweep has run this session. Once per run: it walks
+    /// the whole cache directory.
+    pruned: bool,
     settings: Settings,
     /// The track the last notification was sent for, so a queue echo or a
     /// position tick cannot re-notify for the song already playing.
@@ -435,29 +391,6 @@ impl Drop for Timed {
     }
 }
 
-/// A library write sent to the sidecar and not yet confirmed.
-///
-/// The row updates the moment the command goes out, because waiting on a round
-/// trip reads as broken — but an optimistic update never taken back is how a UI
-/// comes to lie.
-///
-/// **Keyed by the id the command carried**, not the command name: dispatch is
-/// async, so two removals in one round trip shared a slot and settled the wrong
-/// row.
-#[derive(Debug, Clone)]
-struct PendingWrite {
-    /// The row to correct, which is not always the id the command carried:
-    /// removal takes a library id, un-favouriting a catalog id.
-    catalog_id: String,
-    undo: WriteUndo,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum WriteUndo {
-    InLibrary(bool),
-    Favorite(bool),
-}
-
 /// Something we can ask Apple to do to the user's account.
 ///
 /// Both answer 202 Accepted with an empty body, so neither can be treated as
@@ -475,13 +408,6 @@ impl LibraryAction {
             Self::Favorite => "Favouriting…",
         }
     }
-
-    fn done(self) -> &'static str {
-        match self {
-            Self::AddToLibrary => "Sent to your library",
-            Self::Favorite => "Favourited",
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -491,11 +417,6 @@ pub enum AppMsg {
     SignOut,
     SignOutConfirmed,
     PlayPause,
-    /// Explicit, not a toggle. MPRIS sends `Play`, `Pause` and `PlayPause` as
-    /// three distinct calls, and collapsing the first two into the toggle makes
-    /// the Shell pause a track it just asked to play.
-    Play,
-    Pause,
     Next,
     Previous,
     Seek(u64),
@@ -526,10 +447,6 @@ pub enum AppMsg {
     Unfavorite {
         catalog_id: String,
     },
-    /// MPRIS `Raise` — a controller asking for the window back. The counterpart
-    /// to `close_window`'s hide, and the only way back from it that does not go
-    /// through the launcher.
-    Raise,
     /// The window's close button, or the WM. Not a quit: see the handler.
     WindowCloseRequested,
     /// The window is on screen again, however that happened.
@@ -676,20 +593,8 @@ pub enum AppMsg {
 
 #[derive(Debug)]
 pub enum CommandMsg {
-    /// Everything the sidecar pushed up, including its death.
-    Sidecar(Incoming),
-    /// The child started; here is the handle for talking to it.
-    Spawned(sidecar::Handle),
-    /// The user's library, or why it couldn't be read.
-    Library(Result<Vec<Track>, String>),
-    /// Catalog results, tagged with the search they belong to.
-    Catalog {
-        generation: u64,
-        /// Where this page started, so a first page replaces and a later page
-        /// appends.
-        offset: usize,
-        result: Result<slipmat_core::music::client::SearchResults, String>,
-    },
+    /// Everything the daemon pushed down, including losing it.
+    Daemon(daemon::Incoming),
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
     /// cosmetic and must not become a toast.
     Artwork {
@@ -699,49 +604,13 @@ pub enum CommandMsg {
         /// what is drawn from it must be applied together.
         backdrop: Option<PathBuf>,
     },
-    /// An album page's contents. Tagged with the page id: by the time this
-    /// lands the user may have gone back, and filling a page that is no longer
-    /// on the stack is at best wasted work.
-    AlbumPage {
-        page: u64,
-        result: Result<(Album, Vec<Track>), String>,
-    },
-    /// An artist page's contents.
-    ArtistPage {
-        page: u64,
-        result: Result<(Artist, Vec<Album>), String>,
-    },
-    /// A playlist page's contents.
-    PlaylistPage {
-        page: u64,
-        result: Result<(Playlist, Vec<Track>), String>,
-    },
     /// A page's header art is on disk, or could not be fetched.
-    PageArtwork {
-        page: u64,
-        path: Option<PathBuf>,
-    },
-    /// The user's library albums / artists.
-    LibraryAlbums(Result<Vec<Album>, String>),
-    LibraryArtists(Result<Vec<Artist>, String>),
-    LibraryPlaylists(Result<Vec<Playlist>, String>),
+    PageArtwork { page: u64, path: Option<PathBuf> },
     /// The artwork sweep finished. It logs its own numbers; this exists so the
     /// work can be a command rather than something done on the GTK thread.
     Pruned(crate::components::prune::Report),
     /// Whether the Background portal agreed to list us. Advisory only.
     BackgroundPortal(Result<(), String>),
-    /// A library write came back. `Ok` means Apple **accepted** it, not that
-    /// it is done — see `Client::add_to_library`.
-    LibraryWritten {
-        catalog_id: String,
-        action: LibraryAction,
-        result: Result<(), String>,
-    },
-    /// Which album or artist a queue track belongs to. `None` means Apple
-    /// named neither — a single that belongs to no album is not an error.
-    QueueTrackPage {
-        result: Result<Option<PageKind>, String>,
-    },
     /// A grid tile's cover is on disk and decoded, or could not be had.
     /// Carries pixels rather than a path because the decode is the expensive
     /// part and it has already happened, off the GTK thread (#27).
@@ -1461,10 +1330,6 @@ impl Component for AppModel {
             focus_search: false,
             sync_entry: false,
             animated_shown: std::cell::Cell::new(None),
-            healed: false,
-            pending_move: None,
-            resume_at: None,
-            pruned: false,
             section_spinners: Vec::new(),
             pin_labels: Vec::new(),
             pins_dirty: false,
@@ -1529,8 +1394,8 @@ impl Component for AppModel {
             catalog_paged: 0,
             catalog_filter: CatalogFilter::default(),
             background: None,
-            pending_writes: std::collections::HashMap::new(),
             pages: Vec::new(),
+            page_for: std::collections::HashMap::new(),
             next_page_id: 1,
             nav,
             searching_catalog: false,
@@ -1542,26 +1407,22 @@ impl Component for AppModel {
             dead_ids: slipmat_core::unplayable::load(),
             last_queue: None,
             pending_start: None,
-            player: PlayerState::new(),
-            restored: false,
+            mirror: Mirror::default(),
             onboarding: None,
             last_item: None,
             menu_sender: sender.clone(),
-            last_command: std::cell::RefCell::new(None),
-            progress_mark: std::cell::Cell::new((0, 0)),
-            tokens: None,
-            sidecar: None,
-            restarts: 0,
+            daemon: None,
+            redials: 0,
             toaster: adw::ToastOverlay::new(),
             volume_osd: osd::VolumeOsd::new(),
             osd_shown: false,
             osd_timer: None,
             now_playing,
-            mpris: crate::mpris::start(sender.clone()),
             volume: 1.0,
             art_path: None,
             art_for: None,
             tick: None,
+            pruned: false,
             settings,
             notified_for: None,
             notify_when_art_lands: None,
@@ -1639,7 +1500,9 @@ impl Component for AppModel {
         // every pin still says "Unavailable".
         model.refresh_pin_names();
 
-        start_sidecar(&sender);
+        connect(&sender);
+        // Whatever the daemon had last time, until it says otherwise.
+        model.reload_from_cache(&sender);
 
         ComponentParts { model, widgets }
     }
@@ -1648,7 +1511,6 @@ impl Component for AppModel {
         // A now-playing notification must not outlive the player that sent it.
         notify::clear(relm4::main_application().upcast_ref::<gtk::gio::Application>());
         // The only moment the position is accurate.
-        self.save_session();
     }
 
     /// Wraps `update` so the search box can be re-filled after a scope change.
@@ -1821,7 +1683,7 @@ impl AppModel {
     ) {
         let sender = sender.clone();
         match msg {
-            AppMsg::SignIn => self.send(Command::ShowLogin),
+            AppMsg::SignIn => self.ask(Request::SignIn),
             AppMsg::SignOut => {
                 // The menu item is always there; asking to sign out when you
                 // already are should do nothing rather than prompt.
@@ -1834,21 +1696,18 @@ impl AppModel {
                 // The sidecar drops Apple's session — cookies and all, not just
                 // MusicKit's token — and its `authorizationStatusDidChange`
                 // confirms it rather than us assuming.
-                self.send(Command::SignOut);
+                self.ask(Request::SignOut);
                 self.forget_session();
             }
-            AppMsg::PlayPause => self.send(Command::PlayPause),
-            AppMsg::Play => self.send(Command::Play),
-            AppMsg::Pause => self.send(Command::Pause),
-            AppMsg::Next => self.send(Command::Next),
+            AppMsg::PlayPause => self.transport(Transport::PlayPause),
+            AppMsg::Next => self.transport(Transport::Next),
             AppMsg::Previous => self.go_previous(),
             AppMsg::Seek(position_ms) => {
-                self.send(Command::Seek { position_ms });
+                self.transport(Transport::Seek { position_ms });
                 // Announce the jump straight away rather than waiting for the
                 // sidecar's echo. The spec requires `Seeked` on discontinuous
                 // moves — without it controllers keep extrapolating from the
                 // old position and their progress bars drift.
-                self.mpris.seeked(position_ms);
             }
             AppMsg::SetVolume(volume) => self.set_volume(volume),
             // **The panel is raised here rather than inside `set_volume`.**
@@ -1970,15 +1829,15 @@ impl AppModel {
                     View::Songs => self.rebuild_rows(),
                     View::Albums => {
                         self.rebuild_albums();
-                        self.load_albums(&sender);
+                        self.ask(Request::Refresh);
                     }
                     View::Artists => {
                         self.rebuild_artists();
-                        self.load_artists(&sender);
+                        self.ask(Request::Refresh);
                     }
                     View::Playlists => {
                         self.rebuild_playlists();
-                        self.load_playlists(&sender);
+                        self.ask(Request::Refresh);
                     }
                     View::Search => {
                         self.search_gen = self.search_gen.wrapping_add(1);
@@ -2194,24 +2053,15 @@ impl AppModel {
             }
             AppMsg::OpenPage(kind) => self.push_page(kind, &sender),
             AppMsg::OpenQueueTrackPage { catalog_id, album } => {
-                let Some(client) = self.client() else {
-                    self.toast("Not connected yet");
-                    return;
-                };
-                sender.oneshot_command(async move {
-                    CommandMsg::QueueTrackPage {
-                        result: client
-                            .song_containers(&catalog_id)
-                            .await
-                            .map(|(album_id, artist_id)| {
-                                if album {
-                                    album_id.map(PageKind::Album)
-                                } else {
-                                    artist_id.map(PageKind::Artist)
-                                }
-                            })
-                            .map_err(|err| format!("{err:#}")),
-                    }
+                // Which album or artist a track belongs to is a catalog lookup,
+                // so it goes where the tokens are (rule 7).
+                self.ask(Request::Open {
+                    kind: if album {
+                        slipmat_core::ipc::PageKind::Album
+                    } else {
+                        slipmat_core::ipc::PageKind::Artist
+                    },
+                    id: catalog_id,
                 });
             }
             AppMsg::PagePopped(id) => {
@@ -2238,7 +2088,7 @@ impl AppModel {
                     }
                     Some(Entry::Song(_)) => {
                         let entries = page.entries.clone();
-                        self.play_entries(&entries, row, Start::Clicked);
+                        self.play_entries(&entries, row, PlayMode::Clicked);
                     }
                     None => {}
                 }
@@ -2248,18 +2098,13 @@ impl AppModel {
                     return;
                 };
                 let entries = target.entries.clone();
-                // The row we name is the one MusicKit will pin as the head,
-                // which is why Shuffle needs a random one (#147). See
-                // `shuffle_start`.
+                // The daemon picks the row a shuffle opens on (#147) — it has
+                // the dead-id list that decides which rows are candidates.
                 let (row, start) = if shuffle {
-                    (self.shuffle_start(&entries), Start::Shuffled)
+                    (0, PlayMode::Shuffled)
                 } else {
-                    (0, Start::InOrder)
+                    (0, PlayMode::InOrder)
                 };
-                // `play_entries` sends the mode, ahead of the queue it applies
-                // to. Both buttons state one: a Play that inherited the shuffle
-                // left on by something else is the same bug as a row click that
-                // did.
                 self.play_entries(&entries, row, start);
             }
             AppMsg::MoveQueueItem { from, to } => {
@@ -2268,19 +2113,15 @@ impl AppModel {
                 // the same shape as a library write, and for the same reason: a
                 // drop that visibly springs back while a command is in flight
                 // reads as a failure even when it worked.
-                if !self.player.move_item(from, to) {
-                    return;
-                }
                 tracing::info!(from, to, "reordering the queue");
-                self.pending_move = Some((from, to));
-                self.send(Command::MoveInQueue { from, to });
+                self.ask(Request::MoveInQueue { from, to });
                 // `push_snapshot` re-syncs the queue view from the projection,
                 // so the row is already in its new place before the echo.
                 self.push_snapshot();
             }
             AppMsg::ClearQueue => {
                 tracing::info!("clearing the queue");
-                self.send(Command::ClearQueue);
+                self.ask(Request::ClearQueue);
                 // Nothing to come back to next launch, either. The mirror
                 // follows the sidecar's queue event as always (rule 3) — this
                 // is only the part MusicKit cannot know about.
@@ -2292,20 +2133,20 @@ impl AppModel {
             }
             AppMsg::JumpTo { at, id } => match self.queue_index_at(at, &id) {
                 Some(index) => {
-                    self.send(Command::ChangeToIndex { index });
+                    self.ask(Request::JumpTo { index });
                     // Clicking a track in the queue is a request to *play* it.
                     // `changeToMediaAtIndex` only moves the cursor, so on a
                     // queue that is loaded but idle — a restored session, or a
                     // paused one — it moved silently and looked like nothing
                     // had happened.
-                    if !self.player.state.is_playing() {
-                        self.send(Command::Play);
+                    if !self.mirror.is_playing() {
+                        self.transport(Transport::Play);
                     }
                 }
                 None => self.toast("That track is no longer in the queue"),
             },
             AppMsg::RemoveFromQueue { at, id } => match self.queue_index_at(at, &id) {
-                Some(index) => self.send(Command::RemoveFromQueue { index }),
+                Some(index) => self.ask(Request::RemoveFromQueue { index }),
                 None => self.toast("That track is no longer in the queue"),
             },
             AppMsg::SetAccent(accent) => {
@@ -2335,14 +2176,6 @@ impl AppModel {
                 // the user was looking at no longer exists in that order.
                 self.resort();
             }
-            AppMsg::Raise => {
-                // `present` covers both states this can arrive in: hidden after
-                // a close, or open behind something else. The background hold is
-                // dropped by `WindowShown`, which `connect_show` raises from
-                // here — one path back, however the window was reached.
-                tracing::info!("raising the window for MPRIS");
-                root.present();
-            }
             AppMsg::WindowCloseRequested => self.close_window(root, &sender),
             AppMsg::PlayerDrawer(open) => {
                 if self.show_queue != open {
@@ -2365,14 +2198,10 @@ impl AppModel {
                 catalog_id,
             } => {
                 tracing::info!(%library_id, "removing from library");
-                self.pending_writes.insert(
-                    library_id.clone(),
-                    PendingWrite {
-                        catalog_id: catalog_id.clone(),
-                        undo: WriteUndo::InLibrary(true),
-                    },
-                );
-                self.send(Command::RemoveFromLibrary { id: library_id });
+                self.ask(Request::Write {
+                    action: WriteAction::RemoveFromLibrary,
+                    id: library_id,
+                });
                 // Mirrored locally for the same reason the star is: the menu
                 // reads this, and making someone reload to see their own click
                 // is absurd. `include=library` is cached for tens of seconds
@@ -2382,14 +2211,8 @@ impl AppModel {
             }
             AppMsg::Unfavorite { catalog_id } => {
                 tracing::info!(%catalog_id, "removing favourite");
-                self.pending_writes.insert(
-                    catalog_id.clone(),
-                    PendingWrite {
-                        catalog_id: catalog_id.clone(),
-                        undo: WriteUndo::Favorite(true),
-                    },
-                );
-                self.send(Command::Unfavorite {
+                self.ask(Request::Write {
+                    action: WriteAction::Unfavorite,
                     id: catalog_id.clone(),
                 });
                 // The star only. The song stays in the library — see the note
@@ -2400,29 +2223,20 @@ impl AppModel {
                 self.toast("Removing favourite…");
             }
             AppMsg::LibraryWrite { catalog_id, action } => {
-                let Some(client) = self.client() else {
-                    self.toast("Not connected yet");
-                    return;
-                };
                 // Said out loud before the request goes out: these are
                 // fire-and-forget, and a click with no feedback at all reads as
                 // a click that did not register.
                 self.toast(action.sent());
                 tracing::info!(?action, "library write");
-                sender.oneshot_command(async move {
-                    let result = match action {
-                        LibraryAction::AddToLibrary => {
-                            client.add_to_library("songs", &catalog_id).await
-                        }
-                        LibraryAction::Favorite => {
-                            client.add_to_favorites("songs", &catalog_id).await
-                        }
-                    };
-                    CommandMsg::LibraryWritten {
-                        catalog_id,
-                        action,
-                        result: result.map_err(|err| format!("{err:#}")),
-                    }
+                // The daemon decides whether this goes over REST or through
+                // MusicKit — only it can do the second, and only it has the
+                // tokens for the first.
+                self.ask(Request::Write {
+                    action: match action {
+                        LibraryAction::Favorite => WriteAction::Favorite,
+                        LibraryAction::AddToLibrary => WriteAction::AddToLibrary,
+                    },
+                    id: catalog_id,
                 });
             }
             AppMsg::ToggleSortDirection => {
@@ -2435,46 +2249,38 @@ impl AppModel {
             AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
             AppMsg::Enqueue { catalog_id, next } => {
                 let songs = vec![catalog_id];
-                if self.player.queue.is_empty() {
+                if self.mirror.queue.is_empty() {
                     // Nothing to insert into: `playNext` on an empty queue is a
                     // silent no-op in MusicKit. Start the queue instead —
                     // "add to queue" with no queue plainly means "make one",
                     // and refusing was a worse answer than doing it.
+                    // The daemon states the mode for a queue it builds, so
+                    // there is nothing to say here beyond which track.
                     tracing::info!("starting a queue from one track");
-                    // A queue being created, so it says what it starts as
-                    // rather than inheriting the last one's mode.
-                    self.send(Command::SetShuffle { shuffle: false });
-                    self.pending_start = songs.first().cloned();
-                    self.last_queue = Some((songs.clone(), songs.first().cloned()));
-                    self.send(Command::SetQueue {
-                        songs,
-                        start_position: 0,
-                        start_playing: true,
-                        start_time_ms: 0,
+                    self.ask(Request::Play {
+                        ids: songs,
+                        index: 0,
+                        start: PlayMode::Clicked,
                     });
                     return;
                 }
                 tracing::info!(next, "enqueueing one track");
-                self.send(if next {
-                    Command::PlayNext { songs }
-                } else {
-                    Command::PlayLater { songs }
-                });
+                self.ask(Request::Enqueue { ids: songs, next });
             }
             AppMsg::SetShuffle(on) => {
                 // Sent and forgotten: the mirror updates when MusicKit echoes
                 // it back, so the button never claims a state the player is not
                 // actually in (rule 3).
                 tracing::info!(on, "shuffle");
-                self.send(Command::SetShuffle { shuffle: on });
+                self.transport(Transport::SetShuffle { shuffle: on });
             }
             AppMsg::SetRepeat(mode) => {
                 tracing::info!(?mode, "repeat");
-                self.send(Command::SetRepeat { mode });
+                self.transport(Transport::SetRepeat { mode });
             }
             AppMsg::PlayFrom(index) => {
                 let visible = self.visible_entries();
-                self.play_entries(&visible, index, Start::Clicked);
+                self.play_entries(&visible, index, PlayMode::Clicked);
             }
         }
     }
@@ -2487,66 +2293,6 @@ impl AppModel {
     ) {
         let sender = sender.clone();
         match msg {
-            CommandMsg::AlbumPage { page, result } => {
-                let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
-                    // Navigated back while this was in flight.
-                    return;
-                };
-                match result {
-                    Ok((album, tracks)) => {
-                        tracing::info!(page, tracks = tracks.len(), album = %album.name, "album loaded");
-                        let art = album.artwork.clone();
-                        target.show_album(&album, tracks.into_iter().map(Entry::Song).collect());
-                        self.fetch_page_art(page, art, &sender);
-                    }
-                    Err(err) => {
-                        tracing::warn!(page, %err, "album page failed");
-                        target.fail(&err);
-                    }
-                }
-            }
-            CommandMsg::ArtistPage { page, result } => {
-                let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
-                    return;
-                };
-                match result {
-                    Ok((artist, albums)) => {
-                        tracing::info!(page, albums = albums.len(), artist = %artist.name, "artist loaded");
-                        let art = artist.artwork.clone();
-                        target.show_artist(&artist, albums.into_iter().map(Entry::Album).collect());
-                        self.fetch_page_art(page, art, &sender);
-                    }
-                    Err(err) => {
-                        tracing::warn!(page, %err, "artist page failed");
-                        target.fail(&err);
-                    }
-                }
-            }
-            CommandMsg::QueueTrackPage { result } => match result {
-                Ok(Some(kind)) => {
-                    // **Close the drawer, or the page lands behind it.** The
-                    // queue only exists inside the player sheet, which is modal
-                    // and covers the navigation stack — so pushing a page and
-                    // leaving the drawer up meant the *successful* click was
-                    // the only silent one, both failures below being toasts
-                    // that draw above the sheet.
-                    //
-                    // On success only: a lookup that found nothing should not
-                    // also take the queue away.
-                    self.show_queue = false;
-                    self.sync_page_controls();
-                    self.push_snapshot();
-                    self.push_page(kind, &sender);
-                }
-                // Said out loud rather than nothing happening: a menu item that
-                // silently does nothing is the failure this project keeps
-                // refusing to ship.
-                Ok(None) => self.toast("Apple doesn't say where that track came from"),
-                Err(err) => {
-                    tracing::warn!(%err, "resolving a queue track's album or artist");
-                    self.toast("Couldn't open that");
-                }
-            },
             CommandMsg::Pruned(report) => {
                 // Reported here rather than inside the sweep, so the sweep
                 // stays a function that returns facts and can be tested as one.
@@ -2560,97 +2306,6 @@ impl AppModel {
                         was_mb = report.total / 1_048_576,
                         "swept the artwork cache"
                     );
-                }
-            }
-            CommandMsg::LibraryAlbums(result) => {
-                self.loading_albums = false;
-                match result {
-                    Ok(albums) => {
-                        let changed = albums != self.albums;
-                        tracing::info!(albums = albums.len(), changed, "library albums loaded");
-                        self.albums = albums;
-                        self.maybe_prune_artwork(&sender);
-                        if changed {
-                            self.built_albums = None;
-                            self.rebuild_albums();
-                            self.save_cache();
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(%err, "library albums failed");
-                        self.toast(&err);
-                    }
-                }
-            }
-            CommandMsg::LibraryArtists(result) => {
-                self.loading_artists = false;
-                match result {
-                    Ok(artists) => {
-                        let changed = artists != self.artists;
-                        tracing::info!(artists = artists.len(), changed, "library artists loaded");
-                        self.artists = artists;
-                        self.maybe_prune_artwork(&sender);
-                        if changed {
-                            self.built_artists = None;
-                            self.rebuild_artists();
-                            self.save_cache();
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(%err, "library artists failed");
-                        self.toast(&err);
-                    }
-                }
-            }
-            CommandMsg::LibraryPlaylists(result) => {
-                self.loading_playlists = false;
-                match result {
-                    Ok(playlists) => {
-                        let changed = playlists != self.playlists;
-                        tracing::info!(
-                            playlists = playlists.len(),
-                            changed,
-                            "library playlists loaded"
-                        );
-                        self.playlists = playlists;
-                        // Before the names are refreshed, so a pin that is gone
-                        // never gets a chance to draw as "Unavailable".
-                        self.prune_stale_pins(&sender);
-                        self.refresh_pin_names();
-                        self.maybe_prune_artwork(&sender);
-                        if changed {
-                            self.built_playlists = None;
-                            self.rebuild_playlists();
-                            self.save_cache();
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(%err, "library playlists failed");
-                        self.toast(&err);
-                    }
-                }
-            }
-            CommandMsg::PlaylistPage { page, result } => {
-                let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
-                    return;
-                };
-                match result {
-                    Ok((playlist, tracks)) => {
-                        tracing::info!(page, tracks = tracks.len(), playlist = %playlist.name, "playlist loaded");
-                        let art = playlist.artwork.clone();
-                        // Read before the tracks are moved: a playlist Apple
-                        // sends no picture for gets one composed from these.
-                        let covers = pages::playlist_covers(&tracks);
-                        target.show_playlist(
-                            &playlist,
-                            tracks.into_iter().map(Entry::Song).collect(),
-                        );
-                        self.fetch_page_art_or_mosaic(page, art, covers, &sender);
-                    }
-                    Err(err) => {
-                        tracing::warn!(page, %err, "playlist page failed");
-                        target.fail(&err);
-                    }
                 }
             }
             // Advisory: the app is already in the background by the time this
@@ -2669,41 +2324,6 @@ impl AppModel {
                     "background portal refused; Quick Settings will not list Slipmat \
                      (expected when not launched from its .desktop entry)"
                 ),
-            },
-            CommandMsg::LibraryWritten {
-                catalog_id,
-                action,
-                result,
-            } => match result {
-                Ok(()) => {
-                    // "Sent", not "added": Apple's 202 means accepted, and the
-                    // change may still be in flight on their side.
-                    self.toast(action.done());
-                    // The star, however, we can move now. `inFavorites` is only
-                    // re-read on a library reload, and making someone reload to
-                    // see their own click is absurd — so mirror it locally and
-                    // repaint just that row.
-                    match action {
-                        LibraryAction::Favorite => {
-                            self.set_favorite(&catalog_id, true);
-                            // Favouriting *adds to the library* — Apple's
-                            // behaviour, measured (#34). So the menu must stop
-                            // offering "Add to Library" for it too.
-                            self.set_in_library(&catalog_id, true);
-                        }
-                        // Mirrored so the menu stops offering an add that has
-                        // already happened. No library id yet — the 202 carries
-                        // no body and Apple assigns one asynchronously — so
-                        // "Remove from Library" stays hidden until a reload
-                        // learns it. Offering a removal we cannot address would
-                        // be a menu item that quietly does nothing.
-                        LibraryAction::AddToLibrary => self.set_in_library(&catalog_id, true),
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(?action, %err, "library write failed");
-                    self.toast(&err);
-                }
             },
             CommandMsg::TileArt { key, path, cover } => {
                 self.tile_art_pending.remove(&key);
@@ -2742,96 +2362,6 @@ impl AppModel {
                     target.set_artwork(&path);
                 }
             }
-            CommandMsg::Spawned(handle) => {
-                self.sidecar = Some(handle);
-                // The process is up; Chromium's component updater is now
-                // fetching the CDM (instant after the first run).
-                self.stage = Stage::InstallingWidevine;
-            }
-            CommandMsg::Library(Ok(tracks)) => {
-                self.loading_library = false;
-                let unplayable = tracks.iter().filter(|t| !t.playable()).count();
-                // A refresh over a cached library usually finds nothing new,
-                // and a rebuild it did not need costs ~500ms of cover decoding
-                // *and* resets the scroll under whoever is reading. Equality is
-                // the whole test: same tracks, same order, same fields.
-                let changed = tracks != self.all_tracks;
-                tracing::info!(tracks = tracks.len(), unplayable, changed, "library loaded");
-                self.all_tracks = tracks;
-                self.maybe_prune_artwork(&sender);
-                if changed {
-                    self.built_rows = None;
-                    self.rebuild_rows();
-                    self.save_cache();
-                }
-            }
-            CommandMsg::Catalog {
-                generation,
-                offset,
-                result,
-            } => {
-                // Responses can arrive out of order: a slow request for "aita"
-                // must not overwrite the results for "aitana".
-                if generation != self.search_gen {
-                    tracing::debug!("discarding stale catalog results");
-                    return;
-                }
-                self.searching_catalog = false;
-                match result {
-                    Ok(found) => {
-                        let first_page = offset == 0;
-                        let (rows, paged) = slipmat_core::catalog::catalog_rows(
-                            self.catalog_filter.into(),
-                            found,
-                            first_page,
-                        );
-
-                        // A short page of the **paging kind** means Apple has
-                        // no more. Which kind that is depends on the filter,
-                        // which is why the count comes back from the fold
-                        // rather than being read off one field here.
-                        self.catalog_exhausted = paged < CATALOG_LIMIT as usize;
-                        self.catalog_paged = if first_page {
-                            paged
-                        } else {
-                            self.catalog_paged + paged
-                        };
-
-                        tracing::info!(
-                            rows = self.catalog.len() + rows.len(),
-                            paged = self.catalog_paged,
-                            filter = ?self.catalog_filter,
-                            exhausted = self.catalog_exhausted,
-                            "catalog results"
-                        );
-
-                        if first_page {
-                            // New answer: the rows on screen are for a
-                            // different question, so they all go.
-                            self.catalog = rows;
-                            self.built_rows = None;
-                            self.rebuild_rows();
-                        } else {
-                            // A later page only ever *adds*. Rebuilding would
-                            // discard every widget and with them the scroll
-                            // position — putting the reader back at the top of
-                            // the list they had just scrolled to the bottom of
-                            // in order to ask for this page.
-                            self.append_rows(&rows);
-                            self.catalog.extend(rows);
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(%err, "catalog search failed");
-                        self.toast(&format!("Search failed: {err}"));
-                    }
-                }
-            }
-            CommandMsg::Library(Err(err)) => {
-                self.loading_library = false;
-                tracing::warn!(%err, "library load failed");
-                self.toast(&format!("Couldn't load your library: {err}"));
-            }
             CommandMsg::Artwork { path, backdrop } => {
                 if path.is_none() {
                     // Cosmetic. The bar falls back to a generic icon.
@@ -2858,23 +2388,7 @@ impl AppModel {
                 // screen pick it up as soon as it lands.
                 self.push_snapshot();
             }
-            CommandMsg::Sidecar(Incoming::Event(event)) => self.on_event(event, &sender),
-            CommandMsg::Sidecar(Incoming::Unparsed(line)) => {
-                // preload.js and protocol.rs have drifted. Not fatal, but it
-                // means an event is being silently ignored — say so.
-                tracing::warn!(%line, "sidecar sent something we don't understand");
-            }
-            CommandMsg::Sidecar(Incoming::Died(reason)) => {
-                tracing::warn!(%reason, "sidecar died");
-                self.sidecar = None;
-                self.restarts += 1;
-                self.stage = Stage::Restarting(self.restarts);
-                self.toast("Playback engine stopped — restarting");
-                // The backoff belongs *inside* the respawn task. Sleeping in a
-                // separate command and restarting here as well would restart
-                // immediately and ignore the delay entirely.
-                respawn_sidecar(&sender, sidecar::restart_delay(self.restarts));
-            }
+            CommandMsg::Daemon(message) => self.on_daemon(message, &sender),
         }
     }
 }
@@ -2898,23 +2412,19 @@ impl AppModel {
     /// The guard is `tried` alone now, so the clear is not only unnecessary but
     /// the whole of that bug. All four sections keep their content up, and the
     /// list changes only if the answer did.
-    fn reload(&mut self, view: View, sender: &ComponentSender<Self>) {
+    fn reload(&mut self, view: View, _sender: &ComponentSender<Self>) {
         match view {
             View::Songs | View::Search => {
                 self.tried_library = false;
-                self.load_library(sender);
             }
             View::Albums => {
                 self.tried_albums = false;
-                self.load_albums(sender);
             }
             View::Artists => {
                 self.tried_artists = false;
-                self.load_artists(sender);
             }
             View::Playlists => {
                 self.tried_playlists = false;
-                self.load_playlists(sender);
             }
         }
     }
@@ -2928,7 +2438,6 @@ impl AppModel {
     /// about the user.
     fn forget_session(&mut self) {
         self.stage = Stage::SignedOut;
-        self.tokens = None;
 
         self.all_tracks.clear();
         self.albums.clear();

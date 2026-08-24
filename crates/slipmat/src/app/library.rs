@@ -15,10 +15,10 @@
 
 use relm4::ComponentSender;
 
-use super::{AppModel, CATALOG_LIMIT, CommandMsg, LIBRARY_MAX, SearchScope, SortBy, Tile, View};
+use super::{AppModel, CommandMsg, SearchScope, SortBy, Tile, View};
 use crate::components::grid_item::{ArtRegistry, GridItem};
 use crate::components::track_row::{Entry, LibraryItem, apply_row_state};
-use slipmat_core::music::client::Client;
+use slipmat_core::ipc::Request;
 use slipmat_core::music::types::Track;
 
 /// Fold one page of catalog results into rows, and report how many of the
@@ -35,6 +35,63 @@ pub(super) fn matches(track: &Track, needle: &str) -> bool {
 }
 
 impl AppModel {
+    /// Show what the daemon found in the catalog.
+    ///
+    /// **Checked against the box, not against a generation counter.** The
+    /// daemon answers with the query it searched for, so a slow reply for
+    /// "aita" cannot land on the results for "aitana" — which is the same
+    /// guarantee the counter gave, made by the side that knows.
+    pub(super) fn fill_catalog(
+        &mut self,
+        query: &str,
+        entries: Vec<Entry>,
+        offset: usize,
+        more: bool,
+    ) {
+        if query != self.query().trim() {
+            tracing::debug!(%query, "discarding results for a query that moved on");
+            return;
+        }
+        self.searching_catalog = false;
+        self.catalog_exhausted = !more;
+        if offset == 0 {
+            self.catalog = entries;
+            self.rebuild_rows();
+        } else {
+            self.append_rows(&entries);
+            self.catalog.extend(entries);
+        }
+    }
+
+    /// Re-read the library the daemon keeps on disk.
+    ///
+    /// **This client does not fetch any more.** One process asks Apple and
+    /// writes the cache; this one reads it and does its own filtering, sorting
+    /// and grid building, which is presentation rather than something to ask
+    /// across a socket.
+    pub(super) fn reload_from_cache(&mut self, sender: &ComponentSender<Self>) {
+        let cached = slipmat_core::library_cache::load();
+        tracing::info!(
+            songs = cached.songs.len(),
+            albums = cached.albums.len(),
+            artists = cached.artists.len(),
+            playlists = cached.playlists.len(),
+            "read the library from cache"
+        );
+        self.all_tracks = cached.songs;
+        self.albums = cached.albums;
+        self.artists = cached.artists;
+        self.playlists = cached.playlists;
+        self.rebuild_rows();
+        self.rebuild_albums();
+        self.rebuild_artists();
+        self.rebuild_playlists();
+        // A pin whose playlist is gone (#133). The cache read is when we know
+        // what still exists, which is what the playlist fetch used to be.
+        self.prune_stale_pins(sender);
+        self.maybe_prune_artwork(sender);
+    }
+
     /// The query for whichever scope is showing.
     pub(super) fn query(&self) -> &str {
         match self.scope() {
@@ -75,36 +132,27 @@ impl AppModel {
         }
     }
 
+    /// Ask the daemon to search the catalog.
+    ///
+    /// **The tokens for this live there** (rule 7), which is why a request
+    /// crosses the socket rather than the credentials doing it. The answer
+    /// carries the query it searched for, so this side can tell a result for
+    /// the word in the box from one for two keystrokes ago.
     pub(super) fn run_catalog_search(
         &mut self,
-        sender: &ComponentSender<Self>,
-        generation: u64,
+        _sender: &ComponentSender<Self>,
+        _generation: u64,
         offset: usize,
     ) {
-        let Some(tokens) = &self.tokens else {
-            return;
-        };
-        let client = Client::new(
-            tokens.developer_token.clone(),
-            tokens.music_user_token.clone(),
-            tokens.storefront.clone(),
-        );
-        let term = self.catalog_query.trim().to_owned();
+        let term = self.query().trim().to_owned();
         if term.is_empty() {
             return;
         }
         self.searching_catalog = true;
-        let types = self.catalog_filter.types();
-        tracing::debug!(%term, types, "searching the catalog");
-        sender.oneshot_command(async move {
-            CommandMsg::Catalog {
-                generation,
-                offset,
-                result: client
-                    .search(&term, types, CATALOG_LIMIT, offset)
-                    .await
-                    .map_err(|err| format!("{err:#}")),
-            }
+        self.ask(Request::Search {
+            query: term,
+            filter: self.catalog_filter.into(),
+            offset,
         });
     }
 
@@ -252,55 +300,6 @@ impl AppModel {
         }
     }
 
-    /// Load the library's albums, once. Revisiting the section is instant.
-    pub(super) fn load_albums(&mut self, sender: &ComponentSender<Self>) {
-        // `tried` alone, and once per run. It used to be "or the collection is
-        // already full", which said the same thing while the collection could
-        // only be filled by a fetch — but it is now seeded from the disk cache
-        // before the sidecar is even up, and that reading would refuse to
-        // refresh it ever. Cleared by the section's reload button, which is how
-        // a failure or a stale list is meant to be retried.
-        if self.loading_albums || self.tried_albums {
-            return;
-        }
-        self.tried_albums = true;
-        let Some(client) = self.client() else { return };
-        self.loading_albums = true;
-        tracing::info!("loading library albums");
-        sender.oneshot_command(async move {
-            CommandMsg::LibraryAlbums(
-                client
-                    .all_library_albums(LIBRARY_MAX)
-                    .await
-                    .map_err(|err| format!("{err:#}")),
-            )
-        });
-    }
-
-    pub(super) fn load_artists(&mut self, sender: &ComponentSender<Self>) {
-        // `tried` alone, and once per run. It used to be "or the collection is
-        // already full", which said the same thing while the collection could
-        // only be filled by a fetch — but it is now seeded from the disk cache
-        // before the sidecar is even up, and that reading would refuse to
-        // refresh it ever. Cleared by the section's reload button, which is how
-        // a failure or a stale list is meant to be retried.
-        if self.loading_artists || self.tried_artists {
-            return;
-        }
-        self.tried_artists = true;
-        let Some(client) = self.client() else { return };
-        self.loading_artists = true;
-        tracing::info!("loading library artists");
-        sender.oneshot_command(async move {
-            CommandMsg::LibraryArtists(
-                client
-                    .all_library_artists(LIBRARY_MAX)
-                    .await
-                    .map_err(|err| format!("{err:#}")),
-            )
-        });
-    }
-
     /// Rebuild the album grid from `albums` + the query.
     pub(super) fn rebuild_albums(&mut self) {
         // Already showing exactly this? Then the widgets are correct and
@@ -346,31 +345,6 @@ impl AppModel {
         self.album_art_widgets.borrow_mut().clear();
         let items = self.grid_items(tiles, &self.album_art_widgets);
         self.album_grid.extend_from_iter(items);
-    }
-
-    /// Load the library's playlists, once.
-    pub(super) fn load_playlists(&mut self, sender: &ComponentSender<Self>) {
-        // `tried` alone, and once per run. It used to be "or the collection is
-        // already full", which said the same thing while the collection could
-        // only be filled by a fetch — but it is now seeded from the disk cache
-        // before the sidecar is even up, and that reading would refuse to
-        // refresh it ever. Cleared by the section's reload button, which is how
-        // a failure or a stale list is meant to be retried.
-        if self.loading_playlists || self.tried_playlists {
-            return;
-        }
-        self.tried_playlists = true;
-        let Some(client) = self.client() else { return };
-        self.loading_playlists = true;
-        tracing::info!("loading library playlists");
-        sender.oneshot_command(async move {
-            CommandMsg::LibraryPlaylists(
-                client
-                    .all_library_playlists(LIBRARY_MAX)
-                    .await
-                    .map_err(|err| format!("{err:#}")),
-            )
-        });
     }
 
     pub(super) fn rebuild_playlists(&mut self) {
@@ -528,14 +502,8 @@ impl AppModel {
     /// would call every album and artist cover evictable, and the cache is what
     /// makes the grids fast — #27 measured 520ms against 75ms on exactly that.
     pub(super) fn maybe_prune_artwork(&mut self, sender: &ComponentSender<Self>) {
-        let all_reported = self.tried_library
-            && self.tried_albums
-            && self.tried_artists
-            && self.tried_playlists
-            && !self.loading_library
-            && !self.loading_albums
-            && !self.loading_artists
-            && !self.loading_playlists;
+        let all_reported =
+            self.tried_library && self.tried_albums && self.tried_artists && self.tried_playlists;
         if self.pruned || !all_reported {
             return;
         }
@@ -546,79 +514,6 @@ impl AppModel {
                 relm4::spawn_blocking(move || crate::components::prune::run(&keep))
                     .await
                     .unwrap_or_default(),
-            )
-        });
-    }
-
-    /// Write all four collections out, from whichever one of them changed.
-    ///
-    /// Called only when something *did* change: a refresh that found the same
-    /// library is a refresh whose result is already the file on disk, and four
-    /// of those per launch is 1.7 MB of writing to say nothing.
-    pub(super) fn save_cache(&self) {
-        slipmat_core::library_cache::save(
-            &self.all_tracks,
-            &self.albums,
-            &self.artists,
-            &self.playlists,
-        );
-    }
-
-    /// An API client for the current tokens, or `None` if we have none yet.
-    ///
-    /// Built per request rather than cached: the developer token is re-harvested
-    /// and can be replaced mid-session (rule 7).
-    pub(super) fn client(&self) -> Option<Client> {
-        let tokens = self.tokens.as_ref()?;
-        Some(Client::new(
-            tokens.developer_token.clone(),
-            tokens.music_user_token.clone(),
-            tokens.storefront.clone(),
-        ))
-    }
-
-    pub(super) fn load_library(&mut self, sender: &ComponentSender<Self>) {
-        let Some(tokens) = &self.tokens else {
-            self.toast("Not connected yet");
-            return;
-        };
-        // Songs never got the `tried` guard the three grids have, and the
-        // consequence is the same one their comment describes: a load that
-        // *failed* leaves `all_tracks` empty, so the auto-load fires again on
-        // the very next sidecar event. With a token flapping once a second that
-        // is a 403 per second against Apple, forever. Cleared by the section's
-        // reload button, which is how a failure is meant to be retried.
-        if self.tried_library {
-            return;
-        }
-        // A library request without a user token cannot succeed — `/me/library`
-        // answers 403 "Authentication required". Better to skip it than to
-        // spend a round trip proving what the token already says.
-        if tokens.music_user_token.is_none() {
-            tracing::debug!("skipping library load: no user token yet");
-            return;
-        }
-        self.tried_library = true;
-        // Whatever was recorded about a track is superseded by what Apple is
-        // about to say. Keeping it would let a stale override outlive the fact
-        // it was correcting.
-        self.row_overrides.borrow_mut().clear();
-        // Built per request rather than cached: the developer token is
-        // re-harvested and can be replaced mid-session (rule 7), and a stale
-        // client 401s in a way that looks like a sign-in problem.
-        let client = Client::new(
-            tokens.developer_token.clone(),
-            tokens.music_user_token.clone(),
-            tokens.storefront.clone(),
-        );
-        self.loading_library = true;
-        tracing::info!("loading library");
-        sender.oneshot_command(async move {
-            CommandMsg::Library(
-                client
-                    .all_library_songs(LIBRARY_MAX)
-                    .await
-                    .map_err(|err| format!("{err:#}")),
             )
         });
     }

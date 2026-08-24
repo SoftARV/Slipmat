@@ -18,9 +18,8 @@ use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, TICK_MS, artwork, notify};
 use crate::components::now_playing::{NowPlayingInput, Snapshot};
 use crate::components::player_view::PlayerViewInput;
 use crate::components::queue_view::{QueueEntry, QueueViewInput};
-use crate::mpris::MprisState;
+use slipmat_core::ipc::Transport;
 use slipmat_core::music::types::Artwork;
-use slipmat_core::player::protocol::Command;
 
 impl AppModel {
     /// Tell the rows which one is playing, so the list shows a play marker.
@@ -68,7 +67,7 @@ impl AppModel {
     /// The honest moment to ask is the moment of sending.
     pub(super) fn send_track_notification(&mut self) {
         self.notify_when_art_lands = None;
-        let Some(item) = self.player.now_playing.as_ref() else {
+        let Some(item) = self.mirror.now_playing() else {
             return;
         };
 
@@ -88,34 +87,13 @@ impl AppModel {
         );
     }
 
-    /// What the bar should be showing, which is not always what MusicKit says
-    /// is playing *right now*.
+    /// What the bar is showing, or `None` when nothing is loaded.
     ///
-    /// Loading a new queue tears the old one down first, and for a beat
-    /// MusicKit reports no current item at all. Rendering that faithfully meant
-    /// the bar blanked to its empty state — skeleton, empty sleeve — and then
-    /// repopulated, every time you picked a track from a list. Skipping never
-    /// showed it, because that moves within a queue already loaded and never
-    /// passes through nothing.
-    ///
-    /// So: while a queue is loaded, keep showing the last track we knew about.
-    /// The bar only empties when there is genuinely nothing loaded, which is
-    /// also what makes a stopped player keep its last track on screen rather
-    /// than wiping itself.
-    fn showing(&self) -> Option<&slipmat_core::player::protocol::Item> {
-        self.player
-            .now_playing
-            .as_ref()
-            // A queue loaded but never started has no *now playing item* —
-            // MusicKit only sets one when something begins. That is exactly the
-            // state a restored session is in, and rendering it faithfully left
-            // the bar empty next to a full queue. The queue's own current entry
-            // is the honest answer to "what is this player on".
-            .or_else(|| self.player.queue.get(self.player.queue_position))
-            .or(self
-                .last_item
-                .as_ref()
-                .filter(|_| !self.player.queue.is_empty()))
+    /// The daemon answers this — including the fallback to the queue's current
+    /// entry when a restored queue has not started — so there is one answer
+    /// rather than one per client.
+    fn showing(&self) -> Option<&slipmat_core::ipc::Snapshot> {
+        self.mirror.now_playing()
     }
 
     /// Flatten `PlayerState` into what the bar renders, and push it down.
@@ -125,13 +103,13 @@ impl AppModel {
     pub(super) fn push_snapshot(&self) {
         let item = self.showing();
         let snap = Snapshot {
-            shuffle: self.player.shuffle,
+            shuffle: self.mirror.shuffle(),
             queue_open: self.show_queue,
             // The same breakpoint the header reads. The bar has less room than
             // the header does, so it stands three controls down rather than
             // one — and each of them is in the drawer.
             narrow: self.narrow_header,
-            repeat: self.player.repeat,
+            repeat: self.mirror.repeat(),
             // Ours, not the sidecar's: MusicKit is told the volume and does not
             // report one back, so `self.volume` is the only record of it.
             volume: self.volume,
@@ -143,12 +121,12 @@ impl AppModel {
             // meant two extrapolators stacked on one clock, so the slider ran
             // ahead and then lurched backwards every time a real position event
             // reset the truth underneath it.
-            position_ms: self.player.position_ms,
-            duration_ms: self.player.duration_ms,
-            playing: self.player.state.is_playing(),
-            busy: self.player.state.is_busy(),
-            has_next: self.player.has_next(),
-            has_previous: self.player.has_previous(),
+            position_ms: self.mirror.snap.position_ms,
+            duration_ms: self.mirror.snap.duration_ms,
+            playing: self.mirror.is_playing(),
+            busy: self.mirror.is_busy(),
+            has_next: self.mirror.has_next(),
+            has_previous: self.mirror.has_previous(),
             // Anything loaded counts, playing or not: a restored queue is
             // paused by design, and greying the transport out would mean you
             // could not press play on it.
@@ -179,7 +157,7 @@ impl AppModel {
         // and a restored session has it wherever the last one stopped. The
         // queue folds everything before it away, and says "earlier" rather
         // than "played" for exactly that reason.
-        let queue_id = |item: &slipmat_core::player::protocol::Item| {
+        let _queue_id = |item: &slipmat_core::player::protocol::Item| {
             item.catalog_id
                 .clone()
                 .or_else(|| item.id.clone())
@@ -187,14 +165,17 @@ impl AppModel {
         };
         self.queue_view.emit(QueueViewInput::Sync {
             entries: self
-                .player
+                .mirror
                 .queue
                 .iter()
                 .enumerate()
                 .map(|(at, item)| QueueEntry {
                     at,
-                    id: queue_id(item),
-                    catalog_id: item.catalog_id.clone(),
+                    // One id, already resolved to whichever the daemon can act
+                    // on. It goes back exactly as it came — this side never
+                    // needs to know which space it is from.
+                    id: item.id.clone().unwrap_or_default(),
+                    catalog_id: item.id.clone(),
                     title: item.title.clone(),
                     artist: item.artist.clone(),
                     duration_ms: item.duration_ms,
@@ -204,33 +185,7 @@ impl AppModel {
             // bar already falls back to the queue's own current entry for
             // exactly that case — so "what this player is on" is the honest
             // marker, and `None` means nothing is loaded at all.
-            current: (!self.player.queue.is_empty()).then_some(self.player.queue_position),
-        });
-
-        // Same state, second consumer. MPRIS diffs internally, so calling this
-        // on every tick costs one property write and no bus traffic.
-        self.mpris.update(MprisState {
-            track_id: item.and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone())),
-            title: item.map(|i| i.title.clone()).unwrap_or_default(),
-            artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
-            album: item.map(|i| i.album.clone()).unwrap_or_default(),
-            track_number: item.map(|i| i.track_number).unwrap_or(0),
-            art_path: self.art_path.clone(),
-            length_ms: self.player.duration_ms,
-            position_ms: self.player.interpolated_position_ms(),
-            playing: self.player.state.is_playing(),
-            stopped: item.is_none(),
-            can_next: self.player.has_next(),
-            can_previous: self.player.has_previous(),
-            volume: self.volume,
-            // The same two the bar is drawing, from the same mirror — a bar and
-            // a shell widget disagreeing about shuffle is the seam that made
-            // this worth exporting at all.
-            shuffle: self.player.shuffle,
-            // The mirror's own type: `MprisState` speaks the protocol, not the
-            // UI's `RepeatMode`. See rule 9 — the conversion above is for
-            // `components/`, and MPRIS is not one.
-            repeat: self.player.repeat,
+            current: (!self.mirror.queue.is_empty()).then_some(self.mirror.queue_position),
         });
     }
 
@@ -246,135 +201,12 @@ impl AppModel {
             return;
         }
         self.volume = volume;
-        self.send(Command::SetVolume { volume });
+        self.transport(Transport::SetVolume { volume });
         self.push_snapshot();
-    }
-
-    /// Take MusicKit's word for the volume, without answering back.
-    ///
-    /// **The counterpart to `set_volume`, and deliberately not it.** That one
-    /// sends a command; this one must not, because the value came *from* the
-    /// player — echoing it is the two-way loop that froze the app once already
-    /// (see `now_playing::post_view`). One direction each, and the difference
-    /// is the whole reason there are two methods rather than a flag.
-    ///
-    /// Volume is not persisted anywhere on our side and does not need to be:
-    /// MusicKit restores its own across launches, and this is how we find out.
-    pub(super) fn adopt_volume(&mut self, volume: f64) {
-        let volume = volume.clamp(0.0, 1.0);
-        if (volume - self.volume).abs() < f64::EPSILON {
-            return;
-        }
-        tracing::debug!(volume, "adopting the player's own volume");
-        self.volume = volume;
-        self.push_snapshot();
-    }
-
-    /// Start the repaint timer while playing, drop it otherwise.
-    ///
-    /// `glib::SourceId` must be removed exactly once — holding it in an
-    /// `Option` and `take()`ing is what makes that safe, since removing an
-    /// already-removed source aborts.
-    /// Put a refused reorder back where it came from.
-    ///
-    /// The optimistic move is a promise the sidecar can break — an older
-    /// sidecar has no `moveInQueue` at all, and `queue.splice` is undocumented
-    /// enough that a future MusicKit could drop it. Without this the row stays
-    /// where it was dropped while MusicKit still holds the old order, and the
-    /// two only disagree out loud when something asks for the next track.
-    ///
-    /// Inverting a move is just moving it back: `(from, to)` undone is
-    /// `(to, from)`.
-    pub(super) fn undo_move(&mut self) -> bool {
-        let Some((from, to)) = self.pending_move.take() else {
-            return false;
-        };
-        tracing::warn!(
-            from,
-            to,
-            "the queue would not reorder; putting the row back"
-        );
-        self.player.move_item(to, from);
-        self.push_snapshot();
-        self.toast("Couldn't reorder the queue");
-        true
-    }
-
-    /// Reload the track we are on, at the position we were at.
-    ///
-    /// **The only way back from a dead decrypt session.** Linux Widevine keeps
-    /// no persistent licences, so a suspend leaves MusicKit holding an item it
-    /// can never play again — `play()` on it resolves and makes no sound.
-    /// `changeToMediaAtIndex` loads it afresh, licence and all, which is what
-    /// makes changing track by hand appear to "fix" it.
-    ///
-    /// Rule 3 is intact: this moves within the queue MusicKit already holds and
-    /// never sends a fresh `setQueue`.
-    fn reseat_current(&mut self, why: &str) {
-        // `queue_position` is already the reconciled, non-negative index —
-        // `Queue::index` did the signed-sentinel filtering on the way in.
-        let index = self.player.queue_position;
-        if self.player.queue.is_empty() || index >= self.player.queue.len() {
-            return;
-        }
-        // Read before the reload, which resets it to zero.
-        let position_ms = self.player.interpolated_position_ms();
-        tracing::info!(why, index, position_ms, "reloading the current track");
-        self.send(Command::ChangeToIndex { index });
-        // **Not sent yet.** A seek needs a current item to seek within, and the
-        // reload has not produced one — the two commands are dispatched
-        // independently and the seek won a race in testing, landing on the item
-        // being replaced. `nowPlayingItemDidChange` is when there is something
-        // to seek in; `resume_position` sends it then.
-        self.resume_at = (position_ms > 0).then_some(position_ms);
-    }
-
-    /// Put the position back once the reloaded track is actually current.
-    ///
-    /// Called from the now-playing change, which is the first moment MusicKit
-    /// has an item to seek within.
-    pub(super) fn resume_position(&mut self) {
-        let Some(position_ms) = self.resume_at.take() else {
-            return;
-        };
-        tracing::info!(position_ms, "restoring the position after a reload");
-        self.send(Command::Seek { position_ms });
-    }
-
-    /// A `play` that completed and produced no playing.
-    ///
-    /// The sidecar reports the state it ended in, so this is the difference
-    /// between a command that failed — which would have errored — and one that
-    /// worked on something that cannot make sound. Only the second is worth
-    /// recovering from, and only once: a second attempt that also does nothing
-    /// is a real failure and should look like one rather than looping.
-    pub(super) fn play_did_nothing(&mut self, cmd: &str) {
-        if !matches!(cmd, "play" | "playPause") {
-            return;
-        }
-        // **Still working towards audio is not failure.** `Loading`, `Waiting`
-        // and `Stalled` are ordinary states a fraction of a second after a
-        // play, and judging them cost a real playback: a heal fired mid-load,
-        // which stopped the track, which produced another non-playing `play`,
-        // which healed again — `changeToIndex: The play() request was
-        // interrupted by a call to pause()`.
-        if self.player.state.is_busy() {
-            return;
-        }
-        if self.player.state.is_playing() {
-            self.healed = false;
-            return;
-        }
-        if self.healed {
-            tracing::warn!("play still produced no playback after reloading the track");
-            return;
-        }
-        self.healed = true;
-        self.reseat_current("play produced no playback");
     }
 
     pub(super) fn sync_tick(&mut self, sender: &ComponentSender<Self>) {
-        let want = self.player.state.is_playing();
+        let want = self.mirror.is_playing();
         match (want, self.tick.is_some()) {
             (true, false) => {
                 let sender = sender.clone();
@@ -401,7 +233,7 @@ impl AppModel {
     pub(super) fn sync_artwork(&mut self, sender: &ComponentSender<Self>) -> bool {
         // The same resolved item the bar renders, so the cover does not blank
         // on its own while a queue reloads — see `showing`.
-        let template = self.showing().and_then(|i| i.artwork_template.clone());
+        let template = self.showing().and_then(|s| s.art_path.clone());
 
         if template == self.art_for {
             // Same cover as the last track — usually the next song on the same
@@ -463,15 +295,14 @@ impl AppModel {
     /// puts the position at zero, which is already the case that means *go back
     /// one* — so the second press falls into it by itself.
     pub(super) fn go_previous(&self) {
-        match previous_means(self.player.interpolated_position_ms()) {
+        match previous_means(self.mirror.snap.position_ms) {
             Previous::Restart => {
-                self.send(Command::Seek { position_ms: 0 });
+                self.transport(Transport::Seek { position_ms: 0 });
                 // Same reasoning as `AppMsg::Seek`: a discontinuous move has to
                 // be announced, or controllers keep extrapolating from the old
                 // position and their progress bars drift.
-                self.mpris.seeked(0);
             }
-            Previous::Track => self.send(Command::Previous),
+            Previous::Track => self.transport(Transport::Previous),
         }
     }
 }

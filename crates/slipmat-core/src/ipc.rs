@@ -107,6 +107,19 @@ pub enum Request {
     #[serde(rename = "subscribe")]
     Subscribe,
 
+    /// Show Apple's own sign-in.
+    ///
+    /// **The one thing that needs a window**, and the daemon has none of its
+    /// own — it hands this to the sidecar, whose hidden Chromium is shown for
+    /// exactly this and hidden again afterwards.
+    #[serde(rename = "signIn")]
+    SignIn,
+
+    /// End the Apple session. Clears the cookies too, which only MusicKit's own
+    /// context can do.
+    #[serde(rename = "signOut")]
+    SignOut,
+
     /// A page of the library. `query` filters, `offset`/`limit` window it —
     /// a client draws a screenful, not 535 rows.
     #[serde(rename = "browse")]
@@ -246,13 +259,21 @@ pub enum View {
     Playlists,
 }
 
-/// What an [`Request::Open`] is opening.
+/// What a [`Request::Open`] is opening.
+///
+/// Catalog and library are separate variants because **the two id spaces are
+/// not interchangeable** — a catalog id 404s against `/me/library` and back
+/// again — and because an artist page is their *albums* rather than their
+/// tracks, which is a different call entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PageKind {
     Album,
     Artist,
     Playlist,
+    LibraryAlbum,
+    LibraryArtist,
+    LibraryPlaylist,
 }
 
 /// The mode a queue is *created* in, on the wire.
@@ -353,11 +374,16 @@ pub enum Event {
     },
 
     /// An opened album, artist or playlist.
+    ///
+    /// `header` is the thing itself — the album with its artwork and year, the
+    /// artist with their portrait — because a page draws that above its rows
+    /// and asking for it separately would be a second round trip for one object
+    /// the fetch already had.
     #[serde(rename = "page")]
     Page {
         kind: PageKind,
         id: String,
-        title: String,
+        header: Entry,
         entries: Vec<Entry>,
     },
 
