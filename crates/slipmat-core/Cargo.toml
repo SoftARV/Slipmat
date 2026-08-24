@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+libc = "0.2"
 
 # NOTE: 0.9 -> 0.10 (Apr 2026) changed the API. Do not trust training data for
 # it; check https://docs.rs/mpris-server/0.10 before writing a call.

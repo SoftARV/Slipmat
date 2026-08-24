@@ -140,12 +140,12 @@ async fn run() -> Result<()> {
 /// Returns whether to keep running.
 fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
     match code {
-        // Winamp's own transport row, where it has been since 1997.
-        KeyCode::Char('z') => link.send(Request::Transport(Transport::Previous)),
-        KeyCode::Char('x') => link.send(Request::Transport(Transport::Play)),
-        KeyCode::Char('c') => link.send(Request::Transport(Transport::Pause)),
-        KeyCode::Char('b') => link.send(Request::Transport(Transport::Next)),
+        // Winamp put play and pause on separate keys because its buttons were
+        // separate. Nothing else has since: one key that toggles is what a
+        // person reaches for, and space is where every player has put it.
         KeyCode::Char(' ') => link.send(Request::Transport(Transport::PlayPause)),
+        KeyCode::Char('z') => link.send(Request::Transport(Transport::Previous)),
+        KeyCode::Char('b') => link.send(Request::Transport(Transport::Next)),
         KeyCode::Left => seek(link, app, -5_000),
         KeyCode::Right => seek(link, app, 5_000),
         KeyCode::Char('_') | KeyCode::Char('-') => return false,

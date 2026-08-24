@@ -129,8 +129,7 @@ fn key_hints() -> Line<'static> {
     let mut spans = Vec::new();
     for (key, what) in [
         ("z", "prev"),
-        ("x", "play"),
-        ("c", "pause"),
+        ("space", "play/pause"),
         ("b", "next"),
         ("_", "hide"),
         ("q", "quit"),

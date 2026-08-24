@@ -17,7 +17,7 @@ and a window open at once are two views of one player rather than two players.
   ▶   ██░░░░░░░░░░░░░░░░░░░░░░░   0:21 / 5:03
       shuffle off   repeat off   vol ██████████
 
-  z prev   x play   c pause   b next   _ hide   q quit
+  z prev   space play/pause   b next   _ hide   q quit
 ```
 
 ## It needs a graphical session
@@ -36,11 +36,9 @@ That is a limit imposed by the DRM, not a shortcut taken here.
 
 | Key | What it does |
 | --- | --- |
-| `z` | Previous track |
-| `x` | Play |
-| `c` | Pause |
-| `b` | Next track |
 | `space` | Play / pause |
+| `z` | Previous track |
+| `b` | Next track |
 | `←` `→` | Seek five seconds |
 | `_` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |

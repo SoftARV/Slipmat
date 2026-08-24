@@ -2001,6 +2001,7 @@ name = "slipmat-core"
 version = "0.11.0-dev"
 dependencies = [
  "anyhow",
+ "libc",
  "mpris-server",
  "reqwest",
  "serde",

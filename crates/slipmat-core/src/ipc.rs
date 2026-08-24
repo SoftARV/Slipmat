@@ -58,11 +58,34 @@ pub fn connect_or_spawn(exe: &std::path::Path) -> std::io::Result<std::os::unix:
     }
 
     tracing::info!(daemon = %exe.display(), "no daemon listening — starting one");
-    let child = std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
+        .stderr(std::process::Stdio::null());
+
+    // **Its own session, or the terminal takes it with it.** A plain child
+    // inherits the client's process group *and* its session, and so does the
+    // sidecar one level down — so closing the terminal SIGHUPs all three.
+    // Chromium traps on SIGHUP and dumps core, the daemon dies before its
+    // SIGTERM handler can save the session or clear the socket, and the music
+    // stops. Measured: closing the window left a 7.8 MB Electron core dump and
+    // an orphaned socket every time.
+    //
+    // `setsid` is the whole fix. It is the one thing that has to happen between
+    // `fork` and `exec`, which is what `pre_exec` is for — and why it is
+    // `unsafe`: only async-signal-safe calls are legal in that window, and
+    // `setsid` is one.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
 
     // **Reaped, or it becomes a zombie.** Dropping a `Child` neither kills nor
     // waits, so a daemon that dies while this client is still running would sit
