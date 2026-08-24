@@ -443,25 +443,15 @@ impl Drop for Timed {
     }
 }
 
-/// Something we can ask Apple to do to the user's account.
-///
-/// Both answer 202 Accepted with an empty body — "acceptable, may not have
-/// completed" — so neither can be treated as done, only as sent. That is why
-/// nothing here toggles a checkbox: showing state would mean reading it back,
-/// and a star that lies is worse than no star.
 /// A library write sent to the sidecar and not yet confirmed.
 ///
-/// The row is updated the moment the command goes out, because a menu that
-/// waits on a round trip reads as broken. But an optimistic update that is
-/// never taken back is how a UI comes to lie — which it did: a removal against
-/// a stale sidecar answered `unknown-command`, and the row went on showing the
-/// change that never happened.
+/// The row updates the moment the command goes out, because waiting on a round
+/// trip reads as broken — but an optimistic update never taken back is how a UI
+/// comes to lie.
 ///
-/// **Keyed by the id the command carried**, not by the command name. There was
-/// one slot and a name match, and the sidecar's dispatch is async — so removing
-/// two tracks inside one round trip overwrote the first record, and the first
-/// completion was attributed to the second's row. The wrong row left the list
-/// while the removed one stayed.
+/// **Keyed by the id the command carried**, not the command name: dispatch is
+/// async, so two removals in one round trip shared a slot and settled the wrong
+/// row.
 #[derive(Debug, Clone)]
 struct PendingWrite {
     /// The row to correct, which is not always the id the command carried:
@@ -476,6 +466,10 @@ enum WriteUndo {
     Favorite(bool),
 }
 
+/// Something we can ask Apple to do to the user's account.
+///
+/// Both answer 202 Accepted with an empty body, so neither can be treated as
+/// done — only as sent. That is why nothing here toggles a checkbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryAction {
     AddToLibrary,
@@ -943,22 +937,12 @@ impl Component for AppModel {
                                             gtk::ListBox {
                                                 add_css_class: "navigation-sidebar",
                                                 set_selection_mode: gtk::SelectionMode::Single,
-                                                // `row-selected` is connected
-                                                // in `wiring`, not here: the
-                                                // handler's id has to be kept
-                                                // so a rebuild can silence it.
-                                                // See `sync_pins`.
-                                                // Choosing a section is the end
-                                                // of what an overlay sidebar is
-                                                // for, so it gets out of the
-                                                // way — but only when it *is*
-                                                // an overlay. Beside a pane, it
-                                                // stays put.
-                                                // Activation, not selection,
-                                                // because the pin button is
-                                                // deliberately unselectable —
-                                                // it does something rather than
-                                                // being somewhere.
+                                                // `row-selected` lives in
+                                                // `wiring`: its handler id has
+                                                // to be kept so a rebuild can
+                                                // silence it. Activation, not
+                                                // selection, because the pin
+                                                // button is unselectable.
                                                 connect_row_activated[sender] => move |_, row| {
                                                     sender.input(
                                                         AppMsg::SidebarRowActivated(row.index()),
@@ -1084,27 +1068,12 @@ impl Component for AppModel {
                                                 connect_search_changed[sender] => move |entry| {
                                                     sender.input(AppMsg::SearchChanged(entry.text().into()));
                                                 },
-                                                // Escape, as it cancels every other
-                                                // search in GNOME.
-                                                //
-                                                // The entry is emptied here rather
-                                                // than left to the reducer: it is
-                                                // the *source* of the query, so
-                                                // nothing writes back to it, and
-                                                // clearing only the model left the
-                                                // words sitting in a field over an
-                                                // unfiltered list.
-                                                //
-                                                // `SearchChanged` as well, because
+                                                // The entry is the *source* of
+                                                // the query, so it clears itself
+                                                // rather than waiting on the
+                                                // reducer. `SearchChanged` too:
                                                 // `search-changed` is delayed and
-                                                // the list should stop filtering
-                                                // now; it returns early when the
-                                                // delayed one arrives after it.
-                                                // And `ShowSearch`, because on a
-                                                // wide header the box is never
-                                                // "open" — that message would drop
-                                                // a value it already holds and
-                                                // Escape would close nothing.
+                                                // filtering should stop now.
                                                 connect_stop_search[sender] => move |entry| {
                                                     entry.set_text("");
                                                     sender.input(AppMsg::SearchChanged(String::new()));
@@ -1120,23 +1089,12 @@ impl Component for AppModel {
                                             },
                                         },
 
-                                        // One button, not the four this used to
-                                        // be on the sidebar rows. A sidebar
-                                        // button cannot know which section you
-                                        // meant, so each row needed its own — and
-                                        // that put reload behind the sidebar
-                                        // toggle, which collapses on its own when
-                                        // the window is narrow. Here there is
-                                        // nothing to disambiguate: it reloads
-                                        // what you are looking at.
-                                        //
-                                        // A `Stack` rather than two widgets
-                                        // swapping their own visibility, because
-                                        // a spinner is smaller than a button and
-                                        // the header re-centred its search entry
-                                        // every time one started. A stack is
-                                        // homogeneous by default, so it holds the
-                                        // button's width whichever child shows.
+                                        // One button: it reloads what you are
+                                        // looking at, so there is nothing to
+                                        // disambiguate. A `Stack` because it is
+                                        // homogeneous — swapping visibility let
+                                        // the narrower spinner re-centre the
+                                        // header's search entry.
                                         pack_end = &gtk::Stack {
                                             // Children first. `view!` assigns in
                                             // the order written, so naming a
@@ -1207,20 +1165,12 @@ impl Component for AppModel {
                                             set_tooltip_text: Some("What to search for"),
                                             #[watch]
                                             set_visible: model.view == View::Search,
-                                            // A label rather than an icon, for
-                                            // two reasons. Adwaita has no
-                                            // filter glyph — `funnel-symbolic`
-                                            // and `view-filter-symbolic` are
-                                            // both absent, and `chrome::icon`
-                                            // would have quietly put a music
-                                            // note here. And the current filter
-                                            // needs to be readable *without*
-                                            // hovering: this button is the only
-                                            // thing on screen explaining why a
-                                            // search returned one kind of
-                                            // result, and a narrowed search
-                                            // with no visible reason reads as
-                                            // missing results.
+                                            // A label, not an icon: Adwaita
+                                            // has no filter glyph, and the
+                                            // current filter has to be readable
+                                            // without hovering — it is the only
+                                            // thing explaining a narrowed
+                                            // search.
                                             #[watch]
                                             set_label: model.catalog_filter.label(),
                                         },
@@ -1259,25 +1209,11 @@ impl Component for AppModel {
                                         },
 
                                         // **`AdwClampScrollable`, not `AdwClamp`.**
-                                        //
-                                        // A plain clamp had to go *outside* the
-                                        // scroller, because inside it breaks
-                                        // `GtkListView`'s height allocation and
-                                        // the list stops materialising rows part
-                                        // way down. But outside, the clamp is
-                                        // what the window sizes, so the scroller
-                                        // is only 800px wide and its scrollbar
-                                        // sits in the middle of the window
-                                        // rather than at the edge.
-                                        //
-                                        // `AdwClampScrollable` is the widget for
-                                        // exactly this trade: it implements
-                                        // `GtkScrollable` and passes the
-                                        // interface through to its child, so the
-                                        // list still gets the adjustments it
-                                        // needs while being clamped. The
-                                        // scroller can then be the full width
-                                        // and keep its bar at the edge.
+                                        // Inside the scroller a plain clamp
+                                        // breaks `GtkListView`'s height
+                                        // allocation; outside it, the scrollbar
+                                        // ends up mid-window. This one passes
+                                        // `GtkScrollable` through to its child.
                                         #[name = "library_scroller"]
                                         add_named[Some("library")] = &gtk::ScrolledWindow {
                                             set_vexpand: true,
@@ -1845,25 +1781,17 @@ impl AppModel {
 
     /// Push the four animated properties, and **only where they changed**.
     ///
-    /// Each drives an animation — the sidebar's spring, the drawer's slide, the
-    /// bar's reveal, the volume panel's crossfade — so writing one asks it to
-    /// start or
-    /// re-aim. That is correct on an edge and catastrophic on a level: as a
-    /// `#[watch]` it re-fired after every message, and during playback those
-    /// never stop, which wedged the app inside libadwaita's spring solver.
+    /// Each drives an animation, so writing one asks it to start or re-aim:
+    /// correct on an edge, catastrophic on a level. As a `#[watch]` it re-fired
+    /// on every message and wedged libadwaita's spring solver.
     ///
-    /// Compared against **what we last wrote**, not against the widget. A
-    /// widget that disagrees persistently disagrees on every message too, so
-    /// asking it is the level trigger again wearing a guard's clothes — that
-    /// was the first attempt at this fix, and the second core dump found it
-    /// still spinning.
+    /// Compared against **what we last wrote**, not the widget — a widget that
+    /// disagrees persistently is the level trigger again.
     /// Show a spinner on whichever sections are fetching.
     ///
-    /// What `#[watch]` did before the rows moved out of `view!`. Called from
-    /// **both** view paths for the reason `sync_animated` documents: a library
-    /// load finishes as a `CommandMsg`, which arrives through
-    /// `update_cmd_with_view` and never through the other — wire this to one
-    /// and every spinner starts but none of them ever stops.
+    /// Called from **both** view paths: a library load finishes as a
+    /// `CommandMsg` and arrives through `update_cmd_with_view` only. Wire this
+    /// to one and every spinner starts but none stops.
     fn sync_section_spinners(&self) {
         for (view, spinner) in &self.section_spinners {
             spinner.set_visible(self.loading_in(*view));
