@@ -247,16 +247,21 @@ impl CatalogFilter {
         }
     }
 
-    /// The `types=` value. Apple wants a comma-separated list, and answers only
-    /// for the kinds named — a key is absent rather than empty when a kind
-    /// matched nothing.
+    /// The `types=` value Apple wants. Answered by the wire type, so the
+    /// daemon and this app cannot ask for different things.
     pub(super) fn types(self) -> &'static str {
-        match self {
-            Self::All => "songs,albums,artists,playlists",
-            Self::Songs => "songs",
-            Self::Albums => "albums",
-            Self::Artists => "artists",
-            Self::Playlists => "playlists",
+        slipmat_core::ipc::CatalogFilter::from(self).types()
+    }
+}
+
+impl From<CatalogFilter> for slipmat_core::ipc::CatalogFilter {
+    fn from(filter: CatalogFilter) -> Self {
+        match filter {
+            CatalogFilter::All => Self::All,
+            CatalogFilter::Songs => Self::Songs,
+            CatalogFilter::Albums => Self::Albums,
+            CatalogFilter::Artists => Self::Artists,
+            CatalogFilter::Playlists => Self::Playlists,
         }
     }
 }
