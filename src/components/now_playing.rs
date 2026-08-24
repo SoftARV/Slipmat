@@ -86,15 +86,9 @@ pub struct Snapshot {
 impl Default for Snapshot {
     /// Hand-written for one field: **volume defaults to full, not to zero.**
     ///
-    /// A derived `Default` starts every field at its zero value, and the bar is
-    /// built with a default snapshot before the first real one arrives — so a
-    /// zero here draws a muted button on a player that is not muted, until the
-    /// first snapshot lands.
-    ///
-    /// It used to be worse than cosmetic: the write was unguarded, so the zero
-    /// went back out as a genuine `SetVolume(0.0)` and the app muted itself on
-    /// launch. `post_view` silences the handler now, so the write no longer
-    /// escapes — but a button that opens on silence is still wrong.
+    /// The bar is built with a default snapshot before the first real one, so a
+    /// zero draws a muted button on a player that is not muted. It used to also
+    /// escape as a real `SetVolume(0.0)` and mute the app on launch.
     fn default() -> Self {
         Self {
             narrow: false,
@@ -218,15 +212,10 @@ impl SimpleComponent for NowPlaying {
 
             // The track's progress, across the whole width of the bar.
             //
-            // **Information, not a control.** It was a `GtkScale`, and a scale
-            // needs a grabbable handle and room to aim in — which is exactly
-            // what the bar runs out of first when the window is tiled narrow.
-            // Reading it does not need any of that, and the drawer is where
-            // scrubbing belongs: it has the width, and its scrubber is
-            // already clamped to a size you can hit.
-            //
-            // Outside the padded row on purpose, so the line reaches both
-            // edges rather than stopping short of them.
+            // **Information, not a control.** A scale needs a grabbable
+            // handle and room to aim, which the bar runs out of first when
+            // tiled narrow. Scrubbing belongs in the drawer. Outside the
+            // padded row so the line reaches both edges.
             #[name = "progress"]
             gtk::ProgressBar {
                 add_css_class: "np-progress",
@@ -354,17 +343,10 @@ impl SimpleComponent for NowPlaying {
                         set_valign: gtk::Align::Center,
                         set_spacing: 7,
 
-                        // `halign` on each bar, not only on the column. A
-                        // vertical `GtkBox` gives children `Align::Fill`
-                        // across and `set_size_request` is a *minimum*, so
-                        // both stretched to the column and drew the same
-                        // length whatever these numbers said. Once the
-                        // metadata column became the hexpanding child, that
-                        // width was most of the bar.
-                        // 140/92 before. They are a *minimum*, so on an empty
-                        // bar they are also the window's — and two grey bars
-                        // are a hint about where the title goes, not something
-                        // that needs to be title-sized to read as one.
+                        // `halign` on each bar, not only the column: a
+                        // vertical `GtkBox` fills across and
+                        // `set_size_request` is a *minimum*, so both stretched
+                        // to the column and drew the same length.
                         gtk::Box {
                             set_halign: gtk::Align::Start,
                             set_size_request: (80, 11),
@@ -633,18 +615,11 @@ impl SimpleComponent for NowPlaying {
             }
             NowPlayingInput::ArtworkReady(path) => self.artwork = path,
             NowPlayingInput::VolumeChanged(v) => {
-                // **Adopted locally, unlike shuffle and repeat.** Those are
-                // sent and left to come back from the mirror, because nothing
-                // downstream re-asserts them. This is a two-way binding, so the
-                // model has to hold what the widget just reported or the next
-                // view update argues with the user.
-                //
-                // Every message that reaches here is now a real gesture —
-                // `post_view` blocks this handler while it writes, so nothing
-                // we do ourselves comes back. The guard below is idempotence
-                // rather than echo-catching: a snapshot can move the model
-                // while the widget still holds the same number, and resending
-                // that helps nobody.
+                // Adopted locally, unlike shuffle and repeat: this is a
+                // two-way binding, so the model must hold what the widget
+                // reported or the next view update argues with the user. The
+                // guard below is idempotence, not echo-catching — `post_view`
+                // already blocks this handler while it writes.
                 if !volume_is_new(v, self.snap.volume) {
                     return;
                 }
@@ -687,26 +662,11 @@ impl SimpleComponent for NowPlaying {
         widgets.time.set_label(&self.time_label());
 
         // **The handler is silenced while we write, and that is the whole fix.**
-        //
-        // GTK emits `value-changed` for a programmatic write exactly as for a
-        // drag, and `sender.input` *queues* — so our own write comes back as a
-        // message one lap later, by which time the model has already adopted
-        // some other value. Comparing the incoming value against the model
-        // therefore passes honestly on both sides, the model flips, this writes
-        // the flipped value, and that write queues the next message. Two
-        // messages stay in flight forever.
-        //
-        // Measured, holding `Ctrl`+`Down` on a playing track: 495,000 laps, one
-        // write per message, the two values a `page_increment` apart and the
-        // adjustment provably the same object throughout. 100% of one core
-        // inside `update_view`, and because this component's task never yields,
-        // the app's own task never runs again — which is why the window dies
-        // and `setVolume` stops reaching the sidecar. It does not stop when the
-        // key is released; only SIGKILL ends it.
-        //
-        // Blocking is what breaks the cycle, not the comparison: the comparison
-        // only skips writes that were already redundant, and a redundant write
-        // was never the problem.
+        // GTK emits `value-changed` for a programmatic write as for a drag, and
+        // `sender.input` queues — so our write returns a lap later and the two
+        // values chase each other forever. Measured holding `Ctrl`+`Down`:
+        // 495,000 laps, 100% of one core, ended only by SIGKILL. Blocking
+        // breaks the cycle; the comparison only skips redundant writes.
         if let Some(handler) = self.volume_handler.borrow().as_ref()
             && volume_is_new(widgets.volume.value(), self.snap.volume)
         {
@@ -759,16 +719,11 @@ enum Base {
 
 /// Decide what happens to the base.
 ///
-/// The two rules that matter, both learned from bugs:
-///
-/// - **Not playing means no base at all.** Keeping one across a pause meant
-///   resuming extrapolated from *before* the pause, so the slider jumped
-///   forward by however long the pause lasted and then snapped back. The same
-///   thing happens on every track change, where the state passes through
-///   Waiting and Loading for a second or two before audio actually starts.
+/// - **Not playing means no base at all.** Keeping one across a pause made the
+///   slider jump forward by the pause's length, then snap back.
 /// - **Only rebase on a reading that moved.** MusicKit reports about once a
-///   second while snapshots go out twice a second, so rebasing on every one
-///   would anchor half of them to an unchanged position.
+///   second against snapshots twice a second; half would anchor to an
+///   unchanged position.
 fn base_action(playing: bool, settled_ms: u64, held_ms: u64, have_base: bool) -> Base {
     if !playing {
         Base::Clear

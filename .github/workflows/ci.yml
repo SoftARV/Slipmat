@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   check:
-    name: fmt · clippy · tests · sizes
+    name: fmt · clippy · tests
     runs-on: ubuntu-latest
     # **In a container, because the runner cannot build this.** Slipmat needs
     # libadwaita >= 1.8 and GTK >= 4.20 (relm4's `gnome_49`), and

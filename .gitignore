@@ -24,4 +24,4 @@ packaging/flatpak/.flatpak-cargo-generator.py
 # a `git add -A` committed it on the spot.
 *.flatpak
 
-CLAUDE.md
+CLAUDE.local.md

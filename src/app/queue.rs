@@ -134,21 +134,14 @@ pub(super) fn start_index(songs: &[String], start_id: Option<&String>) -> usize 
 
 /// What a queue is **created** in, stated by whoever asked for it.
 ///
-/// Shuffle is a *player* mode in MusicKit, not a property of the queue it was
-/// turned on for, so a queue built while it is on comes out shuffled whatever
-/// the person meant. Nothing said so at two of the three call sites, and a
-/// playlist shuffled an hour ago went on shuffling every list clicked after it.
-///
-/// So the mode is a parameter rather than ambient state: a caller cannot enqueue
-/// without saying which of these it meant.
+/// Shuffle is a *player* mode in MusicKit, not a property of the queue, so a
+/// queue built while it is on comes out shuffled whatever the caller meant.
+/// Making it a parameter is what stops that (#152).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Start {
-    /// A **row click** — this list, from here.
-    ///
-    /// Sequential when it creates a queue. On a queue already loaded it is a
-    /// move within it rather than a new queue, and the bar's toggle goes on
-    /// saying what it said: turning shuffle off there would restore the
-    /// original order and reorder the queue out from under a playing track.
+    /// A **row click** — this list, from here. Sequential when it creates a
+    /// queue; silent on one already loaded, where turning shuffle off would
+    /// reorder the queue out from under a playing track.
     Clicked,
     /// The page's **Play** button: this list, in order, whatever was on before.
     InOrder,
@@ -158,10 +151,8 @@ pub(super) enum Start {
 }
 
 impl Start {
-    /// The mode to state, or `None` to leave the player's alone.
-    ///
-    /// `creating` is whether this is a new queue rather than a move within the
-    /// one MusicKit already holds — the only thing the three cases differ on.
+    /// The mode to state, or `None` to leave the player's alone. `creating`
+    /// distinguishes a new queue from a move within the loaded one.
     fn mode(self, creating: bool) -> Option<bool> {
         match self {
             Self::Clicked => creating.then_some(false),
@@ -170,9 +161,8 @@ impl Start {
         }
     }
 
-    /// Whether the queue this builds comes back in MusicKit's order rather than
-    /// ours — which is what makes "did it start the right track" a question with
-    /// no answer. See `play_entries`, where it decides whether to verify at all.
+    /// Whether the queue comes back in MusicKit's order rather than ours, which
+    /// makes "did it start the right track" unanswerable.
     fn reorders(self) -> bool {
         matches!(self, Self::Shuffled)
     }
@@ -229,10 +219,8 @@ impl AppModel {
 
         self.pending_start = wanted.clone();
         self.last_queue = Some((session.songs.clone(), wanted));
-        // Sequential, and not because a restore is unshuffled: the order saved
-        // *is* whatever MusicKit was playing, shuffled or not, and `start`
-        // indexes into it. Shuffling again would reshuffle a settled order and
-        // land the position on a different track than the one being restored.
+        // The saved order *is* what was playing, and `start` indexes into it.
+        // Reshuffling would land the position on a different track.
         self.send(Command::SetShuffle { shuffle: false });
         self.send(Command::SetQueue {
             songs: session.songs,
@@ -254,18 +242,10 @@ impl AppModel {
             .and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone()))
     }
 
-    /// Which row a shuffled queue opens on.
+    /// Which row a shuffled queue opens on (#147).
     ///
-    /// **#147: Shuffle used to open on track 1 every time.** The order really
-    /// was shuffled; the entry point was not. MusicKit pins the item you start
-    /// on and shuffles what is left — right for the toggle in the bar, where
-    /// the track you are hearing should keep playing, and wrong at queue
-    /// creation, where `startPosition: 0` pinned the first track and shuffled
-    /// only what came after it.
-    ///
-    /// So the entry point is the random part and the order stays MusicKit's.
-    /// Shuffling the ids here instead would work once and then leave the player
-    /// in sequential mode, which is not what pressing Shuffle means.
+    /// The entry point is the random part; the order stays MusicKit's.
+    /// Shuffling the ids here would work once and leave the player sequential.
     pub(super) fn shuffle_start(&self, entries: &[Entry]) -> usize {
         let rows = playable_rows(entries, &self.dead_ids);
         if rows.is_empty() {
@@ -290,22 +270,16 @@ impl AppModel {
             return;
         }
 
-        // **Rule 3, in the one place it was being broken.** Clicking a track in
-        // a list whose queue MusicKit already holds is a move *within* that
-        // queue, not a reason to rebuild it. Rebuilding tore the queue down and
-        // built the same 117 tracks again, which cost the gapless buffer,
-        // blanked the bar, and — because the old queue and the new one are
-        // identical — left `verify_start` unable to tell whether the queue it
-        // was looking at was the one it had just asked for. It corrected
-        // against the stale one and started the wrong song.
+        // Rule 3: clicking a track in a list MusicKit already holds is a move
+        // within that queue, not a reason to rebuild it and lose the gapless
+        // buffer.
         if let Some(wanted) = &start_id
             && holds(&self.player.queue, &songs)
             && let Some(index) = self.queue_index_of(wanted)
         {
             tracing::info!(index, "already loaded; moving within the queue");
-            // A button that names a mode still names it here — this is the same
-            // queue, played a different way. A row click does not: `Clicked`
-            // yields `None` and the toggle in the bar keeps its answer.
+            // A button naming a mode still names it on the same queue; a row
+            // click does not.
             if let Some(shuffle) = start.mode(false) {
                 self.send(Command::SetShuffle { shuffle });
             }
@@ -315,9 +289,8 @@ impl AppModel {
             return;
         }
 
-        // **Before the queue, so MusicKit's own shuffle applies as it loads** —
-        // and unconditionally, because the mode a new queue starts in cannot be
-        // left to whatever the last one was turned to.
+        // Before the queue, so MusicKit's shuffle applies as it loads — and
+        // unconditionally, so the mode is never inherited.
         if let Some(shuffle) = start.mode(true) {
             self.send(Command::SetShuffle { shuffle });
         }
@@ -325,17 +298,8 @@ impl AppModel {
         // Not `start`: that is the mode. This is where in the list it begins.
         let position = start_index(&songs, start_id.as_ref());
         tracing::info!(queue = songs.len(), position, "enqueuing");
-        // **Nothing to verify when the order is not ours.** Shuffle makes the
-        // question `verify_start` asks unanswerable: MusicKit reorders as it
-        // loads, so the row we named is not the row it opens on, and there is
-        // no *wrong* track to be corrected to — any of them is a shuffle
-        // starting somewhere, which is the whole of what #147 asked for.
-        //
-        // Measured: it corrected every time, always to index 0, and the
-        // correction is what produced `The play() request was interrupted by a
-        // new load request`. Made to wait for a current item instead, it stopped
-        // erroring and became visible — MusicKit's pick on screen, then a jump
-        // to ours. Both are the same mistake, which is verifying at all here.
+        // Nothing to verify when the order is not ours: MusicKit reorders as it
+        // loads, so no track is the *wrong* one to open on.
         self.pending_start = if start.reorders() {
             None
         } else {
@@ -487,32 +451,11 @@ impl AppModel {
             }
         }
 
-        // **Nothing to correct until MusicKit is on something.** The queue
-        // arrives before the item does: measured on a 112-track playlist, the
-        // items landed at .568 with `now_playing` still empty, the item itself
-        // only at .894. In that gap `queue_position` is left over from the
-        // `setQueue` we sent and names no track, so comparing an index against
-        // it is comparing against nothing — and it disagreed, so the correction
-        // fired into a queue that had not started playing:
-        //
-        //     changeToIndex: The play() request was interrupted by a new load request
-        //
-        // A state check alone does not cover this. The swap runs
-        // `Paused -> Seeking -> Stopped` *before* the new load begins, and
-        // `Stopped` is not one of the busy states — an earlier version of this
-        // guard tested `is_busy` only and the correction went out anyway.
-        //
-        // Returning rather than giving up: `pending_start` survives and the
-        // item's own arrival is the event that retries this, so the correction
-        // still happens — a moment later, and audible as a late jump instead of
-        // as an error with the track stopped.
-        if self.player.now_playing.is_none() {
-            return;
-        }
-
-        // And not mid-load either, for the reason `play_did_nothing` already
-        // carries against the `pause()` variant of the same message.
-        if self.player.state.is_busy() {
+        // The queue arrives before the item does, and in that gap
+        // `queue_position` names no track. Correcting there starts a load over
+        // the one `setQueue` is still running and rejects its play. Returning
+        // keeps `pending_start`, so the item's arrival retries this.
+        if self.player.now_playing.is_none() || self.player.state.is_busy() {
             return;
         }
 
