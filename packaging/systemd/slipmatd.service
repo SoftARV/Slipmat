@@ -2,6 +2,11 @@
 #
 #   systemctl --user enable --now slipmatd
 #
+# **Optional.** Slipmat is an app you open: the first client to start finds no
+# daemon and starts one, so nothing here is a step anybody has to take. Enable it
+# only to have playback survive closing every window — otherwise the daemon comes
+# and goes with the apps, and puts its Chromium down after five idle minutes.
+#
 # **A user service, never a system one.** It holds an Apple session, a Chromium
 # profile and a keyring entry, all of which belong to one logged-in person — and
 # it needs their session bus for MPRIS and their audio for sound.

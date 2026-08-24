@@ -33,11 +33,22 @@ const BACKLOG: usize = 64;
 /// Position ticks while playing. The same cadence the GTK client uses.
 const TICK_MS: u64 = 500;
 
+/// How long with nobody listening and nothing playing before the sidecar goes.
+///
+/// It costs **393 MB of the daemon's 404** and near-zero CPU, so this is about
+/// resident memory, not battery. Long enough that closing a window and
+/// reopening it does not pay for a restart; short enough that a machine left
+/// alone gets its memory back.
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How often to ask whether the sidecar is still wanted.
+const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct Daemon {
     pub model: RefCell<Model>,
     /// Replaced on every respawn, so everything holding an `Rc<Daemon>` keeps
     /// talking to whichever sidecar is alive now.
-    pub sidecar: RefCell<sidecar::Handle>,
+    pub sidecar: RefCell<Option<sidecar::Handle>>,
     pub events: broadcast::Sender<Event>,
     /// Whether the session has been put back since the current sidecar started.
     pub restored: std::cell::Cell<bool>,
@@ -65,11 +76,31 @@ pub struct Daemon {
     /// The artwork template already fetched, so a 500ms tick does not ask again
     /// for a file that is on disk.
     pub art_for: RefCell<Option<String>>,
+    /// Clients currently connected. The sidecar is only worth holding while
+    /// somebody is listening, or something is playing for them to come back to.
+    pub clients: std::cell::Cell<usize>,
+    /// Set when the sidecar was stopped on purpose, so the supervisor waits to
+    /// be asked rather than treating it as a crash.
+    pub idle: std::cell::Cell<bool>,
+    /// Rung when a client turns up and the sidecar is not running.
+    pub wake: tokio::sync::Notify,
 }
 
 impl Daemon {
     pub fn send(&self, cmd: Command) {
-        self.sidecar.borrow().send(cmd);
+        match self.sidecar.borrow().as_ref() {
+            Some(handle) => handle.send(cmd),
+            // Only reachable in the moment between a client connecting and the
+            // sidecar coming back — under three seconds, and nothing has been
+            // drawn yet for anyone to click.
+            None => tracing::debug!(cmd = cmd.name(), "dropped: the sidecar is asleep"),
+        }
+    }
+
+    /// Whether the sidecar is worth holding: somebody is listening, or
+    /// something is playing for them to come back to.
+    fn wanted(&self) -> bool {
+        self.clients.get() > 0 || self.model.borrow().player.state.is_playing()
     }
 
     fn publish(&self, event: Event) {
@@ -123,7 +154,7 @@ pub async fn run() -> Result<()> {
     let (events, _) = broadcast::channel(BACKLOG);
     let daemon = Rc::new(Daemon {
         model: RefCell::new(Model::new()),
-        sidecar: RefCell::new(handle),
+        sidecar: RefCell::new(Some(handle)),
         events,
         restored: std::cell::Cell::new(false),
         restarts: std::cell::Cell::new(0),
@@ -135,6 +166,9 @@ pub async fn run() -> Result<()> {
         mpris: RefCell::new(None),
         refreshing: std::cell::Cell::new(false),
         art_for: RefCell::new(None),
+        clients: std::cell::Cell::new(0),
+        idle: std::cell::Cell::new(false),
+        wake: tokio::sync::Notify::new(),
     });
 
     // After the `Rc` exists: MPRIS holds one so a button on a bar can reach the
@@ -149,9 +183,21 @@ pub async fn run() -> Result<()> {
                 Ok((stream, _)) => {
                     let daemon = accepting.clone();
                     tokio::task::spawn_local(async move {
-                        if let Err(err) = client(stream, daemon).await {
+                        // Counted around the connection rather than inside it,
+                        // so an error on the way out still releases the sidecar.
+                        daemon.clients.set(daemon.clients.get() + 1);
+                        // Somebody is here: if the sidecar was put down for
+                        // being unwanted, it is wanted again. Woken on connect
+                        // rather than on the first command, so it is ready by
+                        // the time anything has been drawn to click.
+                        if daemon.sidecar.borrow().is_none() {
+                            daemon.wake.notify_one();
+                        }
+                        if let Err(err) = client(stream, daemon.clone()).await {
                             tracing::debug!(?err, "client gone");
                         }
+                        daemon.clients.set(daemon.clients.get().saturating_sub(1));
+                        tracing::debug!(clients = daemon.clients.get(), "client left");
                     });
                 }
                 Err(err) => {
@@ -172,6 +218,43 @@ pub async fn run() -> Result<()> {
             if ticking.model.borrow().player.state.is_playing() {
                 ticking.publish_snapshot();
             }
+        }
+    });
+
+    // **Give the memory back when nobody wants it.** The sidecar is a hidden
+    // Chromium: 393 MB of the daemon's 404, and measured at 0.22% of a core
+    // doing nothing. Holding it while no client is connected and nothing is
+    // playing buys nothing at all — and starting it again costs 0.6s warm,
+    // 2.4s cold, which is cheaper than the memory it was holding.
+    let idling = daemon.clone();
+    tokio::task::spawn_local(async move {
+        let mut unwanted_since: Option<std::time::Instant> = None;
+        loop {
+            tokio::time::sleep(IDLE_CHECK).await;
+            if idling.sidecar.borrow().is_none() {
+                unwanted_since = None;
+                continue;
+            }
+            if idling.wanted() {
+                unwanted_since = None;
+                continue;
+            }
+            let since = *unwanted_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() < IDLE_TIMEOUT {
+                continue;
+            }
+            unwanted_since = None;
+
+            tracing::info!("no clients and nothing playing — stopping the sidecar");
+            // Written first: after this the mirror is the only record of what
+            // was loaded, and it is about to be emptied.
+            save_session(&idling);
+            idling.idle.set(true);
+            // Dropping the handle closes the child's stdin, which is the
+            // shutdown signal `main.js` waits on; `kill_on_drop` is the backstop.
+            idling.sidecar.borrow_mut().take();
+            idling.model.borrow_mut().stage = Stage::Connecting;
+            idling.publish(Event::Stage(Stage::Connecting));
         }
     });
 
@@ -227,16 +310,27 @@ pub async fn run() -> Result<()> {
         // mid-track should come back to that track, not to last night's.
         save_session(&daemon);
 
+        // Put down on purpose: wait to be asked rather than backing off, and do
+        // not count it as a failure.
+        if daemon.idle.replace(false) {
+            tracing::info!("sidecar stopped; waiting for a client");
+            daemon.wake.notified().await;
+            tracing::info!("a client turned up — starting the sidecar");
+            daemon.restarts.set(0);
+        }
+
         let attempt = daemon.restarts.get();
         daemon.restarts.set(attempt + 1);
-        let delay = sidecar::restart_delay(attempt);
-        tracing::warn!(attempt = attempt + 1, ?delay, "restarting the sidecar");
+        if attempt > 0 {
+            let delay = sidecar::restart_delay(attempt - 1);
+            tracing::warn!(attempt, ?delay, "restarting the sidecar");
+            tokio::time::sleep(delay).await;
+        }
         daemon.publish(Event::Stage(Stage::Connecting));
-        tokio::time::sleep(delay).await;
 
         match sidecar::spawn() {
             Ok((handle, rx)) => {
-                *daemon.sidecar.borrow_mut() = handle;
+                *daemon.sidecar.borrow_mut() = Some(handle);
                 // The new child holds nothing, so the session goes back in once
                 // MusicKit attaches to it.
                 daemon.restored.set(false);
