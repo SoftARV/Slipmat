@@ -33,6 +33,53 @@ pub fn socket_path() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(dir).join("slipmat.sock"))
 }
 
+/// Connect to the daemon, starting it if it is not there.
+///
+/// **Slipmat is an app you open, not a service you enable.** Nobody should have
+/// to run `systemctl --user enable` before music works, so the first client to
+/// arrive starts the daemon and the rest find it already running. A unit file
+/// ships for anyone who wants playback to survive closing every window, but it
+/// is an option rather than a step.
+///
+/// The race is benign: two clients starting at once both spawn, and the second
+/// daemon exits on its own — binding the socket is what settles who owns it.
+pub fn connect_or_spawn(exe: &std::path::Path) -> std::io::Result<std::os::unix::net::UnixStream> {
+    use std::os::unix::net::UnixStream;
+
+    let path = socket_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "XDG_RUNTIME_DIR is not set, so there is nowhere to put the socket",
+        )
+    })?;
+
+    if let Ok(stream) = UnixStream::connect(&path) {
+        return Ok(stream);
+    }
+
+    tracing::info!(daemon = %exe.display(), "no daemon listening — starting one");
+    std::process::Command::new(exe)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    // It binds the socket before it does anything else, so this is the daemon
+    // coming up rather than the sidecar — a fraction of a second, not the
+    // seconds Chromium takes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if let Ok(stream) = UnixStream::connect(&path) {
+            return Ok(stream);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "the daemon did not start listening",
+    ))
+}
+
 /// Client → daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "req")]
