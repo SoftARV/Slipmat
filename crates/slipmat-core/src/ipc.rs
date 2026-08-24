@@ -80,6 +80,40 @@ pub enum Request {
     #[serde(rename = "open")]
     Open { kind: PageKind, id: String },
 
+    /// Grow the queue MusicKit already holds, without rebuilding it.
+    ///
+    /// **Not a `Play`**, and that is the point: rebuilding a queue to add a
+    /// track restarts playback and discards the gapless buffer (rule 3).
+    #[serde(rename = "enqueue")]
+    Enqueue {
+        ids: Vec<String>,
+        /// Right after the current track, rather than at the end.
+        #[serde(default)]
+        next: bool,
+    },
+
+    /// Drop one track from the loaded queue, by its position.
+    #[serde(rename = "removeFromQueue")]
+    RemoveFromQueue { index: usize },
+
+    /// Move one track within the loaded queue. `to` is where it lands *after*
+    /// it has been taken out, which is what a drag naturally means.
+    #[serde(rename = "moveInQueue")]
+    MoveInQueue { from: usize, to: usize },
+
+    /// Empty the queue and stop.
+    #[serde(rename = "clearQueue")]
+    ClearQueue,
+
+    /// Change what Apple holds for this account.
+    #[serde(rename = "write")]
+    Write { action: WriteAction, id: String },
+
+    /// Re-read the library from Apple. Happens on its own once tokens arrive;
+    /// this is for a client offering a reload button.
+    #[serde(rename = "refresh")]
+    Refresh,
+
     /// Build a queue from these ids and start playing.
     ///
     /// **Ids, not indices into something the daemon remembers.** The client
@@ -96,6 +130,20 @@ pub enum Request {
         #[serde(default)]
         start: PlayMode,
     },
+}
+
+/// Something we can ask Apple to do to this account.
+///
+/// Adding and favouriting go over REST; removing and un-favouriting can only be
+/// done by MusicKit itself, which is why they take different routes out. A
+/// client does not need to know that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WriteAction {
+    Favorite,
+    Unfavorite,
+    AddToLibrary,
+    RemoveFromLibrary,
 }
 
 /// Which library section to browse.
@@ -208,6 +256,12 @@ pub enum Event {
         title: String,
         entries: Vec<Entry>,
     },
+
+    /// The library changed under a client — a refresh landed, or a write
+    /// settled. **An invalidation, not the rows**: a client asks for the page
+    /// it is drawing rather than having 535 pushed at it.
+    #[serde(rename = "libraryChanged")]
+    LibraryChanged,
 
     /// Something went wrong that a person should see.
     #[serde(rename = "error")]

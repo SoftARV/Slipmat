@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use slipmat_core::entry::Entry;
-use slipmat_core::ipc::{self, Event, PageKind, Request, Stage, Transport};
+use slipmat_core::ipc::{self, Event, PageKind, Request, Stage, Transport, WriteAction};
 use slipmat_core::music::client::Client;
 use slipmat_core::player::protocol::{Command, Event as PlayerEvent};
 use slipmat_core::player::{Incoming, sidecar};
@@ -57,6 +57,9 @@ pub struct Daemon {
     pub after_apply: std::cell::Cell<Option<String>>,
     /// The bus. Filled in after the daemon exists, because it needs one.
     pub mpris: RefCell<Option<slipmat_core::mpris::Mpris>>,
+    /// Whether a library fetch is in flight, so a reload button cannot stack
+    /// four of them.
+    pub refreshing: std::cell::Cell<bool>,
 }
 
 impl Daemon {
@@ -125,6 +128,7 @@ pub async fn run() -> Result<()> {
         resume_at: std::cell::Cell::new(None),
         after_apply: std::cell::Cell::new(None),
         mpris: RefCell::new(None),
+        refreshing: std::cell::Cell::new(false),
     });
 
     // After the `Rc` exists: MPRIS holds one so a button on a bar can reach the
@@ -305,7 +309,7 @@ fn save_session(daemon: &Daemon) {
     });
 }
 
-fn on_event(daemon: &Daemon, event: PlayerEvent) {
+fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
     // The name, not the payload: a `NowPlaying` carries the whole queue, and
     // 112 items per line is not observability.
     tracing::debug!(event = event_name(&event), "sidecar event");
@@ -327,6 +331,9 @@ fn on_event(daemon: &Daemon, event: PlayerEvent) {
             if restore {
                 restore_session(daemon);
             }
+            if *authorized {
+                refresh_library(daemon);
+            }
         }
         PlayerEvent::HookFailed { detail } => {
             let stage = Stage::Broken {
@@ -346,6 +353,27 @@ fn on_event(daemon: &Daemon, event: PlayerEvent) {
             }
         }
         PlayerEvent::Volume { volume } => daemon.model.borrow_mut().volume = *volume,
+        // The sidecar's half of a library write. Removing and un-favouriting
+        // can only be done by MusicKit itself, so they settle here rather than
+        // where the REST writes do — and the library is stale until a refresh
+        // says otherwise.
+        PlayerEvent::LibraryWrite {
+            kind,
+            id,
+            ok,
+            detail,
+            ..
+        } => {
+            if *ok {
+                tracing::info!(%kind, %id, "library write settled");
+                refresh_library(daemon);
+            } else {
+                tracing::warn!(%kind, %id, %detail, "library write refused");
+                daemon.publish(Event::Error {
+                    detail: detail.clone(),
+                });
+            }
+        }
         PlayerEvent::CmdDone { cmd, .. } => {
             // Checked after the mirror moves, below — the state this reports is
             // the one the command ended in.
@@ -375,6 +403,7 @@ fn on_event(daemon: &Daemon, event: PlayerEvent) {
 
     if queue_changed {
         let (items, position) = daemon.model.borrow().queue();
+        tracing::debug!(len = items.len(), position, "queue changed");
         daemon.publish(Event::Queue { items, position });
         // On every track change, because shutdown is the moment that might not
         // run — a SIGKILL, a session ending badly.
@@ -498,6 +527,69 @@ fn answer(
             play(daemon, &ids, index, start.into());
             None
         }
+        Request::Enqueue { ids, next } => {
+            // Filtered, because a dead id rejects the whole insert the same way
+            // it rejects a whole queue.
+            let dead = daemon.model.borrow().dead_ids.clone();
+            let songs: Vec<String> = ids.into_iter().filter(|id| !dead.contains(id)).collect();
+            if songs.is_empty() {
+                return Some(Event::Error {
+                    detail: "Nothing here can be streamed".into(),
+                });
+            }
+            tracing::info!(count = songs.len(), next, "enqueueing");
+            daemon.send(if next {
+                Command::PlayNext { songs }
+            } else {
+                Command::PlayLater { songs }
+            });
+            None
+        }
+        Request::RemoveFromQueue { index } => {
+            // **MusicKit will not remove the track it is playing**, and says
+            // nothing when asked to: `queue.remove(current)` returns, fires no
+            // event, and leaves the queue as it was. Measured on a five-track
+            // queue — index 3 removed, index 0 did not, no error either time.
+            // Silence would look like the click missed.
+            let model = daemon.model.borrow();
+            if index == model.player.queue_position && !model.player.queue.is_empty() {
+                return Some(Event::Error {
+                    detail: "Can't remove the track that's playing".into(),
+                });
+            }
+            drop(model);
+            daemon.send(Command::RemoveFromQueue { index });
+            None
+        }
+        Request::MoveInQueue { from, to } => {
+            // Optimistic, like the GTK client's drag: the mirror moves now and
+            // MusicKit's echo confirms it, so a client redrawing from the next
+            // snapshot does not see the row spring back.
+            if daemon.model.borrow_mut().player.move_item(from, to) {
+                daemon.send(Command::MoveInQueue { from, to });
+                let (items, position) = daemon.model.borrow().queue();
+                return Some(Event::Queue { items, position });
+            }
+            None
+        }
+        Request::ClearQueue => {
+            tracing::info!("clearing the queue");
+            daemon.send(Command::ClearQueue);
+            // The mirror follows the sidecar's own event as always (rule 3);
+            // this is the half MusicKit cannot know about.
+            *daemon.last_queue.borrow_mut() = None;
+            *daemon.pending_start.borrow_mut() = None;
+            slipmat_core::session::clear();
+            None
+        }
+        Request::Write { action, id } => {
+            write(daemon, action, id);
+            None
+        }
+        Request::Refresh => {
+            refresh_library(daemon);
+            None
+        }
         Request::Transport(transport) => {
             let command = command_for(transport);
             tracing::debug!(cmd = command.name(), "transport");
@@ -510,6 +602,104 @@ fn answer(
             None
         }
     }
+}
+
+/// Change what Apple holds for this account.
+///
+/// Two routes out, and the client does not need to know which: adding and
+/// favouriting go over REST, while removing and un-favouriting can only be done
+/// by MusicKit itself — the identical REST calls answer
+/// `400 Insufficient Permissions`.
+fn write(daemon: &Rc<Daemon>, action: WriteAction, id: String) {
+    match action {
+        WriteAction::RemoveFromLibrary => {
+            daemon.send(Command::RemoveFromLibrary { id });
+            return;
+        }
+        WriteAction::Unfavorite => {
+            daemon.send(Command::Unfavorite { id });
+            return;
+        }
+        _ => {}
+    }
+
+    let Some(client) = daemon.client() else {
+        daemon.publish(Event::Error {
+            detail: "Not signed in yet".into(),
+        });
+        return;
+    };
+    let daemon = daemon.clone();
+    tokio::task::spawn_local(async move {
+        let result = match action {
+            WriteAction::Favorite => client.add_to_favorites("songs", &id).await,
+            WriteAction::AddToLibrary => client.add_to_library("songs", &id).await,
+            _ => unreachable!("handled above"),
+        };
+        match result {
+            // Apple answers 202 Accepted with an empty body — "acceptable, may
+            // not have completed" — so this is *sent*, not done. The refresh is
+            // what makes it true, which is why nothing here edits the mirror.
+            Ok(()) => {
+                tracing::info!(?action, %id, "library write sent");
+                refresh_library(&daemon);
+            }
+            Err(err) => {
+                tracing::warn!(?err, ?action, %id, "library write failed");
+                daemon.publish(Event::Error {
+                    detail: format!("{err}"),
+                });
+            }
+        }
+    });
+}
+
+/// Re-read the library from Apple and tell clients it moved.
+///
+/// Spawned, and at most one at a time: a client hammering a reload button must
+/// not queue up four full library fetches behind it.
+fn refresh_library(daemon: &Rc<Daemon>) {
+    if daemon.refreshing.replace(true) {
+        tracing::debug!("library refresh already running");
+        return;
+    }
+    let Some(client) = daemon.client() else {
+        daemon.refreshing.set(false);
+        return;
+    };
+
+    let daemon = daemon.clone();
+    tokio::task::spawn_local(async move {
+        const MAX: usize = 10_000;
+        let fetched = tokio::join!(
+            client.all_library_songs(MAX),
+            client.all_library_albums(MAX),
+            client.all_library_artists(MAX),
+            client.all_library_playlists(MAX),
+        );
+        daemon.refreshing.set(false);
+
+        match fetched {
+            (Ok(songs), Ok(albums), Ok(artists), Ok(playlists)) => {
+                tracing::info!(
+                    songs = songs.len(),
+                    albums = albums.len(),
+                    artists = artists.len(),
+                    playlists = playlists.len(),
+                    "library refreshed"
+                );
+                slipmat_core::library_cache::save(&songs, &albums, &artists, &playlists);
+                let mut model = daemon.model.borrow_mut();
+                model.library.tracks = songs;
+                model.library.albums = albums;
+                model.library.artists = artists;
+                model.library.playlists = playlists;
+                drop(model);
+                daemon.publish(Event::LibraryChanged);
+            }
+            _ => tracing::warn!("library refresh failed; keeping what was cached"),
+        }
+    });
 }
 
 /// Fetch an album, artist or playlist and announce it.
