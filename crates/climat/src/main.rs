@@ -14,6 +14,7 @@
 //! is Widevine, not a shortcut, and it is why this cannot run over plain SSH.
 
 mod link;
+mod queue;
 mod ui;
 
 use anyhow::Result;
@@ -21,6 +22,7 @@ use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyEventKind};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use futures::StreamExt;
 use slipmat_core::ipc::{Event, Request, Snapshot, Stage, Transport};
+use slipmat_core::player::protocol::RepeatMode;
 
 /// How often to redraw while playing.
 ///
@@ -28,11 +30,17 @@ use slipmat_core::ipc::{Event, Request, Snapshot, Stage, Transport};
 /// tick between them rather than stepping half a second at a time.
 const FRAME_MS: u64 = 100;
 
+/// How long a refusal from the daemon stays on screen.
+const MESSAGE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Default)]
 struct App {
     snap: Snapshot,
     stage: Stage,
-    queue_len: usize,
+    queue: queue::Queue,
+    /// The last thing the daemon refused, and when — so it can fade rather than
+    /// sit there accusing a key that was pressed a minute ago.
+    message: Option<(String, std::time::Instant)>,
     /// Set by `q`. `_` leaves without it, and the daemon keeps playing.
     quit_daemon: bool,
 }
@@ -75,7 +83,8 @@ async fn run() -> Result<()> {
                     ui::View {
                         snap: &app.snap,
                         stage: &app.stage,
-                        queue_len: app.queue_len,
+                        queue: &mut app.queue,
+                        message: app.message.as_ref().map(|(text, _)| text.as_str()),
                     },
                 )
             })?;
@@ -111,6 +120,10 @@ async fn run() -> Result<()> {
             _ = frame.tick() => {
                 // Carry the clock forward between snapshots, so the time reads
                 // like a clock rather than stepping twice a second.
+                if app.message.as_ref().is_some_and(|(_, at)| at.elapsed() > MESSAGE_FOR) {
+                    app.message = None;
+                    dirty = true;
+                }
                 if app.snap.playing {
                     app.snap.position_ms = app
                         .snap
@@ -138,6 +151,10 @@ async fn run() -> Result<()> {
 }
 
 /// Returns whether to keep running.
+///
+/// **No arm here changes the queue.** Each sends a request and the rows move
+/// when the daemon echoes — rule 3 at the third layer. The cursor is the one
+/// thing this owns, so it moves immediately.
 fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
     match code {
         // Winamp put play and pause on separate keys because its buttons were
@@ -148,6 +165,33 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Char('b') => link.send(Request::Transport(Transport::Next)),
         KeyCode::Left => seek(link, app, -5_000),
         KeyCode::Right => seek(link, app, 5_000),
+        KeyCode::Char('s') => link.send(Request::Transport(Transport::SetShuffle {
+            shuffle: !app.snap.shuffle,
+        })),
+        KeyCode::Char('r') => link.send(Request::Transport(Transport::SetRepeat {
+            mode: next_repeat(app.snap.repeat),
+        })),
+
+        KeyCode::Up | KeyCode::Char('k') => app.queue.move_cursor(-1),
+        KeyCode::Down | KeyCode::Char('j') => app.queue.move_cursor(1),
+        KeyCode::PageUp => app.queue.move_cursor(-10),
+        KeyCode::PageDown => app.queue.move_cursor(10),
+        // Back to the music, for a cursor that has wandered down a long queue.
+        KeyCode::Home => app.queue.follow(),
+        KeyCode::Enter => link.send(Request::JumpTo {
+            index: app.queue.cursor,
+        }),
+        KeyCode::Char('d') => link.send(Request::RemoveFromQueue {
+            index: app.queue.cursor,
+        }),
+        // Shift moves the row rather than the cursor. The cursor goes with it,
+        // so the selection stays on the track being moved and a second press
+        // moves the same one again.
+        KeyCode::Char('K') => reorder(link, app, -1),
+        KeyCode::Char('J') => reorder(link, app, 1),
+
+        // Leaves the daemon alone: the music keeps playing, and a GTK
+        // window or another terminal still has a player to attach to.
         KeyCode::Char('_') | KeyCode::Char('-') => return false,
         KeyCode::Char('q') => {
             app.quit_daemon = true;
@@ -156,6 +200,26 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         _ => {}
     }
     true
+}
+
+/// Off, then all, then one — the order every player cycles them in.
+fn next_repeat(mode: RepeatMode) -> RepeatMode {
+    match mode {
+        RepeatMode::None => RepeatMode::All,
+        RepeatMode::All => RepeatMode::One,
+        RepeatMode::One => RepeatMode::None,
+    }
+}
+
+fn reorder(link: &link::Link, app: &mut App, delta: isize) {
+    let Some(to) = app.queue.swap_target(delta) else {
+        return;
+    };
+    link.send(Request::MoveInQueue {
+        from: app.queue.cursor,
+        to,
+    });
+    app.queue.cursor_to(to);
 }
 
 /// Seek relative to where the clock has got to, not to the last snapshot — the
@@ -171,8 +235,11 @@ impl App {
     fn on_event(&mut self, event: Event) {
         match event {
             Event::Snapshot(snap) => self.snap = snap,
-            Event::Queue { items, .. } => self.queue_len = items.len(),
+            Event::Queue { items, position } => self.queue.replace(items, position),
             Event::Stage(stage) => self.stage = stage,
+            // The daemon refuses things — removing the track it is playing is
+            // the one that will be hit most. Saying so is rule 4's job.
+            Event::Error { detail } => self.message = Some((detail, std::time::Instant::now())),
             // Slice 01 draws the player and nothing else. The rest of the
             // contract is answered in the slices that draw it.
             _ => {}

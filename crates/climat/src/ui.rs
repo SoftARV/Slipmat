@@ -12,14 +12,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use slipmat_core::ipc::{Snapshot, Stage};
 
+use crate::queue::{self, Queue};
+
 /// Apple Music's red, and the only colour that means anything here.
-const ACCENT: Color = Color::Rgb(0xFF, 0x4A, 0x5E);
+pub const ACCENT: Color = Color::Rgb(0xFF, 0x4A, 0x5E);
 /// Track titles and anything the eye should land on.
-const BRIGHT: Color = Color::Rgb(0xF2, 0xEC, 0xED);
+pub const BRIGHT: Color = Color::Rgb(0xF2, 0xEC, 0xED);
 /// Artists, and the second half of a line.
-const MUTED: Color = Color::Rgb(0x9A, 0x8E, 0x90);
+pub const MUTED: Color = Color::Rgb(0x9A, 0x8E, 0x90);
 /// Times, labels, and everything that is only there when looked for.
-const DIM: Color = Color::Rgb(0x65, 0x5B, 0x5D);
+pub const DIM: Color = Color::Rgb(0x65, 0x5B, 0x5D);
 
 /// How wide the progress bar is drawn, in cells.
 const BAR: usize = 25;
@@ -29,11 +31,12 @@ const VOL: usize = 10;
 pub struct View<'a> {
     pub snap: &'a Snapshot,
     pub stage: &'a Stage,
-    pub queue_len: usize,
+    pub queue: &'a mut Queue,
+    pub message: Option<&'a str>,
 }
 
 pub fn draw(frame: &mut Frame, view: View) {
-    // Two rows of margin either side: a terminal player that runs to the edge
+    // Two cells of margin either side: a terminal player that runs to the edge
     // of the window reads as output rather than as an interface.
     let area = Rect {
         x: frame.area().x + 2,
@@ -41,15 +44,30 @@ pub fn draw(frame: &mut Frame, view: View) {
         width: frame.area().width.saturating_sub(4),
         height: frame.area().height.saturating_sub(2),
     };
-    let [top, _rest, hints] = Layout::vertical([
-        Constraint::Length(4),
+    let [top, note, label, rows, hints] = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
+        Constraint::Length(2),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
     .areas(area);
 
     frame.render_widget(Paragraph::new(now_playing(&view)), top);
-    frame.render_widget(Paragraph::new(key_hints()), hints);
+    if let Some(message) = view.message {
+        // Rule 4 reaching the terminal: a request the daemon refused says so
+        // rather than looking like a key that did not register.
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                fit(message, area.width as usize),
+                Style::from(ACCENT),
+            ))),
+            note,
+        );
+    }
+    frame.render_widget(Paragraph::new(queue::header(view.queue)), label);
+    queue::render(frame, rows, view.queue);
+    frame.render_widget(Paragraph::new(key_hints(area.width as usize)), hints);
 }
 
 fn now_playing(view: &View) -> Vec<Line<'static>> {
@@ -62,14 +80,10 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
         )])];
     }
     if view.snap.title.is_empty() {
-        return vec![
-            Line::from(Span::styled("Nothing playing", Style::from(MUTED))),
-            Line::default(),
-            Line::from(Span::styled(
-                format!("{} tracks in the queue", view.queue_len),
-                Style::from(DIM),
-            )),
-        ];
+        return vec![Line::from(Span::styled(
+            "Nothing playing",
+            Style::from(MUTED),
+        ))];
     }
 
     let title = Line::from(vec![
@@ -125,15 +139,40 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
 
 /// The always-there row. **Nothing has to be memorised**, which is the whole
 /// reason it is always there rather than behind a key.
-fn key_hints() -> Line<'static> {
-    let mut spans = Vec::new();
-    for (key, what) in [
-        ("z", "prev"),
+///
+/// It is built by priority and stops when the window runs out, so a narrow
+/// terminal loses the reorder keys rather than losing the row. Leaving and
+/// quitting are reserved from the start: a player you cannot see how to leave
+/// is the one thing worse than a player with no hints at all.
+fn key_hints(width: usize) -> Line<'static> {
+    const LEAVING: [(&str, &str); 2] = [("_", "hide"), ("q", "quit")];
+    const KEYS: [(&str, &str); 8] = [
         ("space", "play/pause"),
+        ("↑↓", "move"),
+        ("↵", "play"),
+        ("z", "prev"),
         ("b", "next"),
-        ("_", "hide"),
-        ("q", "quit"),
-    ] {
+        ("d", "remove"),
+        ("KJ", "reorder"),
+        ("sr", "shuffle/repeat"),
+    ];
+
+    let cost = |(key, what): (&str, &str)| key.chars().count() + what.chars().count() + 4;
+    let reserved: usize = LEAVING.into_iter().map(cost).sum();
+
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for pair in KEYS.into_iter().chain(LEAVING) {
+        // The reserved pair is already paid for, so only the optional ones are
+        // measured against what is left.
+        let optional = !LEAVING.contains(&pair);
+        if optional && used + cost(pair) + reserved > width {
+            continue;
+        }
+        if optional {
+            used += cost(pair);
+        }
+        let (key, what) = pair;
         spans.push(Span::styled(
             key,
             Style::from(MUTED).add_modifier(Modifier::BOLD),
@@ -141,6 +180,22 @@ fn key_hints() -> Line<'static> {
         spans.push(Span::styled(format!(" {what}   "), Style::from(DIM)));
     }
     Line::from(spans)
+}
+
+/// Cut `text` to `width` and pad it out, so a column stays a column.
+///
+/// Counts characters rather than bytes: an accented artist name is one column
+/// per `char` here, and slicing by byte would split it.
+pub fn fit(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let count = text.chars().count();
+    if count <= width {
+        return format!("{text:<width$}");
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}… ")
 }
 
 fn mode(on: bool, text: &str) -> Span<'static> {
@@ -183,7 +238,7 @@ fn filled(fraction: f64, width: usize) -> usize {
 }
 
 /// `m:ss`, or `h:mm:ss` for the rare track that needs it.
-fn clock(ms: u64) -> String {
+pub fn clock(ms: u64) -> String {
     let total = ms / 1000;
     let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
     if h > 0 {

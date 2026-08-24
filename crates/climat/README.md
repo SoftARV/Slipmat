@@ -17,7 +17,13 @@ and a window open at once are two views of one player rather than two players.
   ▶   ██░░░░░░░░░░░░░░░░░░░░░░░   0:21 / 5:03
       shuffle off   repeat off   vol ██████████
 
-  z prev   space play/pause   b next   _ hide   q quit
+  QUEUE   30 tracks
+
+  ▸   1  Addicted To a Memory (feat. Bahari)     Zedd              5:03
+      2  Aftershock (feat. Jacquie Lee)          Cash Cash         3:26
+      3  The Age of the Understatement           The Last Shadow…  3:07
+
+  space play/pause   ↑↓ move   ↵ play   z prev   b next   d remove   _ hide   q quit
 ```
 
 ## It needs a graphical session
@@ -37,11 +43,25 @@ That is a limit imposed by the DRM, not a shortcut taken here.
 | Key | What it does |
 | --- | --- |
 | `space` | Play / pause |
-| `z` | Previous track |
-| `b` | Next track |
+| `z` `b` | Previous / next track |
 | `←` `→` | Seek five seconds |
+| `s` `r` | Shuffle / repeat |
+| `↑` `↓`, `k` `j` | Move the cursor |
+| `Home` | Put the cursor back on the playing track |
+| `↵` | Play the selected track |
+| `d` | Remove it from the queue |
+| `K` `J` | Move it up / down |
 | `_` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |
+
+The bottom row shows the keys that fit, dropping the least essential first —
+so a narrow window loses the reorder hints rather than losing the row. Leaving
+and quitting are always on it.
+
+Nothing here edits the queue directly. A key sends a request and the rows move
+when the daemon echoes, which is what keeps a terminal and a GTK window from
+disagreeing about what is playing. The cursor is the exception: it is where
+*this* terminal is looking, so it moves the instant you press a key.
 
 `q` and `_` are the whole difference between closing the window and closing the
 player. `q` is refused while another Slipmat client is open, because quitting
