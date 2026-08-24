@@ -34,7 +34,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-BUS=dev.miguelrincon.Slipmat
+# Two names, because there are now two processes worth measuring. The GTK client
+# owns its GApplication name; whichever process is exporting the player owns the
+# MPRIS one — the client when it runs alone, the daemon otherwise. Asking for
+# both and de-duplicating is what makes this work before *and* after the client
+# becomes a client of the daemon, when both will be running at once.
+APP_BUS=dev.miguelrincon.Slipmat
+MPRIS_BUS=org.mpris.MediaPlayer2.Slipmat
 SAMPLE=${SAMPLE:-3} # seconds of CPU sampling
 
 human() { # KB -> human
@@ -53,6 +59,7 @@ disk() {
 	# nothing we write will ever move that number.
 	local rows=(
 		"the app itself|target/release/slipmat"
+		"the daemon|target/release/slipmatd"
 		"the sidecar (Chromium)|sidecar/node_modules"
 		"Widevine CDM + session|$HOME/.config/Slipmat"
 		"artwork + library cache|$HOME/.cache/slipmat"
@@ -86,12 +93,24 @@ fi
 # instance hands off to the first and exits silently — so the process you find by
 # scanning may not be the one holding the session. The bus is never wrong about
 # who owns the name.
-PID=$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
-	org.freedesktop.DBus GetConnectionUnixProcessID s "$BUS" 2>/dev/null |
-	awk '{print $2}')
+owner() {
+	busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+		org.freedesktop.DBus GetConnectionUnixProcessID s "$1" 2>/dev/null |
+		awk '{print $2}'
+}
 
-if [ -z "$PID" ] || [ ! -d "/proc/$PID" ]; then
-	echo "Slipmat is not running — start it first, or use --disk." >&2
+ROOTS=()
+for bus in "$APP_BUS" "$MPRIS_BUS"; do
+	pid=$(owner "$bus")
+	[ -n "$pid" ] && [ -d "/proc/$pid" ] || continue
+	# The client owns both names when it runs alone, so the same pid arrives
+	# twice; counting its tree twice would double every number in the report.
+	for seen in ${ROOTS[@]+"${ROOTS[@]}"}; do [ "$seen" = "$pid" ] && continue 2; done
+	ROOTS+=("$pid")
+done
+
+if [ ${#ROOTS[@]} -eq 0 ]; then
+	echo "Nothing is running — start Slipmat or slipmatd first, or use --disk." >&2
 	exit 1
 fi
 
@@ -103,7 +122,10 @@ descendants() {
 	echo "$p"
 	for c in $(pgrep -P "$p" 2>/dev/null); do descendants "$c"; done
 }
-mapfile -t PIDS < <(descendants "$PID")
+PIDS=()
+for root in "${ROOTS[@]}"; do
+	mapfile -t -O "${#PIDS[@]}" PIDS < <(descendants "$root")
+done
 
 # What each process is for. Chromium tells you in its own argv, and seven rows
 # reading "electron" is not a report.
@@ -124,6 +146,7 @@ role() {
 	*glycin*) echo "image decoder (sandboxed)" ;;
 	*bwrap*) echo "sandbox wrapper" ;;
 	*electron*) echo "sidecar: main" ;;
+	*slipmatd*) echo "the daemon (Rust)" ;;
 	*) echo "the app (Rust + GTK)" ;;
 	esac
 }
@@ -142,7 +165,7 @@ HZ=$(getconf CLK_TCK)
 
 # --- report -------------------------------------------------------------------
 
-echo "MEMORY AND CPU   (pid $PID, ${SAMPLE}s sample)"
+echo "MEMORY AND CPU   (${#ROOTS[@]} tree(s): ${ROOTS[*]}, ${SAMPLE}s sample)"
 printf '  %-28s %9s %9s %7s\n' "" RSS PSS CPU
 rss_total=0
 pss_total=0
