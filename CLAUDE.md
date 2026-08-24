@@ -741,8 +741,7 @@ src/
     artwork.rs       # fetch + disk cache; MPRIS needs a file:// path, and
                      # the player's backdrop needs a deliberately tiny one
 sidecar/
-  package.json  main.js  preload.js    # ~1200 lines of JS, and a ratchet
-                                       # on it in size-exceptions.txt
+  package.json  main.js  preload.js    # ~1200 lines of JS
 data/
   dev.miguelrincon.Slipmat.desktop
   icons/hicolor/{scalable,symbolic}/apps/dev.miguelrincon.Slipmat{,-symbolic}.svg
@@ -1186,7 +1185,6 @@ make sidecar-run                             # sidecar alone, window VISIBLE —
 make gapless                                 # watch the audio stream across a track boundary
 cargo clippy --all-targets -- -D warnings    # the bar, before any commit
 make check                                   # sizes + fmt + clippy + test
-make sizes                                   # the size budget alone, instant
 ```
 
 System deps (CachyOS / Arch):
@@ -1335,16 +1333,12 @@ Debugging, in order — always isolate the layer first:
 ## Conventions
 
 - `cargo clippy --all-targets -- -D warnings` is the bar, not `cargo build`.
-- **600 lines is the size budget, and it is a ratchet.** Anything over must be
-  listed in `scripts/size-exceptions.txt` with the size it may reach and why; a
-  listed file that grows past its number fails `make check`.
-
-  Recording an exception is a legitimate answer — `view!` and a reducer are long
-  by nature, and `protocol.rs` is deliberately one file. Doing it silently is
-  not, which is the whole point: the placement rule in the architecture section
-  was already written down, and `mod.rs` still grew from a post-split 1500 lines
-  back past 2800 before anyone looked. This surfaces it in the diff that causes
-  it rather than months later.
+- **File size is a review question, not a check.** There was a line-counting
+  ratchet; it was removed once rule 10 made it perverse — deleting a comment
+  freed budget for code, which is backwards. What it was guarding against is
+  real, though: `mod.rs` grew from a post-split 1500 lines back past 2800 before
+  anyone looked. Rule 11's placement rule is what has to catch that now, in the
+  diff that causes it.
 - Commits: conventional commits (`feat:`, `fix:`, `refactor:`, `chore:`).
 - **Licence: GPL-3.0-or-later.** Full text in `COPYING`; declared in
   `Cargo.toml`. Every source file carries the two-line SPDX header

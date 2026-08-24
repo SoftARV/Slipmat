@@ -4,9 +4,8 @@
 //! The expanded player: the Now Playing bar opened out into a drawer.
 //!
 //! A separate component from [`super::now_playing`] rather than a second mode
-//! of it, for two reasons. That file is already at its size budget and this is
-//! not a small view; and the two are genuinely different shapes — the bar is a
-//! strip that must survive being 400px wide, this is a page that assumes room.
+//! of it: the two are genuinely different shapes — the bar is a strip that must
+//! survive being 400px wide, this is a page that assumes room.
 //!
 //! What they share is deliberate: the same [`Snapshot`] in, the same
 //! [`NowPlayingOutput`] out. The transport here cannot drift from the
