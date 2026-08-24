@@ -16,9 +16,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 fn cache_file() -> Option<PathBuf> {
-    crate::components::artwork::cache_dir()?
-        .parent()
-        .map(|dir| dir.join("unplayable.json"))
+    Some(crate::paths::cache_dir()?.join("unplayable.json"))
 }
 
 /// Read the remembered ids. Any problem yields an empty set — a cache that

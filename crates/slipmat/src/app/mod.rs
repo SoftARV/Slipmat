@@ -1545,7 +1545,7 @@ impl Component for AppModel {
             loading_library: false,
             // Seeded from the cache so the first play of a session does not
             // have to rediscover them by failing a setQueue.
-            dead_ids: crate::unplayable::load(),
+            dead_ids: slipmat_core::unplayable::load(),
             last_queue: None,
             pending_start: None,
             player: PlayerState::new(),
@@ -2293,7 +2293,7 @@ impl AppModel {
                 self.last_queue = None;
                 self.pending_start = None;
                 self.last_item = None;
-                crate::session::clear();
+                slipmat_core::session::clear();
                 crate::style::set_backdrop(None);
             }
             AppMsg::JumpTo { at, id } => match self.queue_index_at(at, &id) {
@@ -2961,8 +2961,8 @@ impl AppModel {
         self.last_item = None;
         self.last_queue = None;
         self.pending_start = None;
-        crate::session::clear();
-        crate::library_cache::clear();
+        slipmat_core::session::clear();
+        slipmat_core::library_cache::clear();
         crate::style::set_backdrop(None);
         self.push_snapshot();
     }

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use slipmat_core::music::types::{Album, Artist, Playlist, Track};
+use crate::music::types::{Album, Artist, Playlist, Track};
 
 /// Bumped when a field changes *meaning*. Additions are handled by
 /// `#[serde(default)]` and need no bump; a rename or a reinterpretation would
@@ -60,9 +60,7 @@ struct Writing<'a> {
 }
 
 fn cache_file() -> Option<PathBuf> {
-    crate::components::artwork::cache_dir()?
-        .parent()
-        .map(|dir| dir.join("library.json"))
+    Some(crate::paths::cache_dir()?.join("library.json"))
 }
 
 /// What we had last time. Any problem yields an empty library, which means the
@@ -137,7 +135,7 @@ pub fn clear() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slipmat_core::music::types::{Artwork, TrackId};
+    use crate::music::types::{Artwork, TrackId};
 
     fn a_track() -> Track {
         Track {
