@@ -9,10 +9,13 @@
 //! already here, and because a client that draws rows in a terminal needs
 //! exactly the same enum.
 
+use serde::{Deserialize, Serialize};
+
 use crate::music::types::{Album, Artist, Playlist, Track};
 
 /// What a row stands for. Songs play; everything else opens a page.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Entry {
     Song(Track),
     Album(Album),
