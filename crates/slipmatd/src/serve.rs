@@ -12,7 +12,7 @@ use slipmat_core::ipc::{self, Event, PageKind, Request, Stage, Transport};
 use slipmat_core::music::client::Client;
 use slipmat_core::player::protocol::{Command, Event as PlayerEvent};
 use slipmat_core::player::{Incoming, sidecar};
-use slipmat_core::queue::{Start, queue_from_ids, start_index};
+use slipmat_core::queue::{Start, queue_from_ids, start_index, unresolvable_ids};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
@@ -31,13 +31,24 @@ const TICK_MS: u64 = 500;
 
 pub struct Daemon {
     pub model: RefCell<Model>,
-    pub sidecar: sidecar::Handle,
+    /// Replaced on every respawn, so everything holding an `Rc<Daemon>` keeps
+    /// talking to whichever sidecar is alive now.
+    pub sidecar: RefCell<sidecar::Handle>,
     pub events: broadcast::Sender<Event>,
-    /// Whether the session has been put back this run.
+    /// Whether the session has been put back since the current sidecar started.
     pub restored: std::cell::Cell<bool>,
+    /// Consecutive failed starts, for the backoff. Reset once MusicKit attaches.
+    pub restarts: std::cell::Cell<u32>,
+    /// The last queue we asked for, and the track we aimed at. Kept for the
+    /// dead-track retry, which has to rebuild it without the ids Apple refused.
+    pub last_queue: RefCell<Option<(Vec<String>, Option<String>)>>,
 }
 
 impl Daemon {
+    fn send(&self, cmd: Command) {
+        self.sidecar.borrow().send(cmd);
+    }
+
     fn publish(&self, event: Event) {
         // An error here means nobody is listening, which is the ordinary state
         // of a daemon with no client attached.
@@ -86,9 +97,11 @@ pub async fn run() -> Result<()> {
     let (events, _) = broadcast::channel(BACKLOG);
     let daemon = Rc::new(Daemon {
         model: RefCell::new(Model::new()),
-        sidecar: handle,
+        sidecar: RefCell::new(handle),
         events,
         restored: std::cell::Cell::new(false),
+        restarts: std::cell::Cell::new(0),
+        last_queue: RefCell::new(None),
     });
 
     // Accept loop: one task per client, each holding a handle to the daemon.
@@ -125,22 +138,143 @@ pub async fn run() -> Result<()> {
         }
     });
 
-    while let Some(message) = incoming.recv().await {
-        match message {
-            Incoming::Event(event) => on_event(&daemon, event),
-            Incoming::Unparsed(line) => {
-                tracing::warn!(%line, "sidecar sent a line we could not parse")
+    // **The daemon outlives its sidecar.** A child that dies takes the queue
+    // with it, but not the process every client is connected to — so this
+    // respawns rather than returning, and the session it saves on the way down
+    // is what puts playback back where it was.
+    loop {
+        while let Some(message) = incoming.recv().await {
+            match message {
+                Incoming::Event(event) => on_event(&daemon, event),
+                Incoming::Unparsed(line) => {
+                    tracing::warn!(%line, "sidecar sent a line we could not parse")
+                }
+                Incoming::Died(why) => {
+                    tracing::error!(%why, "sidecar died");
+                    daemon.publish(Event::Stage(Stage::Broken { detail: why }));
+                    break;
+                }
             }
-            Incoming::Died(why) => {
-                tracing::error!(%why, "sidecar died");
-                daemon.publish(Event::Stage(Stage::Broken { detail: why }));
-                break;
+        }
+
+        // Written from the live mirror, not from what was on disk: a crash
+        // mid-track should come back to that track, not to last night's.
+        save_session(&daemon);
+
+        let attempt = daemon.restarts.get();
+        daemon.restarts.set(attempt + 1);
+        let delay = sidecar::restart_delay(attempt);
+        tracing::warn!(attempt = attempt + 1, ?delay, "restarting the sidecar");
+        daemon.publish(Event::Stage(Stage::Connecting));
+        tokio::time::sleep(delay).await;
+
+        match sidecar::spawn() {
+            Ok((handle, rx)) => {
+                *daemon.sidecar.borrow_mut() = handle;
+                // The new child holds nothing, so the session goes back in once
+                // MusicKit attaches to it.
+                daemon.restored.set(false);
+                daemon.model.borrow_mut().stage = Stage::Connecting;
+                incoming = rx;
+            }
+            Err(err) => {
+                // Reported down the same path as a crash, so there is one
+                // recovery route rather than two.
+                tracing::error!(?err, "could not respawn the sidecar");
+                daemon.publish(Event::Stage(Stage::Broken {
+                    detail: err.to_string(),
+                }));
             }
         }
     }
+}
 
-    let _ = std::fs::remove_file(&path);
-    Ok(())
+/// Handle MusicKit's all-or-nothing `NOT_FOUND` by dropping the ids it named
+/// and trying again.
+///
+/// Returns whether it took ownership of the error, so the caller does not also
+/// tell a client about something it cannot act on.
+fn retry_without_dead_tracks(daemon: &Daemon, detail: &str) -> bool {
+    let dead = unresolvable_ids(detail);
+    if dead.is_empty() {
+        return false;
+    }
+    let Some((songs, wanted)) = daemon.last_queue.borrow_mut().take() else {
+        return false;
+    };
+
+    let newly_dead = {
+        let mut model = daemon.model.borrow_mut();
+        let before = model.dead_ids.len();
+        model.dead_ids.extend(dead);
+        model.dead_ids.len() - before
+    };
+
+    // Nothing new: the retry already happened and failed again. Stop, or we
+    // loop for ever on an error we cannot parse our way out of.
+    if newly_dead == 0 {
+        tracing::warn!("queue still unresolvable after dropping known-dead ids");
+        return false;
+    }
+    slipmat_core::unplayable::save(&daemon.model.borrow().dead_ids);
+
+    let dead_ids = daemon.model.borrow().dead_ids.clone();
+    let retry: Vec<String> = songs
+        .into_iter()
+        .filter(|id| !dead_ids.contains(id))
+        .collect();
+    if retry.is_empty() {
+        daemon.publish(Event::Error {
+            detail: "None of these tracks are available to stream".into(),
+        });
+        return true;
+    }
+
+    let position = start_index(&retry, wanted.as_ref());
+    tracing::info!(
+        dropped = newly_dead,
+        queue = retry.len(),
+        position,
+        "retrying queue without unresolvable tracks"
+    );
+    *daemon.last_queue.borrow_mut() = Some((retry.clone(), wanted));
+    daemon.send(Command::SetQueue {
+        songs: retry,
+        start_position: position,
+        start_playing: true,
+        start_time_ms: 0,
+    });
+    true
+}
+
+/// Remember the queue and where we are in it.
+///
+/// Called on every track change *and* when the sidecar dies. The second is the
+/// one that matters: a crash is exactly when nobody gets to save anything, so
+/// the worst case is coming back to the start of the right track rather than to
+/// nothing at all.
+fn save_session(daemon: &Daemon) {
+    let model = daemon.model.borrow();
+    let songs: Vec<String> = model
+        .player
+        .queue
+        .iter()
+        .filter_map(|item| item.catalog_id.clone().or_else(|| item.id.clone()))
+        .collect();
+
+    if songs.is_empty() {
+        slipmat_core::session::clear();
+        return;
+    }
+
+    slipmat_core::session::save(&slipmat_core::session::Session {
+        start: model
+            .player
+            .queue_position
+            .min(songs.len().saturating_sub(1)),
+        position_ms: model.player.position_ms,
+        songs,
+    });
 }
 
 fn on_event(daemon: &Daemon, event: PlayerEvent) {
@@ -156,6 +290,7 @@ fn on_event(daemon: &Daemon, event: PlayerEvent) {
             } else {
                 Stage::SignedOut
             };
+            daemon.restarts.set(0);
             let restore = *authorized && !daemon.restored.replace(true);
             daemon.model.borrow_mut().stage = stage.clone();
             daemon.publish(Event::Stage(stage));
@@ -173,9 +308,14 @@ fn on_event(daemon: &Daemon, event: PlayerEvent) {
             daemon.publish(Event::Stage(stage));
         }
         PlayerEvent::Error { detail, .. } => {
-            daemon.publish(Event::Error {
-                detail: detail.clone(),
-            });
+            // A refused queue is worth healing rather than reporting: `setQueue`
+            // is all-or-nothing, so one delisted track makes a whole playlist
+            // unplayable and the person can do nothing about it.
+            if !retry_without_dead_tracks(daemon, detail) {
+                daemon.publish(Event::Error {
+                    detail: detail.clone(),
+                });
+            }
         }
         PlayerEvent::Volume { volume } => daemon.model.borrow_mut().volume = *volume,
         PlayerEvent::Tokens(tokens) => {
@@ -202,6 +342,9 @@ fn on_event(daemon: &Daemon, event: PlayerEvent) {
     if queue_changed {
         let (items, position) = daemon.model.borrow().queue();
         daemon.publish(Event::Queue { items, position });
+        // On every track change, because shutdown is the moment that might not
+        // run — a SIGKILL, a session ending badly.
+        save_session(daemon);
     }
     daemon.publish_snapshot();
 }
@@ -274,11 +417,11 @@ fn answer(
             Some(Event::Queue { items, position })
         }
         Request::JumpTo { index } => {
-            daemon.sidecar.send(Command::ChangeToIndex { index });
+            daemon.send(Command::ChangeToIndex { index });
             // Clicking a row is a request to *play* it, and
             // `changeToMediaAtIndex` only moves the cursor.
             if !daemon.model.borrow().player.state.is_playing() {
-                daemon.sidecar.send(Command::Play);
+                daemon.send(Command::Play);
             }
             None
         }
@@ -310,7 +453,7 @@ fn answer(
         Request::Transport(transport) => {
             let command = command_for(transport);
             tracing::debug!(cmd = command.name(), "transport");
-            daemon.sidecar.send(command);
+            daemon.send(command);
             if let Transport::SetVolume { volume } = transport {
                 // MusicKit does not report volume back, so this is the only
                 // record of it — the same reason the GTK client keeps its own.
@@ -396,10 +539,11 @@ fn play(daemon: &Daemon, ids: &[String], index: usize, start: Start) {
 
     let position = start_index(&songs, start_id.as_ref());
     tracing::info!(queue = songs.len(), position, ?start, "enqueuing");
+    *daemon.last_queue.borrow_mut() = Some((songs.clone(), start_id));
     if let Some(shuffle) = start.mode(true) {
-        daemon.sidecar.send(Command::SetShuffle { shuffle });
+        daemon.send(Command::SetShuffle { shuffle });
     }
-    daemon.sidecar.send(Command::SetQueue {
+    daemon.send(Command::SetQueue {
         songs,
         start_position: position,
         start_playing: true,
@@ -440,8 +584,10 @@ fn restore_session(daemon: &Daemon) {
     );
     // Sequential: the saved order *is* what was playing, and `start` indexes
     // into it (#152).
-    daemon.sidecar.send(Command::SetShuffle { shuffle: false });
-    daemon.sidecar.send(Command::SetQueue {
+    daemon.send(Command::SetShuffle { shuffle: false });
+    let wanted = session.songs.get(start).cloned();
+    *daemon.last_queue.borrow_mut() = Some((session.songs.clone(), wanted));
+    daemon.send(Command::SetQueue {
         songs: session.songs,
         start_position: start,
         start_playing: false,
