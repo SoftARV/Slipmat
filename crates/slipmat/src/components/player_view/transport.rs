@@ -21,8 +21,9 @@ use relm4::gtk;
 use relm4::prelude::*;
 
 use super::{PlayerView, PlayerViewInput};
-use crate::components::now_playing::{Repeat, VOLUME_STEP, mode_opacity, volume_is_new};
+use crate::components::now_playing::{VOLUME_STEP, mode_opacity, volume_is_new};
 use slipmat_core::music::types::format_duration;
+use slipmat_core::player::protocol::RepeatMode;
 
 /// The widest the scrubber may get before it stops growing and centres.
 const SCRUB_MAX_W: i32 = 520;
@@ -235,11 +236,11 @@ impl PlayerView {
         bits.previous.set_sensitive(self.snap.has_previous);
         bits.shuffle.set_opacity(mode_opacity(self.snap.shuffle));
         bits.repeat.set_icon_name(match self.snap.repeat {
-            Repeat::One => "media-playlist-repeat-song-symbolic",
+            RepeatMode::One => "media-playlist-repeat-song-symbolic",
             _ => "media-playlist-repeat-symbolic",
         });
         bits.repeat
-            .set_opacity(mode_opacity(!matches!(self.snap.repeat, Repeat::Off)));
+            .set_opacity(mode_opacity(!matches!(self.snap.repeat, RepeatMode::None)));
         bits.next.set_sensitive(self.snap.has_next);
         // **Silenced while we write.** GTK cannot tell a programmatic write
         // from a drag, and `sender.input` queues — so an unsilenced write comes

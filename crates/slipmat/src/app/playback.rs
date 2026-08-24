@@ -15,12 +15,12 @@ use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 
 use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, TICK_MS, artwork, notify};
-use crate::components::now_playing::{NowPlayingInput, Repeat, Snapshot};
+use crate::components::now_playing::{NowPlayingInput, Snapshot};
 use crate::components::player_view::PlayerViewInput;
 use crate::components::queue_view::{QueueEntry, QueueViewInput};
 use crate::mpris::MprisState;
 use slipmat_core::music::types::Artwork;
-use slipmat_core::player::protocol::{Command, RepeatMode};
+use slipmat_core::player::protocol::Command;
 
 impl AppModel {
     /// Tell the rows which one is playing, so the list shows a play marker.
@@ -124,13 +124,6 @@ impl AppModel {
     /// the interpolated position moves without any event arriving.
     pub(super) fn push_snapshot(&self) {
         let item = self.showing();
-        // Protocol type in, ours out — `components/` never sees `RepeatMode`
-        // (rule 9). The mapping lives here because this is the boundary.
-        let repeat = match self.player.repeat {
-            RepeatMode::None => Repeat::Off,
-            RepeatMode::All => Repeat::All,
-            RepeatMode::One => Repeat::One,
-        };
         let snap = Snapshot {
             shuffle: self.player.shuffle,
             queue_open: self.show_queue,
@@ -138,7 +131,7 @@ impl AppModel {
             // the header does, so it stands three controls down rather than
             // one — and each of them is in the drawer.
             narrow: self.narrow_header,
-            repeat,
+            repeat: self.player.repeat,
             // Ours, not the sidecar's: MusicKit is told the volume and does not
             // report one back, so `self.volume` is the only record of it.
             volume: self.volume,
@@ -235,7 +228,7 @@ impl AppModel {
             // this worth exporting at all.
             shuffle: self.player.shuffle,
             // The mirror's own type: `MprisState` speaks the protocol, not the
-            // UI's `Repeat`. See rule 9 — the conversion above is for
+            // UI's `RepeatMode`. See rule 9 — the conversion above is for
             // `components/`, and MPRIS is not one.
             repeat: self.player.repeat,
         });

@@ -44,9 +44,7 @@ use relm4::typed_view::list::TypedListView;
 use crate::components::artwork::{self, ART_SIZE};
 use crate::components::detail_page::{DetailPage, PageKind, RowState};
 use crate::components::grid_item::{ArtRegistry, ArtRequest, GridItem, Tile, art_registry};
-use crate::components::now_playing::{
-    NowPlaying, NowPlayingInput, NowPlayingOutput, Repeat, VOLUME_STEP,
-};
+use crate::components::now_playing::{NowPlaying, NowPlayingInput, NowPlayingOutput, VOLUME_STEP};
 use crate::components::player_view::{PlayerView, PlayerViewInput};
 use crate::components::queue_view::{QueueView, QueueViewInput, QueueViewOutput};
 use crate::components::track_row::LibraryRowWidgets;
@@ -516,7 +514,7 @@ pub enum AppMsg {
     VolumeUp,
     VolumeDown,
     SetShuffle(bool),
-    SetRepeat(Repeat),
+    SetRepeat(RepeatMode),
     SetSort(SortBy),
     /// Narrow the catalog search to one kind of result, or widen it again.
     SetCatalogFilter(CatalogFilter),
@@ -2477,11 +2475,6 @@ impl AppModel {
                 self.send(Command::SetShuffle { shuffle: on });
             }
             AppMsg::SetRepeat(mode) => {
-                let mode = match mode {
-                    Repeat::Off => RepeatMode::None,
-                    Repeat::All => RepeatMode::All,
-                    Repeat::One => RepeatMode::One,
-                };
                 tracing::info!(?mode, "repeat");
                 self.send(Command::SetRepeat { mode });
             }

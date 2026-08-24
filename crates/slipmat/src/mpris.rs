@@ -13,10 +13,8 @@ use std::rc::Rc;
 
 use relm4::ComponentSender;
 pub use slipmat_core::mpris::{Mpris, MprisCommand, MprisState};
-use slipmat_core::player::protocol::RepeatMode;
 
 use crate::app::{AppModel, AppMsg};
-use crate::components::now_playing::Repeat;
 
 /// Export the player, driving it from this app's message loop.
 pub fn start(sender: ComponentSender<AppModel>) -> Mpris {
@@ -50,10 +48,6 @@ fn into_msg(cmd: MprisCommand) -> AppMsg {
         MprisCommand::SetShuffle(on) => AppMsg::SetShuffle(on),
         MprisCommand::SetVolume(v) => AppMsg::SetVolume(v),
         MprisCommand::Raise => AppMsg::Raise,
-        MprisCommand::SetRepeat(mode) => AppMsg::SetRepeat(match mode {
-            RepeatMode::None => Repeat::Off,
-            RepeatMode::All => Repeat::All,
-            RepeatMode::One => Repeat::One,
-        }),
+        MprisCommand::SetRepeat(mode) => AppMsg::SetRepeat(mode),
     }
 }

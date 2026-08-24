@@ -33,9 +33,10 @@ use relm4::adw::prelude::*;
 use relm4::typed_view::list::TypedListView;
 use relm4::{Component, ComponentParts, ComponentSender, adw, gtk};
 
-use crate::components::now_playing::{Repeat, mode_opacity};
+use crate::components::now_playing::{RepeatButton, mode_opacity};
 use reconcile::Key;
 use row::{Bound, QueueItem, Shared};
+use slipmat_core::player::protocol::RepeatMode;
 
 /// One queue entry, flattened from the sidecar's view of MusicKit's queue.
 #[derive(Debug, Clone, PartialEq)]
@@ -130,7 +131,7 @@ pub struct QueueView {
     /// plain, so these only ever *display*: nothing here can report a change
     /// back and there is no binding to break.
     shuffle: bool,
-    repeat: Repeat,
+    repeat: RepeatMode,
     /// The visible position of the playing row, shared with every row so the
     /// marker can move without the store being touched.
     playing: Rc<Cell<Option<u32>>>,
@@ -200,7 +201,7 @@ pub enum QueueViewInput {
     /// Shuffle and repeat as the player currently has them.
     SetModes {
         shuffle: bool,
-        repeat: Repeat,
+        repeat: RepeatMode,
     },
     /// No payload — the next value is derived from the mirrored one, so this
     /// view never invents one (rule 3).
@@ -230,7 +231,7 @@ pub enum QueueViewOutput {
     /// not of the transport. The player still owns the values (rule 3); these
     /// are requests.
     SetShuffle(bool),
-    SetRepeat(Repeat),
+    SetRepeat(RepeatMode),
     /// Open the album or artist a queue track belongs to, by the track's own
     /// catalog id — a queue item carries no album or artist id of its own, so
     /// the app has to ask Apple which ones they are.
@@ -304,11 +305,11 @@ impl Component for QueueView {
                     set_tooltip_text: Some("Repeat"),
                     #[watch]
                     set_icon_name: match model.repeat {
-                        Repeat::One => "media-playlist-repeat-song-symbolic",
+                        RepeatMode::One => "media-playlist-repeat-song-symbolic",
                         _ => "media-playlist-repeat-symbolic",
                     },
                     #[watch]
-                    set_opacity: mode_opacity(!matches!(model.repeat, Repeat::Off)),
+                    set_opacity: mode_opacity(!matches!(model.repeat, RepeatMode::None)),
                     connect_clicked[sender] => move |_| {
                         sender.input(QueueViewInput::RepeatClicked);
                     },
@@ -391,7 +392,7 @@ impl Component for QueueView {
             history_expanded: false,
             rows: Vec::new(),
             shuffle: false,
-            repeat: Repeat::default(),
+            repeat: RepeatMode::default(),
             playing,
             collapsed,
             dragging: None,
