@@ -101,6 +101,9 @@ aur-publish:
 
 install: build install-sidecar dev-install
 	install -Dm755 target/release/slipmat $(BINDIR)/slipmat
+	install -Dm755 target/release/slipmatd $(BINDIR)/slipmatd
+	install -Dm644 packaging/systemd/slipmatd.service \
+		$(DATADIR)/systemd/user/slipmatd.service
 	@echo "Installed to $(PREFIX). Launch 'Slipmat' from the app grid, or run 'slipmat'."
 
 install-sidecar: sidecar

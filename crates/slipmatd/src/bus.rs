@@ -63,9 +63,7 @@ pub fn state(daemon: &Daemon) -> MprisState {
         artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
         album: item.map(|i| i.album.clone()).unwrap_or_default(),
         track_number: item.map(|i| i.track_number).unwrap_or_default(),
-        // No fetcher here yet, so the bar shows no cover. A `file://` path is
-        // the only thing MPRIS accepts, and inventing one would be worse.
-        art_path: None,
+        art_path: model.art_path.clone(),
         length_ms: model.player.duration_ms,
         position_ms: model.player.interpolated_position_ms(),
         playing: model.player.state.is_playing(),

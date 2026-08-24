@@ -7,9 +7,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
+use slipmat_core::artwork;
 use slipmat_core::entry::Entry;
 use slipmat_core::ipc::{self, Event, PageKind, Request, Stage, Transport, WriteAction};
 use slipmat_core::music::client::Client;
+use slipmat_core::music::types::Artwork;
 use slipmat_core::player::protocol::{Command, Event as PlayerEvent};
 use slipmat_core::player::{Incoming, sidecar};
 use slipmat_core::queue::{Start, queue_from_ids, start_index, unresolvable_ids};
@@ -60,6 +62,9 @@ pub struct Daemon {
     /// Whether a library fetch is in flight, so a reload button cannot stack
     /// four of them.
     pub refreshing: std::cell::Cell<bool>,
+    /// The artwork template already fetched, so a 500ms tick does not ask again
+    /// for a file that is on disk.
+    pub art_for: RefCell<Option<String>>,
 }
 
 impl Daemon {
@@ -129,6 +134,7 @@ pub async fn run() -> Result<()> {
         after_apply: std::cell::Cell::new(None),
         mpris: RefCell::new(None),
         refreshing: std::cell::Cell::new(false),
+        art_for: RefCell::new(None),
     });
 
     // After the `Rc` exists: MPRIS holds one so a button on a bar can reach the
@@ -167,6 +173,35 @@ pub async fn run() -> Result<()> {
                 ticking.publish_snapshot();
             }
         }
+    });
+
+    // **Leaving is a thing to do properly.** A service manager stops this with
+    // SIGTERM, and that is the last moment the position is accurate — after it,
+    // the process is gone and the session file still says where the last track
+    // change left off.
+    let leaving = daemon.clone();
+    let socket = path.clone();
+    tokio::task::spawn_local(async move {
+        let Ok(mut term) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            return;
+        };
+        let mut interrupt =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()) {
+                Ok(sig) => sig,
+                Err(_) => return,
+            };
+        let why = tokio::select! {
+            _ = term.recv() => "SIGTERM",
+            _ = interrupt.recv() => "SIGINT",
+        };
+        tracing::info!(why, "shutting down");
+        save_session(&leaving);
+        // The socket outlives the process that made it, and a leftover one
+        // answers for a daemon that is not running.
+        let _ = std::fs::remove_file(&socket);
+        std::process::exit(0);
     });
 
     // **The daemon outlives its sidecar.** A child that dies takes the queue
@@ -413,6 +448,7 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
     // what `nowPlayingItemDidChange` means.
     if matches!(event, PlayerEvent::NowPlaying { .. }) {
         heal::resume_position(daemon);
+        fetch_artwork(daemon);
     }
     if let Some(cmd) = daemon.after_apply.take() {
         heal::play_did_nothing(daemon, &cmd);
@@ -602,6 +638,56 @@ fn answer(
             None
         }
     }
+}
+
+/// Fetch the current track's cover, if we do not already have it.
+///
+/// **At most once per template.** A snapshot goes out twice a second and the
+/// cover changes at most once a track; refetching on every one would be a
+/// request per tick for a file already on disk.
+fn fetch_artwork(daemon: &Rc<Daemon>) {
+    let template = daemon
+        .model
+        .borrow()
+        .player
+        .now_playing
+        .as_ref()
+        .and_then(|item| item.artwork_template.clone());
+
+    if template == *daemon.art_for.borrow() {
+        return;
+    }
+    *daemon.art_for.borrow_mut() = template.clone();
+
+    let Some(template) = template else {
+        daemon.model.borrow_mut().art_path = None;
+        return;
+    };
+
+    let art = Artwork::new(template);
+    // Already on disk from an earlier play, or from the GTK client — the cache
+    // is shared, which is the point of it living in core.
+    if let Some(path) = artwork::cache_path(&art, artwork::ART_SIZE)
+        && path.is_file()
+    {
+        daemon.model.borrow_mut().art_path = Some(path);
+        return;
+    }
+
+    // Cleared first: a stale cover under a new track is worse than none, and
+    // this is a network round trip.
+    daemon.model.borrow_mut().art_path = None;
+    let daemon = daemon.clone();
+    tokio::task::spawn_local(async move {
+        match artwork::fetch(art, artwork::ART_SIZE).await {
+            Ok(path) => {
+                daemon.model.borrow_mut().art_path = Some(path);
+                daemon.publish_snapshot();
+            }
+            // Cosmetic: a missing cover is not worth telling anyone about.
+            Err(err) => tracing::warn!(?err, "artwork not fetched"),
+        }
+    });
 }
 
 /// Change what Apple holds for this account.

@@ -13,61 +13,15 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use relm4::gtk::{gdk, gdk_pixbuf, glib};
 
 use slipmat_core::music::types::Artwork;
 
-/// The size we fetch for the Now Playing bar and for MPRIS. One size keeps the
-/// cache simple; the Shell scales it down and nobody notices.
-pub const ART_SIZE: u32 = 512;
-
-/// `$XDG_CACHE_HOME/slipmat/artwork`, else `~/.cache/slipmat/artwork`.
+// Fetching and the cache layout live in core: the daemon needs the same files
+// in the same place, and none of it is a toolkit's business. What stays here is
+// the half that turns a JPEG into pixels.
+pub use slipmat_core::artwork::{ART_SIZE, fetch, write_atomically};
 pub use slipmat_core::paths::artwork_dir as cache_dir;
-
-fn cache_path(art: &Artwork, size: u32) -> Option<PathBuf> {
-    Some(cache_dir()?.join(format!("{}-{size}.jpg", art.cache_key())))
-}
-
-/// Return a local path for `art`, downloading it only if we don't have it.
-///
-/// Runs off the GTK thread as a relm4 command (rule 8). A failure here is
-/// cosmetic — the caller falls back to a placeholder icon rather than
-/// surfacing an error, because a missing cover is not worth a toast.
-pub async fn fetch(art: Artwork, size: u32) -> Result<PathBuf> {
-    let path = cache_path(&art, size).context("no cache directory available")?;
-    if path.is_file() {
-        return Ok(path);
-    }
-
-    let url = art.url(size);
-    let bytes = reqwest::get(&url)
-        .await
-        .with_context(|| format!("requesting artwork {url}"))?
-        .error_for_status()
-        .context("artwork request failed")?
-        .bytes()
-        .await
-        .context("reading artwork body")?;
-
-    write_atomically(&path, &bytes)?;
-    Ok(path)
-}
-
-/// Write via a temporary file and rename.
-///
-/// Two processes can race here — the app and, later, a second instance — and a
-/// half-written JPEG that `gdk::Texture` chokes on is worse than a slow one.
-/// `rename` within the same directory is atomic.
-pub(super) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().context("artwork path has no parent")?;
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
-    Ok(())
-}
 
 /// A cover turned into pixels **off the GTK thread**.
 ///
@@ -336,6 +290,7 @@ fn box_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slipmat_core::artwork::cache_path;
 
     /// A one-channel image, so the blur maths is readable in the assertions.
     fn grey(values: &[u8], w: usize) -> (Vec<u8>, usize, usize) {

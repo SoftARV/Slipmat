@@ -7,6 +7,7 @@
 //! draws nothing at all still needs all of it: the sidecar contract, the child's
 //! lifetime, our mirror of its state, and the catalog client.
 
+pub mod artwork;
 pub mod entry;
 pub mod ipc;
 pub mod library_cache;
