@@ -65,13 +65,33 @@ pub fn queue_from(
     row: usize,
     dead: &std::collections::HashSet<String>,
 ) -> (Vec<String>, Option<String>) {
+    // Rows that are not songs have no catalog id and drop out here; the id form
+    // below is the same arithmetic once that has happened.
+    let ids: Vec<Option<String>> = visible
+        .iter()
+        .map(|e| e.catalog_id().map(str::to_owned))
+        .collect();
+    queue_from_ids(&ids, row, dead)
+}
+
+/// The same, for a caller that already holds ids rather than rows.
+///
+/// A client that drew a list sends its ids back rather than an index into
+/// something the daemon would have to remember for it. `None` stands for a row
+/// that is not a song — a heading, an album — so positions still line up with
+/// what the caller drew.
+pub fn queue_from_ids(
+    visible: &[Option<String>],
+    row: usize,
+    dead: &std::collections::HashSet<String>,
+) -> (Vec<String>, Option<String>) {
     let alive = |id: &String| !dead.contains(id);
     let mut seen = std::collections::HashSet::new();
     // Album and artist rows have no catalog id, so they drop out here. A queue
     // built from a mixed result list is the songs in it, in order.
     let songs: Vec<String> = visible
         .iter()
-        .filter_map(|e| e.catalog_id().map(str::to_owned))
+        .filter_map(|id| id.clone())
         .filter(alive)
         // Deduplicate. MusicKit collapses repeats when it builds the queue, so
         // sending the same id twice makes its queue shorter than ours and every
@@ -82,7 +102,7 @@ pub fn queue_from(
         .get(row..)
         .unwrap_or(&[])
         .iter()
-        .filter_map(|e| e.catalog_id().map(str::to_owned))
+        .filter_map(|id| id.clone())
         .find(alive);
     (songs, start_id)
 }
@@ -444,6 +464,25 @@ mod tests {
         assert!(Start::Shuffled.reorders());
         assert!(!Start::Clicked.reorders(), "a click keeps the list's order");
         assert!(!Start::InOrder.reorders(), "so does Play");
+    }
+
+    #[test]
+    fn the_id_form_and_the_row_form_agree() {
+        // `queue_from` is now `queue_from_ids` with the rows unwrapped, and the
+        // daemon uses the second directly. If they ever disagree, a click in the
+        // GTK app and the same click in a terminal build different queues.
+        let visible = vec![song("a", Some("1")), song("b", None), song("c", Some("3"))];
+        let ids: Vec<Option<String>> = visible
+            .iter()
+            .map(|e| e.catalog_id().map(str::to_owned))
+            .collect();
+        for row in 0..visible.len() {
+            assert_eq!(
+                queue_from(&visible, row, &dead(&[])),
+                queue_from_ids(&ids, row, &dead(&[])),
+                "row {row}"
+            );
+        }
     }
 
     #[test]

@@ -7,6 +7,8 @@ use slipmat_core::ipc::{QueueItem, Snapshot, Stage};
 use slipmat_core::player::PlayerState;
 use slipmat_core::player::protocol::Tokens;
 
+use crate::library::Library;
+
 /// Everything the daemon knows, in one place.
 pub struct Model {
     pub player: PlayerState,
@@ -17,6 +19,10 @@ pub struct Model {
     /// Live for the process lifetime, never persisted (rule 7). Unused until
     /// the daemon serves the library, which is what needs them.
     pub tokens: Option<Tokens>,
+    pub library: Library,
+    /// Ids MusicKit has refused. Remembered across runs so the first play of a
+    /// list with a delisted track is not slow twice.
+    pub dead_ids: std::collections::HashSet<String>,
 }
 
 impl Model {
@@ -26,6 +32,8 @@ impl Model {
             stage: Stage::Connecting,
             volume: 1.0,
             tokens: None,
+            library: Library::from_cache(),
+            dead_ids: slipmat_core::unplayable::load(),
         }
     }
 

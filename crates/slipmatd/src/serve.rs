@@ -7,9 +7,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
-use slipmat_core::ipc::{self, Event, Request, Stage, Transport};
+use slipmat_core::entry::Entry;
+use slipmat_core::ipc::{self, Event, PageKind, Request, Stage, Transport};
+use slipmat_core::music::client::Client;
 use slipmat_core::player::protocol::{Command, Event as PlayerEvent};
 use slipmat_core::player::{Incoming, sidecar};
+use slipmat_core::queue::{Start, queue_from_ids, start_index};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
@@ -39,6 +42,17 @@ impl Daemon {
         // An error here means nobody is listening, which is the ordinary state
         // of a daemon with no client attached.
         let _ = self.events.send(event);
+    }
+
+    /// A client for Apple's API, if the tokens for one have arrived.
+    fn client(&self) -> Option<Client> {
+        let model = self.model.borrow();
+        let tokens = model.tokens.as_ref()?;
+        Some(Client::new(
+            tokens.developer_token.clone(),
+            tokens.music_user_token.clone(),
+            tokens.storefront.clone(),
+        ))
     }
 
     fn publish_snapshot(&self) {
@@ -230,7 +244,7 @@ async fn recv(feed: &mut Option<broadcast::Receiver<Event>>) -> Result<Event> {
 
 fn answer(
     line: &str,
-    daemon: &Daemon,
+    daemon: &Rc<Daemon>,
     feed: &mut Option<broadcast::Receiver<Event>>,
 ) -> Option<Event> {
     let request: Request = match serde_json::from_str(line) {
@@ -268,6 +282,31 @@ fn answer(
             }
             None
         }
+        Request::Browse {
+            view,
+            query,
+            offset,
+            limit,
+        } => {
+            let model = daemon.model.borrow();
+            let (entries, total) = model.library.browse(view, &query, offset, limit);
+            Some(Event::Rows {
+                view,
+                entries,
+                total,
+            })
+        }
+        Request::Open { kind, id } => {
+            // Answered off this task: opening a page is a network round trip,
+            // and a client waiting on one must not stop the daemon answering
+            // everyone else.
+            open_page(daemon, kind, id);
+            None
+        }
+        Request::Play { ids, index, start } => {
+            play(daemon, &ids, index, start.into());
+            None
+        }
         Request::Transport(transport) => {
             let command = command_for(transport);
             tracing::debug!(cmd = command.name(), "transport");
@@ -280,6 +319,107 @@ fn answer(
             None
         }
     }
+}
+
+/// Fetch an album, artist or playlist and announce it.
+///
+/// Spawned rather than awaited: this is a network round trip, and a client
+/// waiting on one must not stop the daemon answering anybody else. The answer
+/// arrives as an [`Event::Page`] on every subscriber, which is also what lets a
+/// second client show a page the first one opened.
+fn open_page(daemon: &Rc<Daemon>, kind: PageKind, id: String) {
+    let Some(client) = daemon.client() else {
+        daemon.publish(Event::Error {
+            detail: "Not signed in yet".into(),
+        });
+        return;
+    };
+
+    let daemon = daemon.clone();
+    tokio::task::spawn_local(async move {
+        let fetched = match kind {
+            PageKind::Album => client
+                .library_album(&id)
+                .await
+                .map(|(album, tracks)| (album.name, tracks)),
+            PageKind::Playlist => client
+                .library_playlist(&id)
+                .await
+                .map(|(list, tracks)| (list.name, tracks)),
+            // An artist page is their albums, not their tracks — the same
+            // shape the GTK client shows.
+            PageKind::Artist => client
+                .album(&id)
+                .await
+                .map(|(album, tracks)| (album.name, tracks)),
+        };
+
+        match fetched {
+            Ok((title, tracks)) => daemon.publish(Event::Page {
+                kind,
+                id,
+                title,
+                entries: tracks.into_iter().map(Entry::Song).collect(),
+            }),
+            Err(err) => {
+                tracing::warn!(?err, %id, "opening a page failed");
+                daemon.publish(Event::Error {
+                    detail: format!("{err}"),
+                });
+            }
+        }
+    });
+}
+
+/// Build a queue from ids a client drew, and start it.
+///
+/// The arithmetic is `slipmat_core::queue`'s, the same the GTK client uses —
+/// which is the point of it living there. Two implementations would be two
+/// answers to "which song did they click".
+fn play(daemon: &Daemon, ids: &[String], index: usize, start: Start) {
+    let visible: Vec<Option<String>> = ids.iter().cloned().map(Some).collect();
+    let row = if start.reorders() {
+        // Shuffle: the entry point is the random part (#147).
+        random_row(ids.len())
+    } else {
+        index
+    };
+
+    let dead = daemon.model.borrow().dead_ids.clone();
+    let (songs, start_id) = queue_from_ids(&visible, row, &dead);
+    if songs.is_empty() {
+        daemon.publish(Event::Error {
+            detail: "Nothing here can be streamed".into(),
+        });
+        return;
+    }
+
+    let position = start_index(&songs, start_id.as_ref());
+    tracing::info!(queue = songs.len(), position, ?start, "enqueuing");
+    if let Some(shuffle) = start.mode(true) {
+        daemon.sidecar.send(Command::SetShuffle { shuffle });
+    }
+    daemon.sidecar.send(Command::SetQueue {
+        songs,
+        start_position: position,
+        start_playing: true,
+        start_time_ms: 0,
+    });
+}
+
+/// A row to open a shuffle on.
+///
+/// Not `rand`: one number, once per shuffled play, and a dependency for it
+/// would be the largest thing in this binary's tree.
+fn random_row(len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    nanos % len
 }
 
 /// Put back what was playing when Slipmat last closed.

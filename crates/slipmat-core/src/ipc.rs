@@ -7,6 +7,11 @@
 //! protocol and for the same reason: one file holds the whole surface, so a
 //! request and its handler cannot drift apart across a release.
 //!
+//! **Field names are snake_case, tag values are camelCase.** The fields match
+//! the domain types `Entry` carries verbatim — and those are also
+//! `library.json`'s format, so renaming them would silently orphan every
+//! cached library on disk. Tags are names rather than fields: `playPause`.
+//!
 //! **The client sends intent, never state.** `slipmatd` owns the sidecar and
 //! the mirror; a frontend asks for things and is told what happened. That is
 //! rule 3 one hop further out — MusicKit owns the queue, the daemon mirrors it,
@@ -14,7 +19,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::entry::Entry;
 use crate::player::protocol::{Item, RepeatMode};
+use crate::queue::Start;
 
 /// Where the daemon listens. `$XDG_RUNTIME_DIR` is per-user and cleared on
 /// logout, which is what a socket wants — a stale one in `~` outlives the
@@ -52,6 +59,89 @@ pub enum Request {
     /// Start receiving [`Event`]s on this connection. Idempotent.
     #[serde(rename = "subscribe")]
     Subscribe,
+
+    /// A page of the library. `query` filters, `offset`/`limit` window it —
+    /// a client draws a screenful, not 535 rows.
+    #[serde(rename = "browse")]
+    Browse {
+        view: View,
+        #[serde(default)]
+        query: String,
+        #[serde(default)]
+        offset: usize,
+        /// Zero means "the rest".
+        #[serde(default)]
+        limit: usize,
+    },
+
+    /// Open an album, artist or playlist. Fetched from Apple if it is not
+    /// already known, which is why the answer arrives as an event rather than
+    /// a return value.
+    #[serde(rename = "open")]
+    Open { kind: PageKind, id: String },
+
+    /// Build a queue from these ids and start playing.
+    ///
+    /// **Ids, not indices into something the daemon remembers.** The client
+    /// already holds the rows it drew; sending them back is what keeps the
+    /// daemon from having to mirror every client's scroll position.
+    #[serde(rename = "play")]
+    Play {
+        ids: Vec<String>,
+        /// Which of `ids` to open on. Ignored when `start` is `shuffled` —
+        /// MusicKit reorders as it loads, so the row we name is not the row it
+        /// opens on (#152).
+        #[serde(default)]
+        index: usize,
+        #[serde(default)]
+        start: PlayMode,
+    },
+}
+
+/// Which library section to browse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum View {
+    Songs,
+    Albums,
+    Artists,
+    Playlists,
+}
+
+/// What an [`Request::Open`] is opening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PageKind {
+    Album,
+    Artist,
+    Playlist,
+}
+
+/// The mode a queue is *created* in, on the wire.
+///
+/// Mirrors [`Start`], which is the type the arithmetic uses. Two enums because
+/// this one is a contract with clients and that one is internal — and because
+/// `Start::Clicked` needs a name a client can understand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlayMode {
+    /// A row click: this list, from here, in order.
+    #[default]
+    Clicked,
+    /// A Play button: in order, whatever mode was on before.
+    InOrder,
+    /// A Shuffle button.
+    Shuffled,
+}
+
+impl From<PlayMode> for Start {
+    fn from(mode: PlayMode) -> Self {
+        match mode {
+            PlayMode::Clicked => Start::Clicked,
+            PlayMode::InOrder => Start::InOrder,
+            PlayMode::Shuffled => Start::Shuffled,
+        }
+    }
 }
 
 /// The transport verbs, kept separate from [`Request`] so a client can pass one
@@ -100,6 +190,25 @@ pub enum Event {
     #[serde(rename = "stage")]
     Stage(Stage),
 
+    /// A window of the library, answering a [`Request::Browse`].
+    #[serde(rename = "rows")]
+    Rows {
+        view: View,
+        entries: Vec<Entry>,
+        /// How many matched before `offset`/`limit`, so a client can show a
+        /// scrollbar without asking for everything.
+        total: usize,
+    },
+
+    /// An opened album, artist or playlist.
+    #[serde(rename = "page")]
+    Page {
+        kind: PageKind,
+        id: String,
+        title: String,
+        entries: Vec<Entry>,
+    },
+
     /// Something went wrong that a person should see.
     #[serde(rename = "error")]
     Error { detail: String },
@@ -112,7 +221,6 @@ pub enum Event {
 /// template a client has no business resolving. This is what a row needs to
 /// draw itself and to be jumped to.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct QueueItem {
     /// Whichever id the daemon can act on — catalog if there is one, else the
     /// library id. Opaque to the client; it comes back in `JumpTo`.
@@ -137,7 +245,6 @@ impl From<&Item> for QueueItem {
 
 /// What is playing, flattened for a client that only draws.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub title: String,
     pub artist: String,
