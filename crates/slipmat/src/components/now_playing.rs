@@ -17,6 +17,7 @@ use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
 
 use super::cover::SWAP_MS;
 use slipmat_core::music::types::format_duration;
+use slipmat_core::player::protocol::RepeatMode;
 
 /// How often the slider redraws itself between snapshots.
 ///
@@ -69,7 +70,7 @@ pub struct Snapshot {
     /// Whether the queue sidebar is open, so the bar's toggle agrees with it.
     pub queue_open: bool,
     /// Mirrored from MusicKit, never authored here (rule 3).
-    pub repeat: Repeat,
+    pub repeat: RepeatMode,
     /// 0.0–1.0. The volume button follows this rather than owning it, so a
     /// change from the keyboard or from MPRIS moves the widget too.
     pub volume: f64,
@@ -104,43 +105,44 @@ impl Default for Snapshot {
             active: false,
             shuffle: false,
             queue_open: false,
-            repeat: Repeat::default(),
+            repeat: RepeatMode::default(),
             volume: 1.0,
         }
     }
 }
 
-/// What the repeat button is showing. Ours, not MusicKit's — `protocol` owns
-/// the wire type and `components/` never sees it (rule 9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Repeat {
-    #[default]
-    Off,
-    All,
-    One,
+/// The repeat button's behaviour, on the one repeat type there is.
+///
+/// A twin enum used to live here so `components/` never saw `RepeatMode`
+/// (rule 9). The rule is about Apple's shapes; this is our own three-value
+/// enum, and the conversion at every boundary cost more than it saved.
+pub trait RepeatButton {
+    /// What clicking does: off → all → one → off. The order the GNOME music
+    /// apps use, and the one Apple Music itself uses.
+    fn next(self) -> Self;
+    fn icon(self) -> &'static str;
+    fn tooltip(self) -> &'static str;
 }
 
-impl Repeat {
-    /// What clicking the button does: off → all → one → off. The order the
-    /// GNOME music apps use, and the one Apple Music itself uses.
-    pub fn next(self) -> Self {
+impl RepeatButton for RepeatMode {
+    fn next(self) -> Self {
         match self {
-            Self::Off => Self::All,
+            Self::None => Self::All,
             Self::All => Self::One,
-            Self::One => Self::Off,
+            Self::One => Self::None,
         }
     }
 
     fn icon(self) -> &'static str {
         match self {
-            Self::Off | Self::All => "media-playlist-repeat-symbolic",
+            Self::None | Self::All => "media-playlist-repeat-symbolic",
             Self::One => "media-playlist-repeat-song-symbolic",
         }
     }
 
     fn tooltip(self) -> &'static str {
         match self {
-            Self::Off => "Repeat: off",
+            Self::None => "Repeat: off",
             Self::All => "Repeat: all",
             Self::One => "Repeat: this track",
         }
@@ -195,7 +197,7 @@ pub enum NowPlayingOutput {
     Seek(u64),
     SetVolume(f64),
     SetShuffle(bool),
-    SetRepeat(Repeat),
+    SetRepeat(RepeatMode),
     ToggleQueue,
 }
 
@@ -494,7 +496,7 @@ impl SimpleComponent for NowPlaying {
                     #[watch]
                     set_tooltip_text: Some(model.snap.repeat.tooltip()),
                     #[watch]
-                    set_opacity: mode_opacity(model.snap.repeat != Repeat::Off),
+                    set_opacity: mode_opacity(model.snap.repeat != RepeatMode::None),
                     #[watch]
                     set_sensitive: model.snap.active,
                     #[watch]

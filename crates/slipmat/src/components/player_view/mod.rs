@@ -21,7 +21,7 @@ use relm4::prelude::*;
 
 use self::transport::{Bits, build_transport};
 use super::cover::{Cover, SWAP_MS};
-use super::now_playing::{NowPlayingOutput, Snapshot};
+use super::now_playing::{NowPlayingOutput, RepeatButton, Snapshot};
 
 mod transport;
 

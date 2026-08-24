@@ -313,9 +313,14 @@ the one case that warrants it. `update()` stays synchronous and fast.
 
 Map `api.music.apple.com` JSON into our own `Track` / `Album` / `Artist` /
 `Playlist` / `Artwork` in `music/types.rs` at the boundary — "parse, don't
-validate". Likewise, protocol types live only in `player/protocol.rs`. The
-`view!` macro and `components/` see our types, never raw JSON and never
-`reqwest`.
+validate". The `view!` macro and `components/` see our types, never raw JSON
+and never `reqwest`.
+
+**This is about Apple's shapes, not about the module a type lives in.** A plain
+enum like `RepeatMode` is ours; it sits in `protocol.rs` because that is where
+the wire contract lives, and `components/` using it directly is fine. It used to
+have a twin in `components/` for this rule's sake, and two identical enums with
+a conversion at every boundary cost more than the rule saved.
 
 ### 10. Comments earn their place
 
