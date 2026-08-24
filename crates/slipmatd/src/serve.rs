@@ -620,6 +620,7 @@ fn answer(
             Some(Event::Snapshot(daemon.model.borrow().snapshot()))
         }
         Request::Snapshot => Some(Event::Snapshot(daemon.model.borrow().snapshot())),
+        Request::Stage => Some(Event::Stage(daemon.model.borrow().stage.clone())),
         Request::Queue => {
             let (items, position) = daemon.model.borrow().queue();
             Some(Event::Queue { items, position })
@@ -648,6 +649,14 @@ fn answer(
                 entries,
                 total,
             })
+        }
+        Request::SignIn => {
+            daemon.send(Command::ShowLogin);
+            None
+        }
+        Request::SignOut => {
+            daemon.send(Command::SignOut);
+            None
         }
         Request::Search {
             query,
@@ -735,10 +744,27 @@ fn answer(
             let command = command_for(transport);
             tracing::debug!(cmd = command.name(), "transport");
             daemon.send(command);
-            if let Transport::SetVolume { volume } = transport {
-                // MusicKit does not report volume back, so this is the only
-                // record of it — the same reason the GTK client keeps its own.
-                daemon.model.borrow_mut().volume = volume;
+            match transport {
+                Transport::SetVolume { volume } => {
+                    // MusicKit does not report volume back, so this is the only
+                    // record of it — the same reason the GTK client keeps its own.
+                    daemon.model.borrow_mut().volume = volume;
+                }
+                // **Adopted before MusicKit confirms it.** A seek takes a
+                // moment to land, and the tick in between would otherwise
+                // publish the position the track was at *before* the drag —
+                // pulling the slider back under the finger that just moved it,
+                // then throwing it forward when the real reading arrives.
+                Transport::Seek { position_ms } => {
+                    daemon.model.borrow_mut().player.seeked_to(position_ms);
+                    // **Said immediately, not on the next tick.** A client that
+                    // has just dragged the slider is extrapolating from where
+                    // the track *was*; leaving it to do that for half a second
+                    // is what snaps the handle back under the finger before it
+                    // jumps forward again.
+                    daemon.publish_snapshot();
+                }
+                _ => {}
             }
             None
         }
@@ -893,6 +919,11 @@ fn refresh_library(daemon: &Rc<Daemon>) {
     });
 }
 
+/// Tracks as rows.
+fn songs(tracks: Vec<slipmat_core::music::types::Track>) -> Vec<Entry> {
+    tracks.into_iter().map(Entry::Song).collect()
+}
+
 /// Search the catalog and announce what came back.
 ///
 /// Spawned like `open_page`, and for the same reason: this is a network round
@@ -951,29 +982,52 @@ fn open_page(daemon: &Rc<Daemon>, kind: PageKind, id: String) {
 
     let daemon = daemon.clone();
     tokio::task::spawn_local(async move {
+        // **An artist page is their albums, not their tracks**, which is why
+        // this is not one call with a different id. Catalog and library are
+        // separate for the other reason: the two id spaces are not
+        // interchangeable, and a catalog id 404s against `/me/library`.
         let fetched = match kind {
             PageKind::Album => client
-                .library_album(&id)
-                .await
-                .map(|(album, tracks)| (album.name, tracks)),
-            PageKind::Playlist => client
-                .library_playlist(&id)
-                .await
-                .map(|(list, tracks)| (list.name, tracks)),
-            // An artist page is their albums, not their tracks — the same
-            // shape the GTK client shows.
-            PageKind::Artist => client
                 .album(&id)
                 .await
-                .map(|(album, tracks)| (album.name, tracks)),
+                .map(|(album, tracks)| (Entry::Album(album), songs(tracks))),
+            PageKind::LibraryAlbum => client
+                .library_album(&id)
+                .await
+                .map(|(album, tracks)| (Entry::Album(album), songs(tracks))),
+            PageKind::Playlist => client
+                .playlist(&id)
+                .await
+                .map(|(list, tracks)| (Entry::Playlist(list), songs(tracks))),
+            PageKind::LibraryPlaylist => client
+                .library_playlist(&id)
+                .await
+                .map(|(list, tracks)| (Entry::Playlist(list), songs(tracks))),
+            PageKind::Artist => client.artist_albums(&id).await.map(|(artist, albums)| {
+                (
+                    Entry::Artist(artist),
+                    albums.into_iter().map(Entry::Album).collect(),
+                )
+            }),
+            PageKind::LibraryArtist => {
+                client
+                    .library_artist_albums(&id)
+                    .await
+                    .map(|(artist, albums)| {
+                        (
+                            Entry::Artist(artist),
+                            albums.into_iter().map(Entry::Album).collect(),
+                        )
+                    })
+            }
         };
 
         match fetched {
-            Ok((title, tracks)) => daemon.publish(Event::Page {
+            Ok((header, entries)) => daemon.publish(Event::Page {
                 kind,
                 id,
-                title,
-                entries: tracks.into_iter().map(Entry::Song).collect(),
+                header,
+                entries,
             }),
             Err(err) => {
                 tracing::warn!(?err, %id, "opening a page failed");

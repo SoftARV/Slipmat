@@ -246,12 +246,6 @@ impl CatalogFilter {
             _ => Self::All,
         }
     }
-
-    /// The `types=` value Apple wants. Answered by the wire type, so the
-    /// daemon and this app cannot ask for different things.
-    pub(super) fn types(self) -> &'static str {
-        slipmat_core::ipc::CatalogFilter::from(self).types()
-    }
 }
 
 impl From<CatalogFilter> for slipmat_core::ipc::CatalogFilter {
@@ -678,13 +672,14 @@ mod tests {
         // If a kind is missing here it is unreachable from search entirely —
         // which is exactly how catalog playlists went missing for four
         // milestones.
-        let all = CatalogFilter::All.types();
+        let all = slipmat_core::ipc::CatalogFilter::from(CatalogFilter::All).types();
         for filter in CatalogFilter::ALL {
             if filter == CatalogFilter::All {
                 continue;
             }
             assert!(
-                all.split(',').any(|kind| kind == filter.types()),
+                all.split(',')
+                    .any(|kind| kind == slipmat_core::ipc::CatalogFilter::from(filter).types()),
                 "{:?} is offered as a filter but absent from the unfiltered search",
                 filter
             );
@@ -699,7 +694,12 @@ mod tests {
             if filter == CatalogFilter::All {
                 continue;
             }
-            assert!(!filter.types().contains(','), "{filter:?}");
+            assert!(
+                !slipmat_core::ipc::CatalogFilter::from(filter)
+                    .types()
+                    .contains(','),
+                "{filter:?}"
+            );
         }
     }
 

@@ -3,7 +3,8 @@
 
 mod app;
 mod components;
-mod mpris;
+mod daemon;
+mod mirror;
 mod notify;
 mod settings;
 mod style;

@@ -58,11 +58,23 @@ pub fn connect_or_spawn(exe: &std::path::Path) -> std::io::Result<std::os::unix:
     }
 
     tracing::info!(daemon = %exe.display(), "no daemon listening — starting one");
-    std::process::Command::new(exe)
+    let child = std::process::Command::new(exe)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
+
+    // **Reaped, or it becomes a zombie.** Dropping a `Child` neither kills nor
+    // waits, so a daemon that dies while this client is still running would sit
+    // in the process table until the client exited — and a daemon that keeps
+    // crashing would leave one behind each time. The thread costs nothing: it
+    // blocks for the daemon's whole life and then ends.
+    let mut child = child;
+    std::thread::Builder::new()
+        .name("slipmatd-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })?;
 
     // It binds the socket before it does anything else, so this is the daemon
     // coming up rather than the sidecar — a fraction of a second, not the
@@ -103,9 +115,30 @@ pub enum Request {
     #[serde(rename = "queue")]
     Queue,
 
+    /// Where the daemon stands right now.
+    ///
+    /// **Asked for, because [`Event::Stage`] only fires on a change.** A client
+    /// attaching to a daemon that has been ready for an hour would otherwise
+    /// never be told it was ready, and would draw its startup screen forever.
+    #[serde(rename = "stage")]
+    Stage,
+
     /// Start receiving [`Event`]s on this connection. Idempotent.
     #[serde(rename = "subscribe")]
     Subscribe,
+
+    /// Show Apple's own sign-in.
+    ///
+    /// **The one thing that needs a window**, and the daemon has none of its
+    /// own — it hands this to the sidecar, whose hidden Chromium is shown for
+    /// exactly this and hidden again afterwards.
+    #[serde(rename = "signIn")]
+    SignIn,
+
+    /// End the Apple session. Clears the cookies too, which only MusicKit's own
+    /// context can do.
+    #[serde(rename = "signOut")]
+    SignOut,
 
     /// A page of the library. `query` filters, `offset`/`limit` window it —
     /// a client draws a screenful, not 535 rows.
@@ -246,13 +279,21 @@ pub enum View {
     Playlists,
 }
 
-/// What an [`Request::Open`] is opening.
+/// What a [`Request::Open`] is opening.
+///
+/// Catalog and library are separate variants because **the two id spaces are
+/// not interchangeable** — a catalog id 404s against `/me/library` and back
+/// again — and because an artist page is their *albums* rather than their
+/// tracks, which is a different call entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PageKind {
     Album,
     Artist,
     Playlist,
+    LibraryAlbum,
+    LibraryArtist,
+    LibraryPlaylist,
 }
 
 /// The mode a queue is *created* in, on the wire.
@@ -353,11 +394,16 @@ pub enum Event {
     },
 
     /// An opened album, artist or playlist.
+    ///
+    /// `header` is the thing itself — the album with its artwork and year, the
+    /// artist with their portrait — because a page draws that above its rows
+    /// and asking for it separately would be a second round trip for one object
+    /// the fetch already had.
     #[serde(rename = "page")]
     Page {
         kind: PageKind,
         id: String,
-        title: String,
+        header: Entry,
         entries: Vec<Entry>,
     },
 
@@ -404,6 +450,11 @@ impl From<&Item> for QueueItem {
 /// What is playing, flattened for a client that only draws.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Snapshot {
+    /// Which track this is, so a client can tell one snapshot from the next
+    /// without consulting the queue. **They arrive as separate events**, and a
+    /// client that asks the queue "what is playing" while holding a snapshot
+    /// from before the change gets one answer from each.
+    pub track_id: Option<String>,
     pub title: String,
     pub artist: String,
     pub album: String,

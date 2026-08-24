@@ -14,96 +14,10 @@
 //! area has been one of them left behind (see issue #47, which proposes
 //! collapsing them onto a shared cell as `CurrentTrack` already is).
 
-use super::{AppModel, SearchScope, WriteUndo};
+use super::AppModel;
 use crate::components::TrackOverride;
 
 impl AppModel {
-    /// Drop a track the library no longer holds, without rebuilding the list.
-    ///
-    /// Called only once the sidecar confirms, so a refused removal never takes
-    /// a row off screen. `TypedListView::remove` keeps the scroll position —
-    /// a rebuild here would throw the reader back to the top, which is the same
-    /// complaint pagination had.
-    pub(super) fn drop_removed_track(&mut self, catalog_id: &str) {
-        // **Index first.** `visible_entries` is derived from `all_tracks`, so
-        // asking it where the row is *after* the retain always answers `None`
-        // — the model has already forgotten it. That left the row on screen
-        // until a manual refresh, which is exactly what this function exists to
-        // avoid.
-        //
-        // Only the Songs list mirrors `all_tracks`; a catalog search showing
-        // the same song is still a valid result and keeps its row, so it is
-        // only asked in library scope.
-        let row = (self.scope() == SearchScope::Library)
-            .then(|| {
-                self.visible_entries()
-                    .iter()
-                    .position(|e| e.catalog_id() == Some(catalog_id))
-            })
-            .flatten();
-
-        let before = self.all_tracks.len();
-        self.all_tracks
-            .retain(|t| t.catalog_id.as_deref() != Some(catalog_id));
-        if self.all_tracks.len() == before {
-            return; // not a library track — nothing to take off the list
-        }
-
-        if let Some(index) = row {
-            // **Before the edit, not after it.** The row menu is parented to
-            // the row, so closing it hands focus back there — and `GtkListView`
-            // discards the scroll position when the focused row is the one
-            // removed. See `components::drop_focus` for the measurement; this
-            // replaced an anchor-and-restore that guessed the top row from the
-            // mean row height and only ever corrected the jump after it showed.
-            crate::components::drop_focus(&self.library.view);
-            self.library.remove(index as u32);
-            // The widgets it owned are gone with it.
-            self.library_icons.borrow_mut().remove(catalog_id);
-        }
-        tracing::info!(
-            catalog_id,
-            removed_row = row.is_some(),
-            "track left the library"
-        );
-    }
-
-    /// Settle one library write against the id it was for.
-    ///
-    /// On success a removal is the moment the row may leave the list. On
-    /// failure the optimistic change is put back and said out loud — without
-    /// this the row keeps a change that never happened, which is not
-    /// hypothetical: pointed at a sidecar too old to know the command, every
-    /// removal answered `unknown-command`, the toast said it was happening, the
-    /// row agreed, and the library on the user's phone did not move.
-    pub(super) fn settle_library_write(&mut self, kind: &str, id: &str, ok: bool, detail: &str) {
-        // Keyed by id, so two writes in flight cannot be confused for each
-        // other — see `PendingWrite`.
-        let Some(pending) = self.pending_writes.remove(id) else {
-            tracing::debug!(kind, id, ok, "library write with no pending record");
-            return;
-        };
-
-        if ok {
-            if matches!(pending.undo, WriteUndo::InLibrary(_)) {
-                self.drop_removed_track(&pending.catalog_id);
-            }
-            return;
-        }
-
-        tracing::warn!(kind, id, %detail, "library write refused; row put back");
-        match pending.undo {
-            WriteUndo::InLibrary(was) => {
-                self.set_in_library(&pending.catalog_id, was);
-                self.toast("Couldn't remove it from your library");
-            }
-            WriteUndo::Favorite(was) => {
-                self.set_favorite(&pending.catalog_id, was);
-                self.toast("Couldn't remove that favourite");
-            }
-        }
-    }
-
     /// Record what has happened to a track, once.
     ///
     /// This used to be four assignments — `all_tracks`, the list store's clone,

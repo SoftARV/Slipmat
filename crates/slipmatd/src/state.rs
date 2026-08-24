@@ -45,15 +45,34 @@ impl Model {
     /// `position_ms` is interpolated rather than last-reported: MusicKit reports
     /// about once a second, and a bar redrawing at that rate visibly steps.
     pub fn snapshot(&self) -> Snapshot {
-        let item = self.player.now_playing.as_ref();
+        // **A queue loaded but never started has no now-playing item** —
+        // MusicKit only sets one when something begins, which is exactly the
+        // state a restored session is in. The queue's own current entry is the
+        // honest answer to "what is this player on", and answering it here
+        // means no client has to work it out again.
+        let item = self
+            .player
+            .now_playing
+            .as_ref()
+            .or_else(|| self.player.queue.get(self.player.queue_position));
         Snapshot {
+            // From the same item as the title beside it, which is the whole
+            // point: one object, one answer.
+            track_id: item.and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone())),
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
             album: item.map(|i| i.album.clone()).unwrap_or_default(),
             // A local file, already fetched. A client never talks to Apple for
             // a cover, and never resolves a template itself.
             art_path: self.art_path.as_ref().map(|p| p.display().to_string()),
-            position_ms: self.player.interpolated_position_ms(),
+            // **Reported, not interpolated.** Clients extrapolate between
+            // snapshots themselves — a bar redraws at 60fps against a 500ms
+            // tick — and two interpolations of the same clock fight each other:
+            // every tick looks like a reading that moved, so the client rebases
+            // on it, and the slider walks backwards and forwards. MPRIS gets
+            // the interpolated one, because a polled property has no other
+            // chance to be current.
+            position_ms: self.player.position_ms,
             duration_ms: self.player.duration_ms,
             playing: self.player.state.is_playing(),
             busy: self.player.state.is_busy(),

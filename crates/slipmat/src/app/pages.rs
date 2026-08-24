@@ -11,7 +11,11 @@
 use relm4::ComponentSender;
 use relm4::adw::prelude::NavigationPageExt;
 
-use super::{ART_SIZE, AppModel, AppMsg, CommandMsg, DetailPage, PageKind, RowState, artwork};
+use super::AppMsg;
+use super::{ART_SIZE, AppModel, CommandMsg, PageKind, artwork};
+use crate::components::detail_page::{DetailPage, RowState};
+use slipmat_core::entry::Entry;
+use slipmat_core::ipc::{PageKind as WireKind, Request};
 
 /// How somebody reached a page, which is the only thing that distinguishes the
 /// two once it is on screen.
@@ -23,8 +27,7 @@ pub(super) enum Arrival {
     /// Chosen in the sidebar. There is nothing behind it, so no back button.
     FromTheSidebar,
 }
-use slipmat_core::music::client::Client;
-use slipmat_core::music::types::{Artwork, Track};
+use slipmat_core::music::types::Artwork;
 
 /// The most covers a mosaic uses. Fewer is fine — they divide the square
 /// between them rather than leaving holes; see `artwork::layout`.
@@ -55,16 +58,60 @@ pub(super) fn distinct_covers<'a>(
     covers
 }
 
-/// The covers a playlist's mosaic would be built from — up to
-/// [`MOSAIC_TILES`], and any number below that is still a picture.
-pub(super) fn playlist_covers(tracks: &[Track]) -> Vec<Artwork> {
+/// Covers for a playlist Apple sends no picture for, composed from its tracks.
+fn playlist_covers_from(entries: &[Entry]) -> Vec<Artwork> {
     distinct_covers(
-        tracks.iter().filter_map(|track| track.artwork.as_ref()),
+        entries.iter().filter_map(|e| match e {
+            Entry::Song(track) => track.artwork.as_ref(),
+            _ => None,
+        }),
         MOSAIC_TILES,
     )
 }
 
 impl AppModel {
+    /// Fill the page the daemon just fetched.
+    ///
+    /// Matched by the **id that was asked for**, not by depth: the stack can
+    /// move between the request and the answer, and picking by position is
+    /// exactly the class of bug that produced the wrong song four times over.
+    pub(super) fn fill_page(
+        &mut self,
+        id: &str,
+        header: Entry,
+        entries: Vec<Entry>,
+        sender: &ComponentSender<Self>,
+    ) {
+        let Some(page) = self.page_for.remove(id) else {
+            return; // navigated back while this was in flight
+        };
+        let Some(target) = self.pages.iter_mut().find(|p| p.id == page) else {
+            return;
+        };
+        match header {
+            Entry::Album(album) => {
+                let art = album.artwork.clone();
+                target.show_album(&album, entries);
+                self.fetch_page_art(page, art, sender);
+            }
+            Entry::Playlist(list) => {
+                let art = list.artwork.clone();
+                // Read before the entries are moved: a playlist Apple sends no
+                // picture for gets one composed from its tracks.
+                let covers = playlist_covers_from(&entries);
+                target.show_playlist(&list, entries);
+                self.fetch_page_art_or_mosaic(page, art, covers, sender);
+            }
+            Entry::Artist(artist) => {
+                let art = artist.artwork.clone();
+                target.show_artist(&artist, entries);
+                self.fetch_page_art(page, art, sender);
+            }
+            // A page is never headed by a song.
+            Entry::Song(_) => target.fail("That page could not be opened"),
+        }
+    }
+
     /// Push an album or artist page and ask Apple to fill it.
     ///
     /// The page appears immediately with a spinner rather than after the
@@ -85,16 +132,6 @@ impl AppModel {
         sender: &ComponentSender<Self>,
         arrival: Arrival,
     ) {
-        let Some(tokens) = &self.tokens else {
-            self.toast("Not connected yet");
-            return;
-        };
-        let client = Client::new(
-            tokens.developer_token.clone(),
-            tokens.music_user_token.clone(),
-            tokens.storefront.clone(),
-        );
-
         let id = self.next_page_id;
         self.next_page_id += 1;
 
@@ -152,62 +189,21 @@ impl AppModel {
 
         let catalog_id = kind.id().to_owned();
         tracing::info!(page = id, kind = ?kind, "opening page");
-        match kind {
-            PageKind::Album(_) => sender.oneshot_command(async move {
-                CommandMsg::AlbumPage {
-                    page: id,
-                    result: client
-                        .album(&catalog_id)
-                        .await
-                        .map_err(|err| format!("{err:#}")),
-                }
-            }),
-            PageKind::LibraryAlbum(_) => sender.oneshot_command(async move {
-                CommandMsg::AlbumPage {
-                    page: id,
-                    result: client
-                        .library_album(&catalog_id)
-                        .await
-                        .map_err(|err| format!("{err:#}")),
-                }
-            }),
-            PageKind::Artist(_) => sender.oneshot_command(async move {
-                CommandMsg::ArtistPage {
-                    page: id,
-                    result: client
-                        .artist_albums(&catalog_id)
-                        .await
-                        .map_err(|err| format!("{err:#}")),
-                }
-            }),
-            PageKind::Playlist(_) => sender.oneshot_command(async move {
-                CommandMsg::PlaylistPage {
-                    page: id,
-                    result: client
-                        .playlist(&catalog_id)
-                        .await
-                        .map_err(|err| format!("{err:#}")),
-                }
-            }),
-            PageKind::LibraryPlaylist(_) => sender.oneshot_command(async move {
-                CommandMsg::PlaylistPage {
-                    page: id,
-                    result: client
-                        .library_playlist(&catalog_id)
-                        .await
-                        .map_err(|err| format!("{err:#}")),
-                }
-            }),
-            PageKind::LibraryArtist(_) => sender.oneshot_command(async move {
-                CommandMsg::ArtistPage {
-                    page: id,
-                    result: client
-                        .library_artist_albums(&catalog_id)
-                        .await
-                        .map_err(|err| format!("{err:#}")),
-                }
-            }),
-        }
+        // **Fetched by the daemon**, which holds the tokens (rule 7). The
+        // answer arrives as an `Event::Page` on every subscriber, which is also
+        // what lets a second client show a page this one opened.
+        self.page_for.insert(catalog_id.clone(), id);
+        self.ask(Request::Open {
+            kind: match kind {
+                PageKind::Album(_) => WireKind::Album,
+                PageKind::Artist(_) => WireKind::Artist,
+                PageKind::Playlist(_) => WireKind::Playlist,
+                PageKind::LibraryAlbum(_) => WireKind::LibraryAlbum,
+                PageKind::LibraryArtist(_) => WireKind::LibraryArtist,
+                PageKind::LibraryPlaylist(_) => WireKind::LibraryPlaylist,
+            },
+            id: catalog_id,
+        });
     }
 
     /// Return to the results list, dropping whatever was pushed over it.
