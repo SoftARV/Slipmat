@@ -18,71 +18,18 @@ use relm4::typed_view::list::RelmListItem;
 use relm4::{gtk, view};
 
 use crate::components::{CurrentTrack, DeadTracks, RowRegistry, TrackOverrides, overridden};
-use slipmat_core::music::types::{Album, Artist, Playlist, Track};
 
-/// What a row stands for. Songs play; everything else opens a page.
-#[derive(Debug, Clone)]
-pub enum Entry {
-    Song(Track),
-    Album(Album),
-    Artist(Artist),
-    Playlist(Playlist),
-}
+pub use slipmat_core::entry::Entry;
 
-impl Entry {
-    /// The id used to match a row against what is playing. Only songs have one.
-    pub fn catalog_id(&self) -> Option<&str> {
-        match self {
-            Entry::Song(track) => track.catalog_id.as_deref(),
-            _ => None,
-        }
-    }
-
-    pub fn title(&self) -> &str {
-        match self {
-            Entry::Song(t) => &t.title,
-            Entry::Album(a) => &a.name,
-            Entry::Artist(a) => &a.name,
-            Entry::Playlist(p) => &p.name,
-        }
-    }
-
-    /// The second line. Collapses rather than rendering a dangling separator
-    /// when a field is missing, which real catalogue entries often are.
-    pub fn subtitle(&self) -> String {
-        match self {
-            Entry::Song(t) => match (t.artist.is_empty(), t.album.is_empty()) {
-                (false, false) => format!("{} — {}", t.artist, t.album),
-                (false, true) => t.artist.clone(),
-                (true, false) => t.album.clone(),
-                (true, true) => String::new(),
-            },
-            Entry::Album(a) => match (a.artist.is_empty(), a.year.is_empty()) {
-                (false, false) => format!("{} · {}", a.artist, a.year),
-                (false, true) => a.artist.clone(),
-                (true, false) => a.year.clone(),
-                (true, true) => String::new(),
-            },
-            Entry::Artist(a) => a.genres.clone(),
-            // The curator is the useful line — Apple's editors made most of
-            // what a catalogue search returns. The blurb is prose and belongs
-            // on the page, not in a row.
-            Entry::Playlist(p) => p.curator.clone(),
-        }
-    }
-
-    fn icon(&self) -> &'static str {
-        match self {
-            Entry::Song(_) => "audio-x-generic-symbolic",
-            Entry::Album(_) => "media-optical-symbolic",
-            Entry::Artist(_) => "avatar-default-symbolic",
-            Entry::Playlist(_) => "view-list-symbolic",
-        }
-    }
-
-    /// Albums and artists lead somewhere; songs are the destination.
-    fn opens_a_page(&self) -> bool {
-        !matches!(self, Entry::Song(_))
+/// The symbolic icon a row shows when it has no artwork. Presentation, so it
+/// stays here rather than travelling with `Entry` — a terminal client wants a
+/// glyph, not an Adwaita icon name.
+fn icon(entry: &Entry) -> &'static str {
+    match entry {
+        Entry::Song(_) => "audio-x-generic-symbolic",
+        Entry::Album(_) => "media-optical-symbolic",
+        Entry::Artist(_) => "avatar-default-symbolic",
+        Entry::Playlist(_) => "view-list-symbolic",
     }
 }
 
@@ -492,7 +439,7 @@ impl RelmListItem for LibraryItem {
             other => {
                 // Albums and artists are never dimmed and never carry the play
                 // marker, so they bypass the shared state entirely.
-                widgets.icon.set_icon_name(Some(other.icon()));
+                widgets.icon.set_icon_name(Some(icon(other)));
                 widgets.icon.set_css_classes(&["dim-label"]);
                 root.set_sensitive(true);
                 root.set_tooltip_text(None);
@@ -512,6 +459,7 @@ impl RelmListItem for LibraryItem {
 mod tests {
     use super::*;
     use slipmat_core::music::types::TrackId;
+    use slipmat_core::music::types::{Album, Track};
 
     fn song(artist: &str, album: &str) -> Entry {
         Entry::Song(Track {

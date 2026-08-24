@@ -82,7 +82,7 @@ mod wiring;
 mod writes;
 
 use chrome::{icon, register_actions, show_about, show_shortcuts};
-use queue::Start;
+use slipmat_core::queue::Start;
 use supervise::{respawn_sidecar, start_sidecar};
 
 pub use view::{CatalogFilter, SearchScope, SortBy, View};
