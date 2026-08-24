@@ -75,6 +75,36 @@ pub enum MprisCommand {
 /// Where those commands go.
 type Sink = Rc<dyn Fn(MprisCommand)>;
 
+/// What this player admits to being able to do.
+///
+/// Both are lies for a daemon: it has no window to raise, and quitting it takes
+/// playback from every client attached to it. A controller that offers a button
+/// which does nothing is worse than one that offers no button, so the frontend
+/// answers rather than this module guessing.
+#[derive(Debug, Clone, Copy)]
+pub struct Capabilities {
+    pub can_raise: bool,
+    pub can_quit: bool,
+}
+
+impl Capabilities {
+    /// An app with a window somebody can be sent back to.
+    pub fn windowed() -> Self {
+        Self {
+            can_raise: true,
+            can_quit: true,
+        }
+    }
+
+    /// A player with no window and no business exiting on a media key.
+    pub fn headless() -> Self {
+        Self {
+            can_raise: false,
+            can_quit: false,
+        }
+    }
+}
+
 /// How the frontend spawns a `!Send` future on its own main thread.
 ///
 /// `mpris_server::Player` cannot leave the thread it was built on, and every
@@ -220,7 +250,7 @@ impl Mpris {
     /// thread. Failing to export is **not fatal** — MPRIS is an integration,
     /// not the app, and a missing session bus should degrade to a working
     /// player rather than a dead one. It logs and stays disconnected.
-    pub fn start(spawn: Spawn, sink: Sink) -> Self {
+    pub fn start(spawn: Spawn, sink: Sink, can: Capabilities) -> Self {
         let this = Self {
             player: Rc::new(RefCell::new(None)),
             last: Rc::new(RefCell::new(None)),
@@ -243,8 +273,8 @@ impl Mpris {
                 // `CanRaise` the controller showing that player has no way to
                 // bring it back, and without `CanQuit` no way to end it either —
                 // the Background portal was the only route to both.
-                .can_raise(true)
-                .can_quit(true)
+                .can_raise(can.can_raise)
+                .can_quit(can.can_quit)
                 .build()
                 .await
             {
