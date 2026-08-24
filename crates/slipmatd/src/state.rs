@@ -23,6 +23,8 @@ pub struct Model {
     /// Ids MusicKit has refused. Remembered across runs so the first play of a
     /// list with a delisted track is not slow twice.
     pub dead_ids: std::collections::HashSet<String>,
+    /// The current track's cover on disk, once fetched.
+    pub art_path: Option<std::path::PathBuf>,
 }
 
 impl Model {
@@ -34,6 +36,7 @@ impl Model {
             tokens: None,
             library: Library::from_cache(),
             dead_ids: slipmat_core::unplayable::load(),
+            art_path: None,
         }
     }
 
@@ -47,10 +50,9 @@ impl Model {
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
             album: item.map(|i| i.album.clone()).unwrap_or_default(),
-            // Artwork is a client's own business for now: the daemon has no
-            // fetcher, and handing over a template would make every client
-            // resolve Apple's URLs itself.
-            art_path: None,
+            // A local file, already fetched. A client never talks to Apple for
+            // a cover, and never resolves a template itself.
+            art_path: self.art_path.as_ref().map(|p| p.display().to_string()),
             position_ms: self.player.interpolated_position_ms(),
             duration_ms: self.player.duration_ms,
             playing: self.player.state.is_playing(),

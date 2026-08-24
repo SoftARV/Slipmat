@@ -27,5 +27,8 @@ tokio = { version = "1", features = [
     "sync",
     "macros",
     "time",
+    # The daemon's own shutdown: a service manager stops it with SIGTERM, and
+    # that is the last chance to write where playback had got to.
+    "signal",
 ] }
 tracing = "0.1"

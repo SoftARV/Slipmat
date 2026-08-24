@@ -1,0 +1,29 @@
+# Slipmat's daemon, as a user service.
+#
+#   systemctl --user enable --now slipmatd
+#
+# **A user service, never a system one.** It holds an Apple session, a Chromium
+# profile and a keyring entry, all of which belong to one logged-in person — and
+# it needs their session bus for MPRIS and their audio for sound.
+
+[Unit]
+Description=Slipmat daemon
+Documentation=https://github.com/SoftARV/Slipmat
+# Chromium needs a display server even with its window hidden, so there is no
+# point starting before there is a graphical session to attach to.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/slipmatd
+# SIGTERM is how the daemon is asked to leave; it saves the session and removes
+# its socket on the way out. Long enough for that, short enough not to hang a
+# logout on a wedged Chromium.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=graphical-session.target
