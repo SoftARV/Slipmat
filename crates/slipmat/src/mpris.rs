@@ -12,7 +12,7 @@
 use std::rc::Rc;
 
 use relm4::ComponentSender;
-pub use slipmat_core::mpris::{Mpris, MprisCommand, MprisState};
+pub use slipmat_core::mpris::{Capabilities, Mpris, MprisCommand, MprisState};
 
 use crate::app::{AppModel, AppMsg};
 
@@ -34,6 +34,7 @@ pub fn start(sender: ComponentSender<AppModel>) -> Mpris {
             }
             sender.input(into_msg(cmd));
         }),
+        Capabilities::windowed(),
     )
 }
 

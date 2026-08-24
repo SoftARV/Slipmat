@@ -13,6 +13,8 @@
 //! stdout reader is a local stream, and there is nothing here worth a thread
 //! pool — this process waits on I/O, it does not compute.
 
+mod bus;
+mod heal;
 mod library;
 mod serve;
 mod state;

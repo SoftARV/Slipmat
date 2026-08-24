@@ -17,6 +17,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
 
+use crate::bus;
+use crate::heal;
 use crate::state::Model;
 
 /// How many events a slow client may fall behind before it is dropped.
@@ -42,10 +44,23 @@ pub struct Daemon {
     /// The last queue we asked for, and the track we aimed at. Kept for the
     /// dead-track retry, which has to rebuild it without the ids Apple refused.
     pub last_queue: RefCell<Option<(Vec<String>, Option<String>)>>,
+    /// The track a new queue was meant to open on, until `verify_start` has
+    /// confirmed it. `None` for a shuffled queue, which has no wrong answer.
+    pub pending_start: RefCell<Option<String>>,
+    /// Whether a non-playing `play` has already been healed once. A second
+    /// attempt that also does nothing is a real failure.
+    pub healed: std::cell::Cell<bool>,
+    /// A position to restore once the reloaded track is current.
+    pub resume_at: std::cell::Cell<Option<u64>>,
+    /// A finished command whose ending state is worth judging, once the mirror
+    /// has caught up with it.
+    pub after_apply: std::cell::Cell<Option<String>>,
+    /// The bus. Filled in after the daemon exists, because it needs one.
+    pub mpris: RefCell<Option<slipmat_core::mpris::Mpris>>,
 }
 
 impl Daemon {
-    fn send(&self, cmd: Command) {
+    pub fn send(&self, cmd: Command) {
         self.sidecar.borrow().send(cmd);
     }
 
@@ -68,6 +83,9 @@ impl Daemon {
 
     fn publish_snapshot(&self) {
         self.publish(Event::Snapshot(self.model.borrow().snapshot()));
+        if let Some(mpris) = self.mpris.borrow().as_ref() {
+            mpris.update(bus::state(self));
+        }
     }
 }
 
@@ -102,7 +120,16 @@ pub async fn run() -> Result<()> {
         restored: std::cell::Cell::new(false),
         restarts: std::cell::Cell::new(0),
         last_queue: RefCell::new(None),
+        pending_start: RefCell::new(None),
+        healed: std::cell::Cell::new(false),
+        resume_at: std::cell::Cell::new(None),
+        after_apply: std::cell::Cell::new(None),
+        mpris: RefCell::new(None),
     });
+
+    // After the `Rc` exists: MPRIS holds one so a button on a bar can reach the
+    // sidecar.
+    *daemon.mpris.borrow_mut() = Some(bus::start(&daemon));
 
     // Accept loop: one task per client, each holding a handle to the daemon.
     let accepting = daemon.clone();
@@ -237,6 +264,7 @@ fn retry_without_dead_tracks(daemon: &Daemon, detail: &str) -> bool {
         position,
         "retrying queue without unresolvable tracks"
     );
+    *daemon.pending_start.borrow_mut() = wanted.clone();
     *daemon.last_queue.borrow_mut() = Some((retry.clone(), wanted));
     daemon.send(Command::SetQueue {
         songs: retry,
@@ -318,6 +346,12 @@ fn on_event(daemon: &Daemon, event: PlayerEvent) {
             }
         }
         PlayerEvent::Volume { volume } => daemon.model.borrow_mut().volume = *volume,
+        PlayerEvent::CmdDone { cmd, .. } => {
+            // Checked after the mirror moves, below — the state this reports is
+            // the one the command ended in.
+            let cmd = cmd.clone();
+            daemon.after_apply.set(Some(cmd));
+        }
         PlayerEvent::Tokens(tokens) => {
             // Never the token itself (rule 7) — only whether we have the one
             // that matters. A developer token alone gets catalog search but not
@@ -346,6 +380,18 @@ fn on_event(daemon: &Daemon, event: PlayerEvent) {
         // run — a SIGKILL, a session ending badly.
         save_session(daemon);
     }
+    // The position goes back once there is an item to seek within, which is
+    // what `nowPlayingItemDidChange` means.
+    if matches!(event, PlayerEvent::NowPlaying { .. }) {
+        heal::resume_position(daemon);
+    }
+    if let Some(cmd) = daemon.after_apply.take() {
+        heal::play_did_nothing(daemon, &cmd);
+    }
+    // After the mirror has the new queue, confirm MusicKit put us on the track
+    // that was actually asked for.
+    heal::verify_start(daemon);
+
     daemon.publish_snapshot();
 }
 
@@ -417,6 +463,8 @@ fn answer(
             Some(Event::Queue { items, position })
         }
         Request::JumpTo { index } => {
+            // Nothing pending: there is no new queue to verify against.
+            *daemon.pending_start.borrow_mut() = None;
             daemon.send(Command::ChangeToIndex { index });
             // Clicking a row is a request to *play* it, and
             // `changeToMediaAtIndex` only moves the cursor.
@@ -539,6 +587,13 @@ fn play(daemon: &Daemon, ids: &[String], index: usize, start: Start) {
 
     let position = start_index(&songs, start_id.as_ref());
     tracing::info!(queue = songs.len(), position, ?start, "enqueuing");
+    // Nothing to verify when the order is not ours: MusicKit reorders as it
+    // loads, so no track is the *wrong* one to open on (#152).
+    *daemon.pending_start.borrow_mut() = if start.reorders() {
+        None
+    } else {
+        start_id.clone()
+    };
     *daemon.last_queue.borrow_mut() = Some((songs.clone(), start_id));
     if let Some(shuffle) = start.mode(true) {
         daemon.send(Command::SetShuffle { shuffle });
@@ -586,6 +641,7 @@ fn restore_session(daemon: &Daemon) {
     // into it (#152).
     daemon.send(Command::SetShuffle { shuffle: false });
     let wanted = session.songs.get(start).cloned();
+    *daemon.pending_start.borrow_mut() = wanted.clone();
     *daemon.last_queue.borrow_mut() = Some((session.songs.clone(), wanted));
     daemon.send(Command::SetQueue {
         songs: session.songs,
