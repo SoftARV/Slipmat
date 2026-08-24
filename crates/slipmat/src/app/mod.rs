@@ -1565,7 +1565,7 @@ impl Component for AppModel {
             osd_shown: false,
             osd_timer: None,
             now_playing,
-            mpris: Mpris::start(sender.clone()),
+            mpris: crate::mpris::start(sender.clone()),
             volume: 1.0,
             art_path: None,
             art_for: None,
