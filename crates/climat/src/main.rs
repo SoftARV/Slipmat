@@ -208,8 +208,15 @@ async fn run() -> Result<()> {
                     None => std::future::pending().await,
                 }
             } => {
-                app.bars = bars;
-                dirty = true;
+                // **Only while Slipmat is playing.** The monitor carries
+                // whatever the machine is making, and asking for one stream is
+                // not enough — see `spectrum`. So the player's own state is
+                // what decides whether there are bars at all: a notification
+                // chime with nothing playing must not move them.
+                if app.snap.playing {
+                    app.bars = bars;
+                    dirty = true;
+                }
             }
             _ = frame.tick() => {
                 // Carry the clock forward between snapshots, so the time reads
@@ -621,7 +628,14 @@ fn seek(link: &link::Link, app: &App, delta: i64) {
 impl App {
     fn on_event(&mut self, event: Event) {
         match event {
-            Event::Snapshot(snap) => self.snap = snap,
+            Event::Snapshot(snap) => {
+                // Stopping clears the bars at once rather than leaving the
+                // last frame to decay over whatever the machine plays next.
+                if !snap.playing {
+                    self.bars = [0.0; spectrum::BANDS];
+                }
+                self.snap = snap;
+            }
             Event::Queue { items, position } => self.queue.replace(items, position),
             Event::Stage(stage) => self.stage = stage,
             Event::Rows { entries, total, .. } => {

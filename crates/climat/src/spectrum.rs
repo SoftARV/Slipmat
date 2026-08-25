@@ -9,12 +9,19 @@
 //! means the bars follow whatever is playing, including a track the GTK window
 //! started.
 //!
-//! **But only Slipmat's audio.** A sink's monitor carries everything mixed
-//! together, so the bars jumped for a notification chime while nothing was
-//! playing. `pa_stream_set_monitor_stream` narrows a record stream to one
-//! sink-input, which is the difference between watching the speakers and
-//! watching the player. It is only on the asynchronous API, which is why this
-//! runs a mainloop rather than the three lines the simple API would have been.
+//! **Asking for one stream is not enough, on PipeWire.**
+//! `pa_stream_set_monitor_stream` narrows a record stream to a single
+//! sink-input, and it is asked for here — measured, the record stream's
+//! `target.object` really is the sidecar's sink-input. `pipewire-pulse` does
+//! not honour it: with Slipmat paused and silent and another application
+//! playing, the bars still moved. Real PulseAudio does, so the request stays.
+//!
+//! What actually keeps a notification chime out of the bars is the player's own
+//! state — `climat` draws them only while Slipmat is playing. That leaves one
+//! case unhandled and it is the honest one to leave: while Slipmat *is*
+//! playing, whatever else the machine makes is mixed into what we read. Fixing
+//! that properly means PipeWire's own API rather than its PulseAudio emulation,
+//! which is a different dependency and a different backend.
 //!
 //! **PulseAudio, not PipeWire.** PipeWire ships `pipewire-pulse` and reports
 //! itself as `PulseAudio (on PipeWire …)`, so one backend covers both servers

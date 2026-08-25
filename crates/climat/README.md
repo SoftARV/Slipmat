@@ -49,10 +49,16 @@ visualiser *listens*, reading a monitor source, the loopback every output
 exposes. That is how `cava` and every other visualiser works, and it means the
 bars follow whatever is playing, including a track the GNOME window started.
 
-**Only Slipmat's audio, though.** A sink's monitor carries the whole machine
-mixed together, so the bars would jump for a notification chime. The record
-stream is narrowed to the sidecar's own sink-input, which is the difference
-between watching the speakers and watching the player.
+**Only while Slipmat is playing.** A sink's monitor carries the whole machine
+mixed together. The record stream asks to be narrowed to the sidecar's own
+sink-input — real PulseAudio honours that; `pipewire-pulse` does not, measured —
+so what actually keeps a notification chime out of the bars is the player's own
+state: no bars unless Slipmat is playing.
+
+One case is left, and it is the honest one to leave: while Slipmat *is* playing,
+anything else the machine makes is mixed into what the visualiser reads. Fixing
+that properly means PipeWire's own API rather than its PulseAudio emulation,
+which is a different backend for a decoration.
 
 It talks PulseAudio rather than PipeWire, because PipeWire ships
 `pipewire-pulse` and answers to it — one backend covers both servers. If there
