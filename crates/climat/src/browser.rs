@@ -67,6 +67,14 @@ pub struct Browser {
     /// clears it, because a filter you cannot see is a list that is lying about
     /// what the library holds.
     pub typing: bool,
+    /// What Apple last answered, kept apart from `rows`.
+    ///
+    /// **The catalog owns its results.** They have to survive a trip to another
+    /// tab — a search is a question already paid for — and `rows` cannot carry
+    /// them, because every other tab overwrites it with a library section or an
+    /// album's tracks. Sharing the one list is how a playlist's contents ended
+    /// up showing under Apple Music.
+    pub found: Vec<Entry>,
     /// Which kinds of thing a catalog search asks Apple for.
     ///
     /// Everything is the useful default — a few artists and albums, then songs
@@ -108,6 +116,7 @@ impl Default for Browser {
             showing: Showing::Library,
             filters: Default::default(),
             typing: false,
+            found: Vec::new(),
             kinds: CatalogFilter::default(),
             more: false,
             paging: false,
@@ -173,9 +182,41 @@ impl Browser {
             && self.cursor + LOOKAHEAD >= self.rows.len()
     }
 
-    /// Add a page to what is already showing, leaving the cursor where it is.
-    pub fn extend(&mut self, rows: Vec<Entry>) {
-        self.rows.extend(rows);
+    /// The catalog's own text, wherever the cursor happens to be.
+    ///
+    /// Not `filter()`, which answers for the tab on screen — an answer arriving
+    /// while somebody is looking at the queue still has to be matched against
+    /// the question that asked for it.
+    pub fn catalog_query(&self) -> &str {
+        self.filters[SECTIONS.len()].trim()
+    }
+
+    /// Throw away what Apple answered, and what is on screen with it.
+    pub fn forget_found(&mut self) {
+        self.found.clear();
+        self.restore_found();
+    }
+
+    /// What Apple answered. `showing` says whether it is also what is on
+    /// screen — the results are kept either way.
+    pub fn keep_found(&mut self, entries: Vec<Entry>, showing: bool) {
+        self.found = entries;
+        if showing {
+            self.restore_found();
+        }
+    }
+
+    /// Add a page to what was found, and to what is showing if it is the same.
+    pub fn extend(&mut self, rows: Vec<Entry>, showing: bool) {
+        self.found.extend(rows);
+        if showing {
+            self.restore_found();
+        }
+    }
+
+    /// Put the catalog's own results back on screen.
+    pub fn restore_found(&mut self) {
+        self.rows = self.found.clone();
         self.total = self.rows.len();
     }
 
