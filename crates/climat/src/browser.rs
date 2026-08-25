@@ -236,10 +236,15 @@ pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
         } else {
             "↓"
         };
+        // A rule between the tabs and the order: they are two different things
+        // on one line, and without it the order reads as a seventh tab.
+        spans.push(Span::styled("   │   ", Style::from(DIM())));
+        spans.push(Span::styled("[", Style::from(DIM())));
         spans.push(Span::styled(
-            format!("   {arrow} {}", by.label().to_lowercase()),
-            Style::from(DIM()),
+            format!("{arrow} {}", by.label().to_lowercase()),
+            Style::from(MUTED()),
         ));
+        spans.push(Span::styled("]", Style::from(DIM())));
     }
     if browser.typing || !browser.filter.is_empty() {
         spans.push(Span::raw("   "));

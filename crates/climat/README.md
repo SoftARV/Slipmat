@@ -23,7 +23,7 @@ and a window open at once are two views of one player rather than two players.
   ▶  Playing                                                          1:42 / 2:54
   shuffle on   repeat off   vol ████████░░
 
-  SONGS   albums   artists   playlists   apple music   queue  30
+  SONGS   albums   artists   playlists   apple music   queue  30   │   [↓ title]
     Addicted To a Memory (feat. Bahari)     Zedd — True Colors
     Aftershock (feat. Jacquie Lee)          Cash Cash — Blood, Sweat & 3 Years
 
@@ -126,8 +126,9 @@ tenth of a second and gets the original palette.
 | `Ctrl+C` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |
 
-A `▸` marks a row that opens a page rather than playing. The tab strip shows
-what the list is ordered by and which way it runs.
+A `▸` marks a row that opens a page rather than playing. To the right of the
+tabs, ruled off from them, is what the list is ordered by and which way it
+runs.
 
 **Each section keeps its own order**, because the keys differ with the data: an
 album has a year and a date added, a playlist has neither an artist nor a year,
