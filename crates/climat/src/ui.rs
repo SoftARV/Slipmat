@@ -36,14 +36,11 @@ pub const DIM: Color = Color::Rgb(0x65, 0x5B, 0x5D);
 /// The volume meter, which stays small on purpose: it is a state to glance at,
 /// not a thing to read along. The progress bar takes the rest of the line.
 const VOL: usize = 10;
-/// What the transport line spends on things that are not the bar: the play
-/// glyph, the gaps either side, and `mm:ss / mm:ss`.
-const TRANSPORT_FURNITURE: usize = 22;
 /// White, for the top of the bars.
 const PEAK: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 /// How much of the window the spectrum may take, and the bounds either side.
 /// Two rows is enough to read; more is where the gradient becomes visible.
-const SPECTRUM_SHARE: u16 = 5;
+const SPECTRUM_SHARE: u16 = 6;
 const SPECTRUM_MIN: usize = 2;
 const SPECTRUM_MAX: usize = 6;
 
@@ -77,8 +74,8 @@ pub fn draw(frame: &mut Frame, view: View) {
     // browser is what gets squeezed, down to a single visible row on a short
     // window.
     let rows = spectrum_rows(area.height);
-    // title + spectrum + a blank + transport + modes.
-    let band = 1 + rows as u16 + 3;
+    // title + album + spectrum + a blank + seek + state + modes.
+    let band = 2 + rows as u16 + 4;
     let [top, note, queue_head, queue, lib_head, lib, hints] = Layout::vertical([
         Constraint::Length(band),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
@@ -183,34 +180,39 @@ fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
         Span::styled("  —  ", Style::from(DIM)),
         Span::styled(view.snap.artist.clone(), Style::from(MUTED)),
     ]);
+    // Its own line rather than a third clause on the title: an album is the
+    // one field long enough to push the artist off a narrow window.
+    let album = Line::from(Span::styled(view.snap.album.clone(), Style::from(DIM)));
 
-    // The bar takes the line: a seek bar you can aim at is worth more than
-    // whitespace, and every other list here already grows with the window.
-    let bar = width.saturating_sub(TRANSPORT_FURNITURE).max(8);
-    let transport = Line::from(vec![
-        Span::styled(
-            if view.snap.playing { "▶" } else { "❚❚" },
-            Style::from(ACCENT),
-        ),
-        Span::raw("   "),
-        // **A line, not blocks.** Directly under a wall of block characters,
-        // a bar drawn out of the same glyphs reads as one more spectrum band
-        // that happens to be full. A rule is unmistakably a position.
-        Span::styled(meter(progress(view.snap), bar, '━'), Style::from(ACCENT)),
-        Span::styled(rest(progress(view.snap), bar, '─'), Style::from(DIM)),
-        Span::raw("   "),
-        Span::styled(
+    // **The full width, exactly like the bars above it.** Nothing shares this
+    // line, so the two meters line up and a seek is aimed at the same scale the
+    // spectrum is drawn on.
+    let seek = Line::from(vec![
+        Span::styled(meter(progress(view.snap), width, '━'), Style::from(ACCENT)),
+        Span::styled(rest(progress(view.snap), width, '─'), Style::from(DIM)),
+    ]);
+
+    // What moved off the seek line: the state at one end, the clock at the
+    // other. There is room to say the state in a word now rather than trusting
+    // a glyph alone to carry it.
+    let state = Line::from(ends(
+        vec![
+            Span::styled(view.snap.glyph(), Style::from(ACCENT)),
+            Span::raw("  "),
+            Span::styled(view.snap.state_word(), Style::from(MUTED)),
+        ],
+        vec![Span::styled(
             format!(
                 "{} / {}",
                 clock(view.snap.position_ms),
                 clock(view.snap.duration_ms)
             ),
             Style::from(DIM),
-        ),
-    ]);
+        )],
+        width,
+    ));
 
     let modes = Line::from(vec![
-        Span::raw("    "),
         Span::styled("shuffle ", Style::from(DIM)),
         mode(
             view.snap.shuffle,
@@ -229,14 +231,32 @@ fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
         Span::styled(rest(view.snap.volume, VOL, '░'), Style::from(DIM)),
     ]);
 
-    let mut band = vec![title];
+    let mut band = vec![title, album];
     band.extend(spectrum.into_iter().map(Line::from));
-    // **A blank between the bars and the transport.** Without it the seek line
-    // sits flush against the spectrum and reads as part of it.
+    // **A blank between the bars and the seek line.** Without it the rule sits
+    // flush against the spectrum and reads as part of it.
     band.push(Line::default());
-    band.push(transport);
+    band.push(seek);
+    band.push(state);
     band.push(modes);
     band
+}
+
+/// One line with `left` at one end and `right` at the other.
+///
+/// Falls back to a single space between them when the window cannot hold both,
+/// because a negative pad is a panic and a truncated clock is worse than a
+/// crowded one.
+fn ends(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let used: usize = left
+        .iter()
+        .chain(&right)
+        .map(|s| s.content.chars().count())
+        .sum();
+    let mut out = left;
+    out.push(Span::raw(" ".repeat(width.saturating_sub(used).max(1))));
+    out.extend(right);
+    out
 }
 
 /// The always-there row. **Nothing has to be memorised**, which is the whole
@@ -403,6 +423,38 @@ fn columns(levels: &[f32], width: usize) -> Vec<f32> {
             levels[from..to].iter().fold(0f32, |m, v| m.max(*v))
         })
         .collect()
+}
+
+/// What the transport is doing, in a glyph and in a word.
+///
+/// `busy` is its own answer rather than a kind of paused: a track that is
+/// loading has not failed to start, and saying "Paused" while it works is the
+/// small lie that makes people press the key again.
+trait Transport {
+    fn glyph(&self) -> &'static str;
+    fn state_word(&self) -> &'static str;
+}
+
+impl Transport for Snapshot {
+    fn glyph(&self) -> &'static str {
+        if self.busy {
+            "◌"
+        } else if self.playing {
+            "▶"
+        } else {
+            "❚❚"
+        }
+    }
+
+    fn state_word(&self) -> &'static str {
+        if self.busy {
+            "Loading"
+        } else if self.playing {
+            "Playing"
+        } else {
+            "Paused"
+        }
+    }
 }
 
 fn mode(on: bool, text: &str) -> Span<'static> {

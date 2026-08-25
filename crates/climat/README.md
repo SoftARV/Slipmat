@@ -12,23 +12,24 @@ draws what the daemon says and sends what the keyboard asks for, so a terminal
 and a window open at once are two views of one player rather than two players.
 
 ```
-  Addicted To a Memory (feat. Bahari)  —  Zedd
+  I Bet You Look Good on the Dancefloor  —  Arctic Monkeys
+  Whatever People Say I Am, That's What I'm Not
+              ▅▅▅▅▅▃▃   ▅▅▆▆ ▅▅▂   ▁       ▁▅            ▃▁▃          ▁
+         ▇▇▇▇▇███████▆▆▆████████▆▇▇█▃▄▄█▆█▂██▇█▄▆▅▇▇▆▇▇▅▇███▇▅▅▆▂▁ ▄▇▂█▅▄▁▃▁▂ ▁▁
+  ▄▄▄▄▄▄███████████████████████████████████████████████████████████████████████▆▄▃
 
-  ▄▄▄▄▄▄▄▄████████████████████▆▆▆▄▄▃▃▃▆▆▆▅▃▃▃▂▃▅▅▅▄     ▃  ▂
-  ████████████████████████████████████████████████▇▅▇████▆█▇▇▇▇▅▇▇▆▇█
-  ▶   ██░░░░░░░░░░░░░░░░░░░░░░░   0:21 / 5:03
-      shuffle off   repeat off   vol ██████████
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━────────────────────────────
+  ▶  Playing                                                          1:42 / 2:54
+  shuffle on   repeat off   vol ████████░░
 
   QUEUE   30 tracks
   ▸   1  Addicted To a Memory (feat. Bahari)     Zedd              5:03
       2  Aftershock (feat. Jacquie Lee)          Cash Cash         3:26
 
-  SONGS   albums   artists   playlists   /muse
-  ▸ Absolution                            Muse · 2003
-  ▸ Drones                                Muse · 2015
-  ▸ The Resistance                        Muse · 2009
+  SONGS   albums   artists   playlists   APPLE MUSIC   /odesza
+  ▸ ODESZA                                ODESZA · Electronic
 
-  space play/pause   ↑↓ move   ↵ play/open   / filter   1-4 section   ⇥ pane   _ hide   q quit
+  space play/pause   ↑↓ move   ↵ play/open   / filter   1-5 section   _ hide   q quit
 ```
 
 ## It needs a graphical session
