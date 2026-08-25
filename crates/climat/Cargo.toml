@@ -1,0 +1,19 @@
+[package]
+name = "climat"
+description = "Winamp 2.x for Apple Music, in a terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+slipmat-core = { path = "../slipmat-core" }
+
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+# The screen. `crossterm` is ratatui's backend and its event source; taking it
+# through ratatui would hide the version they have to agree on.
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures = "0.3"

@@ -15,7 +15,7 @@ use slipmat_core::ipc::{
 };
 use slipmat_core::music::client::Client;
 use slipmat_core::music::types::Artwork;
-use slipmat_core::player::protocol::{Command, Event as PlayerEvent};
+use slipmat_core::player::protocol::{Command, Event as PlayerEvent, PlaybackState};
 use slipmat_core::player::{Incoming, sidecar};
 use slipmat_core::queue::{Start, queue_from_ids, start_index, unresolvable_ids};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -25,6 +25,7 @@ use tokio::sync::broadcast;
 use crate::bus;
 use crate::heal;
 use crate::state::Model;
+use crate::watchdog;
 
 /// How many events a slow client may fall behind before it is dropped.
 ///
@@ -87,6 +88,9 @@ pub struct Daemon {
     pub idle: std::cell::Cell<bool>,
     /// Rung when a client turns up and the sidecar is not running.
     pub wake: tokio::sync::Notify,
+    /// Rung by [`Request::Quit`], and answered where SIGTERM is — so leaving on
+    /// purpose and being stopped by a service manager take the same path.
+    pub quitting: tokio::sync::Notify,
 }
 
 impl Daemon {
@@ -106,7 +110,7 @@ impl Daemon {
         self.clients.get() > 0 || self.model.borrow().player.state.is_playing()
     }
 
-    fn publish(&self, event: Event) {
+    pub fn publish(&self, event: Event) {
         // An error here means nobody is listening, which is the ordinary state
         // of a daemon with no client attached.
         let _ = self.events.send(event);
@@ -172,6 +176,7 @@ pub async fn run() -> Result<()> {
         clients: std::cell::Cell::new(0),
         idle: std::cell::Cell::new(false),
         wake: tokio::sync::Notify::new(),
+        quitting: tokio::sync::Notify::new(),
     });
 
     // After the `Rc` exists: MPRIS holds one so a button on a bar can reach the
@@ -216,11 +221,16 @@ pub async fn run() -> Result<()> {
     let ticking = daemon.clone();
     tokio::task::spawn_local(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(TICK_MS));
+        let mut watch = watchdog::Watch::default();
         loop {
             tick.tick().await;
             if ticking.model.borrow().player.state.is_playing() {
                 ticking.publish_snapshot();
             }
+            // On every tick, not only the playing ones: a stall is measured
+            // against a position that has stopped moving, and the state that
+            // says so is exactly the one that stops publishing.
+            watchdog::check(&ticking, &mut watch);
         }
     });
 
@@ -281,6 +291,7 @@ pub async fn run() -> Result<()> {
         let why = tokio::select! {
             _ = term.recv() => "SIGTERM",
             _ = interrupt.recv() => "SIGINT",
+            _ = leaving.quitting.notified() => "a client quit",
         };
         tracing::info!(why, "shutting down");
         save_session(&leaving);
@@ -308,6 +319,17 @@ pub async fn run() -> Result<()> {
                 }
             }
         }
+
+        // **The player is gone, so nothing is playing.** Carrying the last
+        // state across the gap reports `playing` over a sidecar that no longer
+        // exists — the lie rule 6 exists to prevent — and it is load-bearing
+        // for the watchdog: a restored queue loads *without* starting, so its
+        // position is legitimately frozen, and a stale `playing` beside it read
+        // as a wedge. That restarted a healthy replacement every twelve
+        // seconds, forever. The queue and position are untouched; only the
+        // claim to be playing goes.
+        daemon.model.borrow_mut().player.state = PlaybackState::None;
+        daemon.publish_snapshot();
 
         // Written from the live mirror, not from what was on disk: a crash
         // mid-track should come back to that track, not to last night's.
@@ -557,6 +579,15 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
     daemon.publish_snapshot();
 }
 
+/// Is there a queue with nothing open in it?
+///
+/// The signature of a restore: tracks loaded, `startPlaying: false`, so
+/// MusicKit holds a queue with no now-playing item to press play on.
+fn needs_opening(daemon: &Daemon) -> bool {
+    let model = daemon.model.borrow();
+    model.player.now_playing.is_none() && !model.player.queue.is_empty()
+}
+
 async fn client(stream: UnixStream, daemon: Rc<Daemon>) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
@@ -673,6 +704,23 @@ fn answer(
             open_page(daemon, kind, id);
             None
         }
+        Request::Quit => {
+            // Counted around the connection, so this client is in the total.
+            // Anyone else attached is a window that would lose its player.
+            if daemon.clients.get() > 1 {
+                return Some(Event::Error {
+                    detail: "Another Slipmat client is still open".into(),
+                });
+            }
+            tracing::info!("a client asked to quit");
+            // **Through the same door a service manager uses.** Saving the
+            // session and clearing the socket are already done properly on
+            // SIGTERM; a second copy of that here is a second one to keep
+            // right. Raising it on ourselves also lets this return first, so
+            // the client is not writing into a socket that is already gone.
+            daemon.quitting.notify_one();
+            None
+        }
         Request::Play { ids, index, start } => {
             play(daemon, &ids, index, start.into());
             None
@@ -741,6 +789,18 @@ fn answer(
             None
         }
         Request::Transport(transport) => {
+            // **A queue that was loaded but never started has no current item**,
+            // and `play` needs one to act on — so it returns having done
+            // nothing at all. That is the state every restore leaves behind,
+            // and after a sidecar restart it is what makes a perfectly healthy
+            // player refuse to start: press play, nothing happens, no error.
+            // Opening the item first is what `jumpTo` already does for a click.
+            if matches!(transport, Transport::Play | Transport::PlayPause) && needs_opening(daemon)
+            {
+                let index = daemon.model.borrow().player.queue_position;
+                tracing::info!(index, "nothing is open yet — opening the queue first");
+                daemon.send(Command::ChangeToIndex { index });
+            }
             let command = command_for(transport);
             tracing::debug!(cmd = command.name(), "transport");
             daemon.send(command);

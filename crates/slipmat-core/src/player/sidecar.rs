@@ -71,6 +71,11 @@ pub struct Handle {
     /// has to be `Send`. Sends themselves all happen on the GTK thread, so the
     /// lock is uncontended in practice.
     rate: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<&'static str, Window>>>,
+    /// The child's pid, which is also its process-group id — see `spawn`.
+    ///
+    /// Only [`Handle::kill`] uses it, and only when the child has stopped
+    /// listening. `None` for a handle with no child behind it.
+    pgid: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -83,6 +88,26 @@ struct Window {
 }
 
 impl Handle {
+    /// Kill the sidecar and everything it spawned, immediately.
+    ///
+    /// **Dropping the handle is not enough for a sidecar that has stopped
+    /// listening.** A drop closes the child's stdin and waits for `main.js` to
+    /// notice, which is exactly what a healthy child does and exactly what a
+    /// wedged one cannot — `kill_on_drop` lives on the `Child`, and the `Child`
+    /// is owned by the reader task, which sits blocked on a pipe that will
+    /// never reach EOF. Measured: a frozen sidecar survived the drop
+    /// indefinitely and the supervisor never woke up.
+    ///
+    /// So this is for the fault path only. The polite close still handles the
+    /// idle drop, where the child is well and simply not wanted.
+    pub fn kill(&self) {
+        let Some(pgid) = self.pgid else { return };
+        tracing::warn!(pgid, "killing the sidecar process group");
+        // Negative pid means the group. SIGKILL because a process that stopped
+        // answering will not act on anything catchable.
+        unsafe { libc::kill(-(pgid as i32), libc::SIGKILL) };
+    }
+
     /// Fire-and-forget, up to a ceiling.
     ///
     /// A closed channel means the child already died; the `Died` message is
@@ -292,8 +317,17 @@ pub fn spawn() -> Result<(Handle, mpsc::UnboundedReceiver<Incoming>)> {
         // Electron re-executes itself for its zygote/GPU processes; killing the
         // parent on drop keeps a crashed run from leaving Chromium behind.
         .kill_on_drop(true)
+        // **Its own process group**, for two reasons. A signal aimed at the
+        // daemon no longer reaches Chromium by accident, and — the one that
+        // matters — `Handle::kill` can take the whole tree down by group
+        // rather than killing a parent and orphaning nine renderers.
+        .process_group(0)
         .spawn()
         .with_context(|| format!("failed to start {}", bin.display()))?;
+
+    // Read before the child is moved into the reader task. `process_group(0)`
+    // makes the group id equal the child's own pid.
+    let pgid = child.id();
 
     let stdout = child.stdout.take().context("child stdout was not piped")?;
     let mut stdin = child.stdin.take().context("child stdin was not piped")?;
@@ -382,6 +416,7 @@ pub fn spawn() -> Result<(Handle, mpsc::UnboundedReceiver<Incoming>)> {
         Handle {
             tx: cmd_tx,
             rate: Default::default(),
+            pgid,
         },
         evt_rx,
     ))
@@ -407,6 +442,7 @@ mod tests {
             Handle {
                 tx,
                 rate: Default::default(),
+                pgid: None,
             },
             rx,
         )

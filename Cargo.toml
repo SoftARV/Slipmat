@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/slipmat-core", "crates/slipmatd", "crates/slipmat"]
+members = [
+    "crates/slipmat-core",
+    "crates/slipmatd",
+    "crates/slipmat",
+    "crates/climat",
+]
 
 # Shared so the two crates cannot drift apart on a version.
 [workspace.package]
