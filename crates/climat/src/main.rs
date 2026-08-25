@@ -21,7 +21,9 @@ mod theme;
 mod ui;
 
 use anyhow::Result;
-use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyEventKind};
+use crossterm::event::{
+    Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use futures::StreamExt;
 use slipmat_core::ipc::{
@@ -142,7 +144,7 @@ async fn run() -> Result<()> {
             biased;
             Some(Ok(term_event)) = keys.next() => match term_event {
                 TermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                    if !on_key(key.code, &link, &mut app) {
+                    if !on_key(key, &link, &mut app) {
                         break;
                     }
                     // **Always.** A key is the one event that is definitely
@@ -219,9 +221,18 @@ async fn run() -> Result<()> {
 /// the rows move when the daemon echoes — rule 3 at the third layer. The cursor
 /// and which pane has focus are the exceptions, because they are where this
 /// terminal is looking rather than anything about the player.
-fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
-    // **Typing comes first, and takes everything.** While the filter is open a
-    // letter is a letter: `q` must not quit and `d` must not remove a track.
+fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
+    // **Before everything, including the filter.** In raw mode Ctrl+C is a
+    // keystroke rather than a signal, so it has to be answered here — and it
+    // is the one key that should work whatever the app is in the middle of.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return false;
+    }
+    let code = key.code;
+
+    // **Typing comes next, and takes everything else.** While the filter is
+    // open a letter is a letter: `q` must not quit and `d` must not remove a
+    // track.
     if app.browser.typing {
         typing(code, link, app);
         return true;
@@ -242,10 +253,10 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Char('r') => link.send(Request::Transport(Transport::SetRepeat {
             mode: next_repeat(app.snap.repeat),
         })),
-        // `=` beside `+` so it works without shift, the way every player that
-        // uses these keys does it.
-        KeyCode::Char('-') => volume(link, app, -0.05),
-        KeyCode::Char('+') | KeyCode::Char('=') => volume(link, app, 0.05),
+        // Both faces of each key, now that neither means anything else: `-`
+        // and `_` are one key, and so are `=` and `+`.
+        KeyCode::Char('-') | KeyCode::Char('_') => volume(link, app, -0.05),
+        KeyCode::Char('=') | KeyCode::Char('+') => volume(link, app, 0.05),
 
         // **The tab strip in one key.** With a single pane there is nothing to
         // switch focus between, so `⇥` walks the tabs instead — the library
@@ -262,8 +273,8 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
             // would swallow the very key that got you here.
             app.browser.typing = true;
         }
-        // Not a section of the library either: the queue is a place, and this
-        // is the key that goes there and comes back.
+        // The queue's own tab, numbered like the rest. It does not get a hint
+        // of its own — `1-6` already says it, and saying it twice is noise.
         KeyCode::Char('6') => app.pane = Pane::Queue,
         KeyCode::Char(d @ '1'..='4') => {
             // Selecting a section is also a request to look at it, so it takes
@@ -292,13 +303,9 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Char('K') if app.pane == Pane::Queue => reorder(link, app, -1),
         KeyCode::Char('J') if app.pane == Pane::Queue => reorder(link, app, 1),
 
-        // Leaves the daemon alone: the music keeps playing, and a GTK
-        // window or another terminal still has a player to attach to.
-        //
-        // **`_` only.** `-` was an alias here, because `_` needs shift — but it
-        // is now volume down, and one physical key meaning "quieter" unshifted
-        // and "leave" shifted is a trap rather than a convenience.
-        KeyCode::Char('_') => return false,
+        // Leaves the daemon alone, the way Ctrl+C above does: the music keeps
+        // playing and a GTK window or another terminal still has a player to
+        // attach to. `q` is the one that takes the player with it.
         KeyCode::Char('q') => {
             app.quit_daemon = true;
             return false;

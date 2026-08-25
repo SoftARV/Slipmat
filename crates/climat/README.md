@@ -26,7 +26,7 @@ and a window open at once are two views of one player rather than two players.
     Addicted To a Memory (feat. Bahari)     Zedd — True Colors
     Aftershock (feat. Jacquie Lee)          Cash Cash — Blood, Sweat & 3 Years
 
-  space play/pause   ↑↓ move   ↵ play/open   / filter   1-5 section   _ hide   q quit
+  space play/pause   ↑↓ move   ↵ play/open   / filter   1-6 tab   ^C hide   q quit
 ```
 
 ## It needs a graphical session
@@ -85,7 +85,7 @@ tenth of a second and gets the original palette.
 | `z` `b` | Previous / next track |
 | `←` `→` | Seek five seconds |
 | `s` `r` | Shuffle / repeat |
-| `-` `+` | Volume |
+| `-` `=` | Volume |
 | `1` – `4` | Songs · albums · artists · playlists |
 | `5` | All of Apple Music |
 | `6` | The queue |
@@ -97,7 +97,7 @@ tenth of a second and gets the original palette.
 | `↵` | Play the selected track, or open the album it leads to |
 | `d` | Remove it from the queue |
 | `K` `J` | Move it up / down |
-| `_` | Hide — leave, and let the music keep playing |
+| `Ctrl+C` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |
 
 A `▸` marks a row that opens a page rather than playing.
@@ -117,16 +117,19 @@ and quitting are always on it.
 **One pane, six tabs.** The queue is somewhere you go rather than something
 always on screen — a permanently visible queue costs rows every moment nobody
 is reading it, and on a short window it and the library were both too small to
-use. `6` goes there and `6` again is not needed: any other tab key comes back.
+use. `6` goes there and any other tab key comes back — it gets no hint of its own,
+because `1-6` already says it.
 
 Nothing here edits the queue directly. A key sends a request and the rows move
 when the daemon echoes, which is what keeps a terminal and a GTK window from
 disagreeing about what is playing. The cursor is the exception: it is where
 *this* terminal is looking, so it moves the instant you press a key.
 
-`q` and `_` are the whole difference between closing the window and closing the
-player. `q` is refused while another Slipmat client is open, because quitting
-would take the player from a window somebody else is looking at.
+`Ctrl+C` and `q` are the whole difference between closing the window and
+closing the player. Ctrl+C is what a terminal already means, and it is the right
+key for the one that leaves the music playing; `q` is the one that takes the
+player with it, and it is refused while another Slipmat client is open, because
+quitting would take the player from a window somebody else is looking at.
 
 ## Running it
 

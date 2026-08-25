@@ -266,7 +266,10 @@ fn ends(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Ve
 /// losing the row. Leaving and quitting are reserved from the start — a player
 /// you cannot see how to leave is worse than one with no hints at all.
 fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'static> {
-    const LEAVING: [(&str, &str); 2] = [("_", "hide"), ("q", "quit")];
+    // **What the terminal already means.** Ctrl+C is how everybody leaves a
+    // program in a terminal, and it is the right key for the one that leaves
+    // the music playing. `q` is the one that takes the player with it.
+    const LEAVING: [(&str, &str); 2] = [("^C", "hide"), ("q", "quit")];
 
     // While typing, every letter goes into the filter, so advertising the
     // transport keys would be a lie about what the keyboard does.
@@ -288,7 +291,6 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("↵", "play/open"),
             ("/", "filter"),
             ("1-6", "tab"),
-            ("6", "queue"),
             ("esc", "back"),
         ]
     } else {
@@ -299,7 +301,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("d", "remove"),
             ("KJ", "reorder"),
             ("1-6", "tab"),
-            ("zb", "prev/next"),
+            ("-=", "volume"),
         ]
     };
 
