@@ -5,14 +5,47 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # AUR packaging
 
-Two packages, both built from this tree:
+Two package *bases*, both built from this tree — and the `-git` one is a
+**split package** that produces three:
 
-| Directory | Package | Builds from |
+| Directory | Builds | Builds from |
 | --- | --- | --- |
 | `slipmat/` | `slipmat` | the `v0.10.0` release tarball |
-| `slipmat-git/` | `slipmat-git` | the latest commit on `main` |
+| `slipmat-git/` | `slipmat-daemon-git`, `slipmat-git`, `climat-git` | the latest commit on `main` |
 
-They conflict with each other, as the two conventions require.
+The release and `-git` lines conflict with each other, as the two conventions
+require.
+
+## Why the `-git` base is split
+
+**The engine is not the interface.** The daemon owns the Chromium sidecar, and
+the Chromium profile lock means exactly one process may — so a machine has one
+daemon and as many front-ends as it likes. Shipping the daemon inside each
+front-end would put the same ~220 MB of Electron at the same paths in two
+packages, which pacman refuses and which would be wrong even if it did not:
+they are one installation.
+
+| Package | Holds | Depends on |
+| --- | --- | --- |
+| `slipmat-daemon-git` | `slipmatd`, the sidecar, the optional systemd unit | — |
+| `slipmat-git` | the GNOME app, desktop file, icons | the daemon |
+| `climat-git` | the terminal player | the daemon |
+
+Installing either front-end pulls the daemon in on its own, so each behaves as
+though it were self-contained, and both can be installed together sharing one
+copy of it.
+
+**`slipmat-git` shipped without `slipmatd` for a while and nobody noticed**,
+because the package predating the daemon still worked: the app spawned the
+sidecar itself. After the switchover the app is a *client*, and a build from
+`main` installed a window that sits on "Connecting" forever, redialling a
+daemon that was never packaged. The Flatpak manifest had the identical hole. A
+front-end package that does not pull in an engine is the thing to check first
+whenever the architecture moves.
+
+**The release package still needs this treatment.** `v0.10.0` predates the
+daemon, so `slipmat/PKGBUILD` is correct for the tag it builds — it stops being
+correct the moment a release contains `slipmatd`.
 
 **`v0.3.0` is the first tag under this name, and the release package needed
 it.** Between the rename and that tag `slipmat/PKGBUILD` was pinned to
