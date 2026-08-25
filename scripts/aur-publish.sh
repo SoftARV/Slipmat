@@ -21,6 +21,9 @@ repo=$(git rev-parse --show-toplevel)
 src="$repo/packaging/aur/$pkg"
 
 if [[ ! -d $src ]]; then
+    # The argument is a **package base**, which is the directory here and the
+    # repository on the AUR. `slipmat-git` is a split base: one push publishes
+    # slipmat-daemon-git, slipmat-git and climat-git together.
     echo "usage: $0 <slipmat|slipmat-git> [--push]" >&2
     exit 2
 fi
@@ -67,10 +70,25 @@ if [[ $pkg == *-git ]]; then
     fi
 fi
 
+# **The base has to match the repository name**, because the AUR keys a
+# repository on `pkgbase` and rejects a push where they disagree — at the push,
+# after everything else is already done, which is the same late failure the
+# `master` rule above exists to avoid.
+base=$(sed -n 's/^pkgbase = //p' .SRCINFO)
+if [[ $base != "$pkg" ]]; then
+    echo "==> pkgbase is '$base' but this is the '$pkg' repository; the AUR would reject it" >&2
+    exit 1
+fi
+
 echo "==> what would be published"
 git diff --cached --stat | sed 's/^/    /'
 echo
-grep -E '^\s+(pkgname|pkgver|pkgrel|source|sha256sums) ' .SRCINFO | sed 's/^/    /'
+# **`pkgname` sits at column 0 and the rest are tab-indented**, so a single
+# leading-whitespace pattern silently drops exactly the lines that matter most:
+# a split base publishes several packages, and which ones is the thing to read
+# before pushing. Two patterns rather than one clever one.
+grep -E '^pkgname = ' .SRCINFO | sed 's/^/    /'
+grep -E '^\s+(pkgver|pkgrel|source|sha256sums) ' .SRCINFO | sed 's/^/    /'
 
 version=$(sed -n 's/^\tpkgver = //p' .SRCINFO)
 release=$(sed -n 's/^\tpkgrel = //p' .SRCINFO)
