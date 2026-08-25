@@ -13,6 +13,9 @@ PREFIX  ?= $(HOME)/.local
 BINDIR   = $(PREFIX)/bin
 DATADIR  = $(PREFIX)/share
 APPID    = dev.miguelrincon.Slipmat
+# climat has an id of its own because it is a separate program with a separate
+# entry — a terminal one, launched by the desktop into a terminal.
+CLIMAT   = dev.miguelrincon.Climat
 SIDECAR  = $(DATADIR)/slipmat/sidecar
 
 ICON_SIZES = 16 32 48 64 128 256 512
@@ -106,9 +109,10 @@ aur-publish:
 install: build install-sidecar dev-install
 	install -Dm755 target/release/slipmat $(BINDIR)/slipmat
 	install -Dm755 target/release/slipmatd $(BINDIR)/slipmatd
+	install -Dm755 target/release/climat $(BINDIR)/climat
 	install -Dm644 packaging/systemd/slipmatd.service \
 		$(DATADIR)/systemd/user/slipmatd.service
-	@echo "Installed to $(PREFIX). Launch 'Slipmat' from the app grid, or run 'slipmat'."
+	@echo "Installed to $(PREFIX). Launch 'Slipmat' from the app grid, or run 'slipmat' — or 'climat' for the terminal."
 
 install-sidecar: sidecar
 	install -d $(SIDECAR)
@@ -120,8 +124,11 @@ install-sidecar: sidecar
 # shows one.
 dev-install:
 	install -Dm644 data/$(APPID).desktop $(DATADIR)/applications/$(APPID).desktop
+	install -Dm644 data/$(CLIMAT).desktop $(DATADIR)/applications/$(CLIMAT).desktop
 	install -Dm644 data/icons/hicolor/scalable/apps/$(APPID).svg \
 		$(DATADIR)/icons/hicolor/scalable/apps/$(APPID).svg
+	install -Dm644 data/icons/hicolor/scalable/apps/$(CLIMAT).svg \
+		$(DATADIR)/icons/hicolor/scalable/apps/$(CLIMAT).svg
 	install -Dm644 data/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg \
 		$(DATADIR)/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg
 	@# Raster sizes, rendered from the same SVG the app installs so the two
@@ -130,11 +137,13 @@ dev-install:
 	@# loader all want PNGs — and this loop used to look for files that were
 	@# never in the tree, so it silently installed none.
 	@if command -v rsvg-convert >/dev/null 2>&1; then \
-		for sz in $(ICON_SIZES); do \
-			install -d $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps; \
-			rsvg-convert -w $${sz} -h $${sz} \
-				data/icons/hicolor/scalable/apps/$(APPID).svg \
-				-o $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png; \
+		for id in $(APPID) $(CLIMAT); do \
+			for sz in $(ICON_SIZES); do \
+				install -d $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps; \
+				rsvg-convert -w $${sz} -h $${sz} \
+					data/icons/hicolor/scalable/apps/$${id}.svg \
+					-o $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps/$${id}.png; \
+			done; \
 		done; \
 		echo "Rendered PNG icons: $(ICON_SIZES)"; \
 	else \
@@ -148,12 +157,16 @@ dev-install:
 
 uninstall:
 	rm -f $(BINDIR)/slipmat
+	rm -f $(BINDIR)/climat
 	rm -rf $(DATADIR)/slipmat
 	rm -f $(DATADIR)/applications/$(APPID).desktop
+	rm -f $(DATADIR)/applications/$(CLIMAT).desktop
 	rm -f $(DATADIR)/icons/hicolor/scalable/apps/$(APPID).svg
+	rm -f $(DATADIR)/icons/hicolor/scalable/apps/$(CLIMAT).svg
 	rm -f $(DATADIR)/icons/hicolor/symbolic/apps/$(APPID)-symbolic.svg
 	@for sz in $(ICON_SIZES); do \
 		rm -f $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps/$(APPID).png; \
+		rm -f $(DATADIR)/icons/hicolor/$${sz}x$${sz}/apps/$(CLIMAT).png; \
 	done
 	@if [ -f $(DATADIR)/icons/hicolor/index.theme ]; then \
 		gtk-update-icon-cache -q -t -f $(DATADIR)/icons/hicolor; \

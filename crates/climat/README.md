@@ -3,6 +3,10 @@ SPDX-FileCopyrightText: 2026 Miguel Rincon
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
+<p align="center">
+  <img src="../../data/icons/hicolor/scalable/apps/dev.miguelrincon.Climat.svg" width="96" alt="The climat icon: the Slipmat record's pattern, pixelated, on a near-black ground">
+</p>
+
 # climat
 
 Apple Music in a terminal, in the shape of Winamp.

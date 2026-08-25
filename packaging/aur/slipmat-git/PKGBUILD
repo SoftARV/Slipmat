@@ -156,7 +156,7 @@ package_climat-git() {
   # `libpulse` is the visualiser's, and it is a real link rather than a
   # convention — `ldd` shows libpulse.so.0 and libpulse-simple.so.0. PipeWire
   # users have it too, through `pipewire-pulse`.
-  depends=("slipmat-daemon-git=$pkgver-$pkgrel" 'libpulse')
+  depends=("slipmat-daemon-git=$pkgver-$pkgrel" 'libpulse' 'hicolor-icon-theme')
   provides=("climat=$pkgver")
   # **Only `climat`.** The release `slipmat` package owns the same sidecar paths
   # the daemon does, so it would be tempting to name it here — but `slipmat-git`
@@ -169,7 +169,23 @@ package_climat-git() {
   conflicts=('climat')
 
   cd "$srcdir/$_pkgname"
+  local appid=dev.miguelrincon.Climat
+
   install -Dm755 target/release/climat "$pkgdir/usr/bin/climat"
+
+  # **A desktop entry for a terminal program.** `Terminal=true`, so a launcher
+  # opens a terminal and runs it there — which terminal is the desktop's
+  # business. Without this climat is only ever a command.
+  install -Dm644 "data/$appid.desktop" \
+    "$pkgdir/usr/share/applications/$appid.desktop"
+  install -Dm644 "data/icons/hicolor/scalable/apps/$appid.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/$appid.svg"
+  for sz in 16 32 48 64 128 256 512; do
+    install -d "$pkgdir/usr/share/icons/hicolor/${sz}x${sz}/apps"
+    rsvg-convert -w "$sz" -h "$sz" "data/icons/hicolor/scalable/apps/$appid.svg" \
+      -o "$pkgdir/usr/share/icons/hicolor/${sz}x${sz}/apps/$appid.png"
+  done
+
   install -Dm644 COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
   install -Dm644 crates/climat/README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

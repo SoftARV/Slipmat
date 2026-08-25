@@ -139,8 +139,9 @@ Also needs Rust ≥ 1.93 (relm4 0.11's MSRV) and Node — verified on Node 26. T
 launch **Slipmat** from the app grid, or run `slipmat`. If that command is not
 found, `~/.local/bin` is not on your `PATH`.
 
-`climat` installs alongside it. It needs a graphical session even though it
-draws in a terminal — not for itself, but because the daemon behind it runs
+`climat` installs alongside it, with a desktop entry of its own — it appears in
+the app grid and launches into a terminal. It needs a graphical session even
+though it draws in a terminal — not for itself, but because the daemon behind it runs
 Chromium, and Chromium wants a display server even with its window hidden. So it
 will not work over a plain SSH connection to a headless machine. That is
 Widevine, not a shortcut taken here.
