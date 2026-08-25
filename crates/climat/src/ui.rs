@@ -286,7 +286,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
     // **What the terminal already means.** Ctrl+C is how everybody leaves a
     // program in a terminal, and it is the right key for the one that leaves
     // the music playing. `q` is the one that takes the player with it.
-    const LEAVING: [(&str, &str); 2] = [("^C", "hide"), ("q", "quit")];
+    const LEAVING: [(&str, &str); 2] = [("Ctrl+C", "hide"), ("q", "quit")];
 
     // While typing, every letter goes into the filter, so advertising the
     // transport keys would be a lie about what the keyboard does.
@@ -306,9 +306,11 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("space", "play/pause"),
             ("↑↓", "move"),
             ("↵", "play/open"),
+            // Above the filter and the queueing keys: moving between tabs is
+            // how you get anywhere, so it is the last hint worth losing.
+            ("⇥", "tabs"),
             ("/", "filter"),
             ("jl", "next/last"),
-            ("1-6", "tab"),
             ("esc", "back"),
         ]
     } else {
@@ -316,9 +318,9 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("space", "play/pause"),
             ("↑↓", "move"),
             ("↵", "play"),
+            ("⇥", "tabs"),
             ("d", "remove"),
             ("ik", "reorder"),
-            ("1-6", "tab"),
             ("-=", "volume"),
         ]
     };

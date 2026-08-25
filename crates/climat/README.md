@@ -27,7 +27,7 @@ and a window open at once are two views of one player rather than two players.
     Addicted To a Memory (feat. Bahari)     Zedd — True Colors
     Aftershock (feat. Jacquie Lee)          Cash Cash — Blood, Sweat & 3 Years
 
-   space  play/pause    ↑↓  move    ↵  play/open    jl  next/last    1-6  tab    ^C  hide    q  quit
+   space  play/pause    ↑↓  move    ↵  play/open    ⇥  tabs    /  filter    Ctrl+C  hide    q  quit
 ```
 
 ## It needs a graphical session
