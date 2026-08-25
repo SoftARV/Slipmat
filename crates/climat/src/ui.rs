@@ -109,6 +109,7 @@ pub fn draw(frame: &mut Frame, view: View) {
         Paragraph::new(spaced(browser::header(
             view.browser,
             (view.pane == Pane::Queue).then_some(queued),
+            area.width as usize,
         ))),
         tabs,
     );

@@ -187,7 +187,7 @@ impl Browser {
 /// `queue` is the queue's own tab: it is not a section of the library and the
 /// browser knows nothing about it, but it belongs in the same row because it is
 /// one of the places the one pane can be showing.
-pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
+pub fn header(browser: &Browser, queue: Option<usize>, width: usize) -> Line<'static> {
     if let Showing::Page {
         title,
         subtitle,
@@ -227,25 +227,6 @@ pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
         ));
     }
 
-    // Only for the library: a catalog search is in Apple's own relevance order
-    // and a page is in the album's, and neither is ours to reorder.
-    if matches!(browser.showing, Showing::Library) {
-        let (by, reversed) = browser.sort();
-        let arrow = if reversed != by.descends_by_default() {
-            "↑"
-        } else {
-            "↓"
-        };
-        // A rule between the tabs and the order: they are two different things
-        // on one line, and without it the order reads as a seventh tab.
-        spans.push(Span::styled("   │   ", Style::from(DIM())));
-        spans.push(Span::styled("[", Style::from(DIM())));
-        spans.push(Span::styled(
-            format!("{arrow} {}", by.label().to_lowercase()),
-            Style::from(MUTED()),
-        ));
-        spans.push(Span::styled("]", Style::from(DIM())));
-    }
     if browser.typing || !browser.filter.is_empty() {
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
@@ -258,9 +239,31 @@ pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
             spans.push(Span::styled("▌", Style::from(ACCENT())));
         }
     }
-    if matches!(browser.showing, Showing::Catalog { searching: true }) {
-        spans.push(Span::styled("   asking Apple…", Style::from(DIM())));
+
+    // **The order goes to the far end, with a rule reaching it.** At the end of
+    // the tabs it read as a seventh tab; pushed right and ruled off, it reads
+    // as what the list *is* rather than somewhere to go.
+    if matches!(browser.showing, Showing::Library) {
+        let (by, reversed) = browser.sort();
+        let arrow = if reversed != by.descends_by_default() {
+            "↑"
+        } else {
+            "↓"
+        };
+        let order = format!("[{arrow} {}]", by.label().to_lowercase());
+        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        // One space either side of the rule, and never less than one dash —
+        // on a window too narrow for both, the order still wins its place.
+        let rule = width
+            .saturating_sub(used + order.chars().count() + 2)
+            .max(1);
+        spans.push(Span::styled(
+            format!(" {} ", "─".repeat(rule)),
+            Style::from(DIM()),
+        ));
+        spans.push(Span::styled(order, Style::from(MUTED())));
     }
+
     Line::from(spans)
 }
 
