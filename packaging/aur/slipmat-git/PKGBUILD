@@ -76,8 +76,16 @@ package_slipmat-daemon-git() {
   depends=('gtk3' 'nss' 'alsa-lib' 'libcups' 'libxkbcommon' 'mesa' 'libdrm'
            'libseccomp')
   provides=("slipmat-daemon=$pkgver")
-  # The release package still ships the sidecar itself, at these paths.
-  conflicts=('slipmat-daemon' 'slipmat')
+  # **Not `slipmat`, however much it looks like it should be.** The release
+  # package does own these same sidecar paths — but `slipmat-git` *provides*
+  # `slipmat`, so a conflict on that name matches this package's own front-end
+  # and pacman refuses the pair outright:
+  #
+  #   slipmat-daemon-git and slipmat-git are in conflict
+  #
+  # The front-ends carry that conflict instead: neither can be installed beside
+  # the release package, so the daemon never arrives next to it either.
+  conflicts=('slipmat-daemon')
 
   cd "$srcdir/$_pkgname"
   install -Dm755 target/release/slipmatd "$pkgdir/usr/bin/slipmatd"
@@ -141,6 +149,14 @@ package_climat-git() {
   # README it installs.
   depends=("slipmat-daemon-git=$pkgver-$pkgrel")
   provides=("climat=$pkgver")
+  # **Only `climat`.** The release `slipmat` package owns the same sidecar paths
+  # the daemon does, so it would be tempting to name it here — but `slipmat-git`
+  # *provides* `slipmat`, and a conflict on a name another package in this very
+  # split provides means the two cannot be installed together. That is the same
+  # mistake that made the daemon conflict with its own front-end, one package
+  # over. Someone holding the release package and installing this gets a file
+  # conflict from pacman instead, which is uglier and correct; it goes away when
+  # the release package is split too.
   conflicts=('climat')
 
   cd "$srcdir/$_pkgname"
