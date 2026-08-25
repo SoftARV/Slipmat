@@ -15,6 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use slipmat_core::entry::Entry;
 use slipmat_core::ipc::View;
+use slipmat_core::sort::SortBy;
 
 use crate::theme::{accent as ACCENT, bright as BRIGHT, dim as DIM, muted as MUTED};
 use crate::ui::fit;
@@ -56,6 +57,13 @@ pub struct Browser {
     /// lying about what the library holds.
     pub filter: String,
     pub typing: bool,
+    /// What each section is ordered by, and which way round.
+    ///
+    /// **Per section, not one shared setting.** The keys differ because the
+    /// data does — an album has a year, a playlist has neither an artist nor a
+    /// year — so choosing "Recently Added" for albums must not leave songs
+    /// claiming to be sorted by a date they do not carry.
+    pub sorts: [(SortBy, bool); 4],
     /// Whether the page on screen was opened from a catalog search, so `esc`
     /// knows which list to go back to.
     pub from_catalog: bool,
@@ -79,6 +87,7 @@ impl Default for Browser {
             showing: Showing::Library,
             filter: String::new(),
             typing: false,
+            sorts: [(SortBy::Title, false); 4],
             from_catalog: false,
             total: 0,
             offset: 0,
@@ -86,7 +95,36 @@ impl Default for Browser {
     }
 }
 
+/// Where a section's sort lives in [`Browser::sorts`].
+fn slot(view: View) -> usize {
+    SECTIONS.iter().position(|(v, _)| *v == view).unwrap_or(0)
+}
+
 impl Browser {
+    pub fn sort(&self) -> (SortBy, bool) {
+        self.sorts[slot(self.view)]
+    }
+
+    /// Step to the next key this section can honestly be ordered by.
+    ///
+    /// Returns false when there is only one — a library artist carries a name
+    /// and nothing else, so there is nothing to step through and saying so
+    /// beats a key that appears to do nothing.
+    pub fn cycle_sort(&mut self) -> bool {
+        let keys = SortBy::for_view(self.view);
+        if keys.len() < 2 {
+            return false;
+        }
+        let (by, _) = self.sort();
+        let next = keys[(keys.iter().position(|k| *k == by).unwrap_or(0) + 1) % keys.len()];
+        self.sorts[slot(self.view)].0 = next;
+        true
+    }
+
+    pub fn flip_sort(&mut self) {
+        let at = slot(self.view);
+        self.sorts[at].1 = !self.sorts[at].1;
+    }
     pub fn replace(&mut self, rows: Vec<Entry>, total: usize) {
         self.rows = rows;
         self.total = total;
@@ -189,6 +227,20 @@ pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
         ));
     }
 
+    // Only for the library: a catalog search is in Apple's own relevance order
+    // and a page is in the album's, and neither is ours to reorder.
+    if matches!(browser.showing, Showing::Library) {
+        let (by, reversed) = browser.sort();
+        let arrow = if reversed != by.descends_by_default() {
+            "↑"
+        } else {
+            "↓"
+        };
+        spans.push(Span::styled(
+            format!("   {arrow} {}", by.label().to_lowercase()),
+            Style::from(DIM()),
+        ));
+    }
     if browser.typing || !browser.filter.is_empty() {
         spans.push(Span::raw("   "));
         spans.push(Span::styled(

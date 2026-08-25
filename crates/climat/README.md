@@ -113,6 +113,8 @@ tenth of a second and gets the original palette.
 | `6` | The queue |
 | `⇥` | Walk the tabs |
 | `/` | Filter the library, or search Apple Music |
+| `o` | Order by the next thing this section can be sorted by |
+| `O` | Turn that order round |
 | `esc` | Out of a page, then out of a filter |
 | `↑` `↓` | Move the cursor |
 | `Home` | Put the cursor back on the playing track |
@@ -124,7 +126,14 @@ tenth of a second and gets the original palette.
 | `Ctrl+C` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |
 
-A `▸` marks a row that opens a page rather than playing.
+A `▸` marks a row that opens a page rather than playing. The tab strip shows
+what the list is ordered by and which way it runs.
+
+**Each section keeps its own order**, because the keys differ with the data: an
+album has a year and a date added, a playlist has neither an artist nor a year,
+and a library artist carries only a name — so `o` there says there is nothing
+else to sort by rather than pretending. Songs have no date added at all, which
+is measured rather than assumed: 0 of 541 carry one.
 
 `j` and `l` put a track in the queue without disturbing what is playing —
 straight after the current track, or at the end. They work on songs; an album

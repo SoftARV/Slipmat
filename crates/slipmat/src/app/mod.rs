@@ -1351,19 +1351,20 @@ impl Component for AppModel {
             view: View::from(settings.section),
             sorts: view::Sorts {
                 songs: view::Sort {
-                    by: SortBy::parse(&settings.sort).valid_for(View::Songs),
+                    by: SortBy::parse(&settings.sort).valid_for(View::Songs.sortable()),
                     reversed: settings.sort_reversed,
                 },
                 albums: view::Sort {
-                    by: SortBy::parse(&settings.album_sort).valid_for(View::Albums),
+                    by: SortBy::parse(&settings.album_sort).valid_for(View::Albums.sortable()),
                     reversed: settings.album_sort_reversed,
                 },
                 artists: view::Sort {
-                    by: SortBy::parse(&settings.artist_sort).valid_for(View::Artists),
+                    by: SortBy::parse(&settings.artist_sort).valid_for(View::Artists.sortable()),
                     reversed: settings.artist_sort_reversed,
                 },
                 playlists: view::Sort {
-                    by: SortBy::parse(&settings.playlist_sort).valid_for(View::Playlists),
+                    by: SortBy::parse(&settings.playlist_sort)
+                        .valid_for(View::Playlists.sortable()),
                     reversed: settings.playlist_sort_reversed,
                 },
             },

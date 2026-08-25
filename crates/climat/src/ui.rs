@@ -310,6 +310,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             // how you get anywhere, so it is the last hint worth losing.
             ("⇥", "tabs"),
             ("/", "filter"),
+            ("oO", "order"),
             ("jl", "next/last"),
             ("esc", "back"),
         ]

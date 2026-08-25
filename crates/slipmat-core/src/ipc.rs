@@ -19,6 +19,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::sort::SortBy;
+
 use crate::entry::Entry;
 use crate::player::protocol::{Item, RepeatMode};
 use crate::queue::Start;
@@ -175,6 +177,16 @@ pub enum Request {
         /// Zero means "the rest".
         #[serde(default)]
         limit: usize,
+        /// What to order by, and which way round.
+        ///
+        /// **The daemon sorts, not the client**, because the sort has to happen
+        /// before the window is taken — ordering one page of a library is not
+        /// ordering the library, and a client asking for rows 0..40 of an
+        /// unsorted list gets the wrong forty.
+        #[serde(default)]
+        sort: SortBy,
+        #[serde(default)]
+        reverse: bool,
     },
 
     /// Search all of Apple Music, not just the library.
