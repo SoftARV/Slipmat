@@ -45,10 +45,14 @@ That is a limit imposed by the DRM, not a shortcut taken here.
 ## The bars
 
 climat never touches the audio — the sidecar owns the stream — so the
-visualiser *listens*, reading the sink's monitor source, the loopback every
-output exposes. That is how `cava` and every other visualiser works, and it
-means the bars follow whatever is playing, including a track the GNOME window
-started.
+visualiser *listens*, reading a monitor source, the loopback every output
+exposes. That is how `cava` and every other visualiser works, and it means the
+bars follow whatever is playing, including a track the GNOME window started.
+
+**Only Slipmat's audio, though.** A sink's monitor carries the whole machine
+mixed together, so the bars would jump for a notification chime. The record
+stream is narrowed to the sidecar's own sink-input, which is the difference
+between watching the speakers and watching the player.
 
 It talks PulseAudio rather than PipeWire, because PipeWire ships
 `pipewire-pulse` and answers to it — one backend covers both servers. If there
