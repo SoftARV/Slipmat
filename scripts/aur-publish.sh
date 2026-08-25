@@ -46,6 +46,24 @@ cp "$src/PKGBUILD" "$src/LICENSE" .
 # which makepkg leaves in the working directory.
 printf '%s\n' '*' '!PKGBUILD' '!.SRCINFO' '!LICENSE' '!.gitignore' > .gitignore
 
+# **A VCS package publishes the version it would build to, not the placeholder.**
+# `pkgver=…r0.g0000000` in the tree is a stand-in that `pkgver()` replaces at
+# build time, and pushing it would replace a real version on the AUR with
+# something that reads as broken. Helpers cope either way — they run `pkgver()`
+# themselves — but the package page is what a person looks at.
+#
+# `--noprepare` is what makes this affordable: `prepare()` runs `npm install`
+# and fetches ~200 MB of Electron, and none of it is needed to answer "what
+# would this build call itself". What is left is a source clone and
+# `git describe`. `--nodeps` because nothing is being compiled.
+#
+# It rewrites the working copy, never the tree's own PKGBUILD — makepkg runs
+# here, on the copy.
+if [[ $pkg == *-git ]]; then
+    echo "==> computing the version this would build to"
+    makepkg --noprepare --nobuild --nodeps --noconfirm >/dev/null
+fi
+
 # Regenerated every time, never hand-written. A push without it, or with one
 # that disagrees with the PKGBUILD, is rejected by the AUR's own hook.
 makepkg --printsrcinfo > .SRCINFO
