@@ -56,7 +56,7 @@ pub struct View<'a> {
     /// changes what typing costs and therefore what the hints promise.
     pub catalog: bool,
     pub bars: &'a [f32],
-    pub message: Option<&'a str>,
+    pub message: Option<(&'a str, bool)>,
 }
 
 pub fn draw(frame: &mut Frame, view: View) {
@@ -90,13 +90,15 @@ pub fn draw(frame: &mut Frame, view: View) {
         Paragraph::new(now_playing(&view, area.width as usize, rows)),
         top,
     );
-    if let Some(message) = view.message {
+    if let Some((message, bad)) = view.message {
         // Rule 4 reaching the terminal: a request the daemon refused says so
-        // rather than looking like a key that did not register.
+        // rather than looking like a key that did not register. A confirmation
+        // is not that, and drawing both in the accent would teach the accent to
+        // mean "something happened" instead of "something is wrong".
         frame.render_widget(
             Paragraph::new(spaced(Line::from(Span::styled(
                 fit(message, area.width as usize),
-                Style::from(ACCENT()),
+                Style::from(if bad { ACCENT() } else { MUTED() }),
             )))),
             note,
         );
@@ -305,6 +307,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("↑↓", "move"),
             ("↵", "play/open"),
             ("/", "filter"),
+            ("na", "next/queue"),
             ("1-6", "tab"),
             ("esc", "back"),
         ]

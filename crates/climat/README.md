@@ -96,12 +96,18 @@ tenth of a second and gets the original palette.
 | `↑` `↓`, `k` `j` | Move the cursor |
 | `Home` | Put the cursor back on the playing track |
 | `↵` | Play the selected track, or open the album it leads to |
+| `n` | Queue it to play next |
+| `a` | Queue it at the end |
 | `d` | Remove it from the queue |
 | `K` `J` | Move it up / down |
 | `Ctrl+C` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |
 
 A `▸` marks a row that opens a page rather than playing.
+
+`n` and `a` put a track in the queue without disturbing what is playing —
+straight after the current track, or at the end. They work on songs; an album
+has no playable id of its own, so open it first and queue from inside.
 
 **Who answers decides what a keystroke costs.** Over the library the list
 narrows as you type, which is affordable because it never reaches Apple — the
