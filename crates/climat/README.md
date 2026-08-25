@@ -27,7 +27,7 @@ and a window open at once are two views of one player rather than two players.
     Addicted To a Memory (feat. Bahari)     Zedd — True Colors
     Aftershock (feat. Jacquie Lee)          Cash Cash — Blood, Sweat & 3 Years
 
-  space play/pause   ↑↓ move   ↵ play/open   / filter   1-6 tab   ^C hide   q quit
+  [space] play/pause   [↑↓] move   [↵] play/open   [⇥] tabs   [/] filter   [Ctrl+C] hide   [q] quit
 ```
 
 ## It needs a graphical session
@@ -45,10 +45,20 @@ That is a limit imposed by the DRM, not a shortcut taken here.
 ## The bars
 
 climat never touches the audio — the sidecar owns the stream — so the
-visualiser *listens*, reading the sink's monitor source, the loopback every
-output exposes. That is how `cava` and every other visualiser works, and it
-means the bars follow whatever is playing, including a track the GNOME window
-started.
+visualiser *listens*, reading a monitor source, the loopback every output
+exposes. That is how `cava` and every other visualiser works, and it means the
+bars follow whatever is playing, including a track the GNOME window started.
+
+**Only while Slipmat is playing.** A sink's monitor carries the whole machine
+mixed together. The record stream asks to be narrowed to the sidecar's own
+sink-input — real PulseAudio honours that; `pipewire-pulse` does not, measured —
+so what actually keeps a notification chime out of the bars is the player's own
+state: no bars unless Slipmat is playing.
+
+One case is left, and it is the honest one to leave: while Slipmat *is* playing,
+anything else the machine makes is mixed into what the visualiser reads. Fixing
+that properly means PipeWire's own API rather than its PulseAudio emulation,
+which is a different backend for a decoration.
 
 It talks PulseAudio rather than PipeWire, because PipeWire ships
 `pipewire-pulse` and answers to it — one backend covers both servers. If there
@@ -69,6 +79,17 @@ do. What is analysed does not change with it: the audio side produces a fixed
 set of bands and the drawing side folds them into however many columns there
 are, keeping the peak of each — an average is what turns a spectrum into a
 smooth hump.
+
+### The `ijkl` cluster
+
+```
+      i           move the row up
+  j   k   l       queue next · move it down · queue last
+```
+
+`i` above `k` is up above down; `j` before `l` is sooner before later. Queueing
+works in the library tabs, reordering in the queue — press one in the wrong
+place and it says so rather than doing nothing.
 
 ## Colours
 
@@ -93,15 +114,21 @@ tenth of a second and gets the original palette.
 | `⇥` | Walk the tabs |
 | `/` | Filter the library, or search Apple Music |
 | `esc` | Out of a page, then out of a filter |
-| `↑` `↓`, `k` `j` | Move the cursor |
+| `↑` `↓` | Move the cursor |
 | `Home` | Put the cursor back on the playing track |
 | `↵` | Play the selected track, or open the album it leads to |
+| `j` | Queue it to play next |
+| `l` | Queue it at the end |
 | `d` | Remove it from the queue |
-| `K` `J` | Move it up / down |
+| `i` `k` | Move it up / down in the queue |
 | `Ctrl+C` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |
 
 A `▸` marks a row that opens a page rather than playing.
+
+`j` and `l` put a track in the queue without disturbing what is playing —
+straight after the current track, or at the end. They work on songs; an album
+has no playable id of its own, so open it first and queue from inside.
 
 **Who answers decides what a keystroke costs.** Over the library the list
 narrows as you type, which is affordable because it never reaches Apple — the
@@ -110,7 +137,9 @@ socket. Over Apple Music every query is a real request to somebody else's API,
 so typing only edits the text and `↵` is what sends it. Same box, same key, two
 rules, and the bottom row says which one is in force.
 
-The bottom row changes with which pane has focus — only the queue reorders,
+Each key is bracketed, so it reads as something to press rather than as the
+first word of its own label. The bottom
+row changes with which pane has focus — only the queue reorders,
 only the library filters — and shows the keys that fit, dropping the least essential first —
 so a narrow window loses the reorder hints rather than losing the row. Leaving
 and quitting are always on it.

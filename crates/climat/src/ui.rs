@@ -56,7 +56,7 @@ pub struct View<'a> {
     /// changes what typing costs and therefore what the hints promise.
     pub catalog: bool,
     pub bars: &'a [f32],
-    pub message: Option<&'a str>,
+    pub message: Option<(&'a str, bool)>,
 }
 
 pub fn draw(frame: &mut Frame, view: View) {
@@ -90,13 +90,15 @@ pub fn draw(frame: &mut Frame, view: View) {
         Paragraph::new(now_playing(&view, area.width as usize, rows)),
         top,
     );
-    if let Some(message) = view.message {
+    if let Some((message, bad)) = view.message {
         // Rule 4 reaching the terminal: a request the daemon refused says so
-        // rather than looking like a key that did not register.
+        // rather than looking like a key that did not register. A confirmation
+        // is not that, and drawing both in the accent would teach the accent to
+        // mean "something happened" instead of "something is wrong".
         frame.render_widget(
             Paragraph::new(spaced(Line::from(Span::styled(
                 fit(message, area.width as usize),
-                Style::from(ACCENT()),
+                Style::from(if bad { ACCENT() } else { MUTED() }),
             )))),
             note,
         );
@@ -284,7 +286,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
     // **What the terminal already means.** Ctrl+C is how everybody leaves a
     // program in a terminal, and it is the right key for the one that leaves
     // the music playing. `q` is the one that takes the player with it.
-    const LEAVING: [(&str, &str); 2] = [("^C", "hide"), ("q", "quit")];
+    const LEAVING: [(&str, &str); 2] = [("Ctrl+C", "hide"), ("q", "quit")];
 
     // While typing, every letter goes into the filter, so advertising the
     // transport keys would be a lie about what the keyboard does.
@@ -304,8 +306,11 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("space", "play/pause"),
             ("↑↓", "move"),
             ("↵", "play/open"),
+            // Above the filter and the queueing keys: moving between tabs is
+            // how you get anywhere, so it is the last hint worth losing.
+            ("⇥", "tabs"),
             ("/", "filter"),
-            ("1-6", "tab"),
+            ("jl", "next/last"),
             ("esc", "back"),
         ]
     } else {
@@ -313,14 +318,15 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("space", "play/pause"),
             ("↑↓", "move"),
             ("↵", "play"),
+            ("⇥", "tabs"),
             ("d", "remove"),
-            ("KJ", "reorder"),
-            ("1-6", "tab"),
+            ("ik", "reorder"),
             ("-=", "volume"),
         ]
     };
 
-    let cost = |(key, what): &(&str, &str)| key.chars().count() + what.chars().count() + 4;
+    // Two cells of padding inside the cap, one gap after the label.
+    let cost = |(key, what): &(&str, &str)| key.chars().count() + what.chars().count() + 6;
     let reserved: usize = LEAVING.iter().map(cost).sum();
 
     let mut spans = Vec::new();
@@ -334,10 +340,17 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             used += cost(&pair);
         }
         let (key, what) = pair;
+        // **Bracketed, not filled.** The key needs to read as something to
+        // press rather than as the first word of its own label — which is what
+        // `z prev x play` looked like at a glance. A solid reversed block did
+        // that and was too loud for a row that is always on screen; brackets
+        // draw the same outline out of two characters.
+        spans.push(Span::styled("[", Style::from(DIM())));
         spans.push(Span::styled(
             key,
             Style::from(MUTED()).add_modifier(Modifier::BOLD),
         ));
+        spans.push(Span::styled("]", Style::from(DIM())));
         spans.push(Span::styled(format!(" {what}   "), Style::from(DIM())));
     }
     Line::from(spans)

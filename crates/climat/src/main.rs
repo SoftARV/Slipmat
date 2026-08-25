@@ -40,8 +40,37 @@ use crate::ui::Pane;
 /// tick between them rather than stepping half a second at a time.
 const FRAME_MS: u64 = 100;
 
-/// How long a refusal from the daemon stays on screen.
-const MESSAGE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a notice stays on screen.
+const MESSAGE_FOR: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Something to tell the person at the keyboard.
+///
+/// **`bad` is not decoration.** Queueing a track and being refused one look
+/// identical as a line of text, and drawing both in the accent taught people to
+/// read the accent as "something happened" rather than "something is wrong".
+struct Notice {
+    text: String,
+    at: std::time::Instant,
+    bad: bool,
+}
+
+impl Notice {
+    fn good(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            at: std::time::Instant::now(),
+            bad: false,
+        }
+    }
+
+    fn bad(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            at: std::time::Instant::now(),
+            bad: true,
+        }
+    }
+}
 
 struct App {
     snap: Snapshot,
@@ -49,9 +78,9 @@ struct App {
     browser: browser::Browser,
     queue: queue::Queue,
     pane: Pane,
-    /// The last thing the daemon refused, and when — so it can fade rather than
-    /// sit there accusing a key that was pressed a minute ago.
-    message: Option<(String, std::time::Instant)>,
+    /// The last thing worth saying, and when — so it fades rather than sitting
+    /// there accusing a key that was pressed a minute ago.
+    message: Option<Notice>,
     /// Set by `q`. `_` leaves without it, and the daemon keeps playing.
     quit_daemon: bool,
     /// The visualiser's last frame. All zeroes when there is nothing to hear,
@@ -131,7 +160,7 @@ async fn run() -> Result<()> {
                         bars: &app.bars,
                         browser: &mut app.browser,
                         queue: &mut app.queue,
-                        message: app.message.as_ref().map(|(text, _)| text.as_str()),
+                        message: app.message.as_ref().map(|n| (n.text.as_str(), n.bad)),
                     },
                 )
             })?;
@@ -179,13 +208,20 @@ async fn run() -> Result<()> {
                     None => std::future::pending().await,
                 }
             } => {
-                app.bars = bars;
-                dirty = true;
+                // **Only while Slipmat is playing.** The monitor carries
+                // whatever the machine is making, and asking for one stream is
+                // not enough — see `spectrum`. So the player's own state is
+                // what decides whether there are bars at all: a notification
+                // chime with nothing playing must not move them.
+                if app.snap.playing {
+                    app.bars = bars;
+                    dirty = true;
+                }
             }
             _ = frame.tick() => {
                 // Carry the clock forward between snapshots, so the time reads
                 // like a clock rather than stepping twice a second.
-                if app.message.as_ref().is_some_and(|(_, at)| at.elapsed() > MESSAGE_FOR) {
+                if app.message.as_ref().is_some_and(|n| n.at.elapsed() > MESSAGE_FOR) {
                     app.message = None;
                     dirty = true;
                 }
@@ -287,21 +323,35 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
         // Out of a page, then out of a filter — the order they were entered.
         KeyCode::Esc => app.back(link),
 
-        KeyCode::Up | KeyCode::Char('k') => app.pane_cursor(-1),
-        KeyCode::Down | KeyCode::Char('j') => app.pane_cursor(1),
+        KeyCode::Up => app.pane_cursor(-1),
+        KeyCode::Down => app.pane_cursor(1),
         KeyCode::PageUp => app.pane_cursor(-10),
         KeyCode::PageDown => app.pane_cursor(10),
         KeyCode::Home if app.pane == Pane::Queue => app.queue.follow(),
         KeyCode::Enter => app.activate(link),
 
+        // **The `ijkl` cluster, laid out the way it sits under the hand.**
+        //
+        //         i          move the row up
+        //     j   k   l      queue next · move it down · queue last
+        //
+        // `i` above `k` is up above down, and `j` before `l` is sooner before
+        // later. It costs vim's `j`/`k` for the cursor, which the arrows still
+        // do.
+        KeyCode::Char('j') if app.pane == Pane::Browser => app.enqueue(link, true),
+        KeyCode::Char('l') if app.pane == Pane::Browser => app.enqueue(link, false),
+        KeyCode::Char('i') if app.pane == Pane::Queue => reorder(link, app, -1),
+        KeyCode::Char('k') if app.pane == Pane::Queue => reorder(link, app, 1),
+        // **Said, not swallowed.** Reordering only means something in the
+        // queue, and pressing it elsewhere used to do nothing at all — which
+        // reads as a broken key rather than as the wrong place for it.
+        KeyCode::Char('i') | KeyCode::Char('k') => {
+            app.message = Some(Notice::bad("Reordering lives in the queue — press 6"))
+        }
+
         KeyCode::Char('d') if app.pane == Pane::Queue => link.send(Request::RemoveFromQueue {
             index: app.queue.cursor,
         }),
-        // Shift moves the row rather than the cursor. The cursor goes with it,
-        // so the selection stays on the track being moved and a second press
-        // moves the same one again.
-        KeyCode::Char('K') if app.pane == Pane::Queue => reorder(link, app, -1),
-        KeyCode::Char('J') if app.pane == Pane::Queue => reorder(link, app, 1),
 
         // Leaves the daemon alone, the way Ctrl+C above does: the music keeps
         // playing and a GTK window or another terminal still has a player to
@@ -468,10 +518,7 @@ impl App {
         // A song: the queue is the whole list it sits in, opened at this row.
         let (ids, index) = self.browser.queue_from_here();
         if ids.is_empty() {
-            self.message = Some((
-                "Nothing here can be streamed".into(),
-                std::time::Instant::now(),
-            ));
+            self.message = Some(Notice::bad("Nothing here can be streamed"));
             return;
         }
         link.send(Request::Play {
@@ -479,6 +526,36 @@ impl App {
             index,
             start: PlayMode::InOrder,
         });
+    }
+
+    /// Put the selected row in the queue rather than playing it.
+    ///
+    /// **Songs only.** An album row has no playable id of its own — its tracks
+    /// are a page that has not been fetched — so queueing one would mean an
+    /// open, a wait, and a queue edit somebody did not watch happen. Saying so
+    /// is better than half-doing it.
+    fn enqueue(&mut self, link: &link::Link, next: bool) {
+        let Some(entry) = self.browser.selected() else {
+            return;
+        };
+        let Some(id) = entry.catalog_id() else {
+            self.message = Some(Notice::bad(if entry.opens_a_page() {
+                "Open it first — only songs can be queued"
+            } else {
+                "Apple cannot stream this one"
+            }));
+            return;
+        };
+        let title = entry.title().to_owned();
+        link.send(Request::Enqueue {
+            ids: vec![id.to_owned()],
+            next,
+        });
+        self.message = Some(Notice::good(if next {
+            format!("Playing next: {title}")
+        } else {
+            format!("Added to the queue: {title}")
+        }));
     }
 
     /// Esc: out of a page first, then out of a filter.
@@ -551,7 +628,14 @@ fn seek(link: &link::Link, app: &App, delta: i64) {
 impl App {
     fn on_event(&mut self, event: Event) {
         match event {
-            Event::Snapshot(snap) => self.snap = snap,
+            Event::Snapshot(snap) => {
+                // Stopping clears the bars at once rather than leaving the
+                // last frame to decay over whatever the machine plays next.
+                if !snap.playing {
+                    self.bars = [0.0; spectrum::BANDS];
+                }
+                self.snap = snap;
+            }
             Event::Queue { items, position } => self.queue.replace(items, position),
             Event::Stage(stage) => self.stage = stage,
             Event::Rows { entries, total, .. } => {
@@ -584,7 +668,7 @@ impl App {
             }
             // The daemon refuses things — removing the track it is playing is
             // the one that will be hit most. Saying so is rule 4's job.
-            Event::Error { detail } => self.message = Some((detail, std::time::Instant::now())),
+            Event::Error { detail } => self.message = Some(Notice::bad(detail)),
             // Slice 01 draws the player and nothing else. The rest of the
             // contract is answered in the slices that draw it.
             _ => {}

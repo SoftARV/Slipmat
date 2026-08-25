@@ -307,7 +307,6 @@ dependencies = [
  "futures",
  "libc",
  "libpulse-binding",
- "libpulse-simple-binding",
  "ratatui",
  "rustfft",
  "serde_json",
@@ -1288,27 +1287,6 @@ dependencies = [
  "num-derive",
  "num-traits",
  "winapi",
-]
-
-[[package]]
-name = "libpulse-simple-binding"
-version = "2.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7bebef0381c8e3e4b23cc24aaf36fab37472bece128de96f6a111efa464cfef"
-dependencies = [
- "libpulse-binding",
- "libpulse-simple-sys",
- "libpulse-sys",
-]
-
-[[package]]
-name = "libpulse-simple-sys"
-version = "1.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bd96888fe37ad270d16abf5e82cccca1424871cf6afa2861824d2a52758eebc"
-dependencies = [
- "libpulse-sys",
- "pkg-config",
 ]
 
 [[package]]
