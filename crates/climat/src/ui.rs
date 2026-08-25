@@ -77,10 +77,11 @@ pub fn draw(frame: &mut Frame, view: View) {
     let rows = spectrum_rows(area.height);
     // name + title + album + a blank + spectrum + a blank + seek + state + modes.
     let band = 4 + rows as u16 + 4;
-    let [top, note, tabs, list, hints] = Layout::vertical([
+    let [top, note, tabs, search, list, hints] = Layout::vertical([
         Constraint::Length(band),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
         Constraint::Length(2),
+        Constraint::Length(browser::search_height(view.browser)),
         Constraint::Fill(1),
         Constraint::Length(1),
     ])
@@ -113,6 +114,12 @@ pub fn draw(frame: &mut Frame, view: View) {
         ))),
         tabs,
     );
+    if search.height > 0 {
+        frame.render_widget(
+            Paragraph::new(browser::search_box(view.browser, area.width as usize)),
+            search,
+        );
+    }
     match view.pane {
         Pane::Browser => browser::render(frame, list, view.browser),
         Pane::Queue => queue::render(frame, list, view.queue),

@@ -262,19 +262,6 @@ pub fn header(browser: &Browser, queue: Option<usize>, width: usize) -> Line<'st
     spans.push(Span::raw("   "));
     spans.push(tab("QUEUE", showing_queue));
 
-    if browser.typing || !browser.filter.is_empty() {
-        spans.push(Span::raw("   "));
-        spans.push(Span::styled(
-            format!("/{}", browser.filter),
-            Style::from(if browser.typing { BRIGHT() } else { MUTED() }),
-        ));
-        // A block, so it is obvious the next keystroke goes here and not to the
-        // transport — `p` in a filter must never mean pause.
-        if browser.typing {
-            spans.push(Span::styled("▌", Style::from(ACCENT())));
-        }
-    }
-
     // **The rule runs to the far end of every tab, and carries whatever that
     // tab has to say about itself.** At the end of the tabs these read as one
     // more tab; pushed right and ruled off, they read as what the list *is*
@@ -325,6 +312,70 @@ fn tab(name: &str, on: bool) -> Span<'static> {
             Style::from(DIM())
         },
     )
+}
+
+/// How many rows the search box takes, or none when it is not showing.
+pub fn search_height(browser: &Browser) -> u16 {
+    if browser.typing || !browser.filter.is_empty() {
+        3
+    } else {
+        0
+    }
+}
+
+/// The search box: a field the width of the window, under the tabs.
+///
+/// **A box rather than a word on the strip.** `/odesza` tucked among the tabs
+/// read as one more label; a bordered field reads as somewhere text goes, and
+/// its own border can say what typing there will do — the two are different
+/// questions and the answer changes with the tab.
+pub fn search_box(browser: &Browser, width: usize) -> Vec<Line<'static>> {
+    let label = if browser.showing.is_catalog() {
+        " search Apple Music "
+    } else {
+        " filter the library "
+    };
+    let inner = width.saturating_sub(2);
+    let lead = 2usize;
+    let rule = inner.saturating_sub(lead + label.chars().count());
+
+    let top = Line::from(vec![
+        Span::styled(
+            format!("┌{}", "─".repeat(lead.min(inner))),
+            Style::from(DIM()),
+        ),
+        Span::styled(label, Style::from(MUTED())),
+        Span::styled(format!("{}┐", "─".repeat(rule)), Style::from(DIM())),
+    ]);
+
+    // **The cursor follows the text, so the text cannot be padded first.**
+    // `fit` pads to a width, which put the block at the far right of the field
+    // as though the caret were parked at the end of an empty line.
+    //
+    // The row is `│ ` + text + caret + padding + `│`, so text and padding
+    // together are `width - 4`.
+    let room = width.saturating_sub(4);
+    let typed: String = browser.filter.chars().take(room).collect();
+    let pad = room - typed.chars().count();
+    let middle = vec![
+        Span::styled("│ ", Style::from(DIM())),
+        Span::styled(typed, Style::from(BRIGHT())),
+        Span::styled(
+            if browser.typing { "▌" } else { " " },
+            Style::from(ACCENT()),
+        ),
+        Span::raw(" ".repeat(pad)),
+        Span::styled("│", Style::from(DIM())),
+    ];
+
+    vec![
+        top,
+        Line::from(middle),
+        Line::from(Span::styled(
+            format!("└{}┘", "─".repeat(inner)),
+            Style::from(DIM()),
+        )),
+    ]
 }
 
 pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser) {
