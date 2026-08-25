@@ -9,12 +9,12 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # Slipmat
 
-A native GNOME client for Apple Music.
+Apple Music for Linux, drawn natively.
 
 Apple ships no Linux client, and the DRM makes a fully native one impossible —
-so Slipmat draws its own interface in GTK4 and libadwaita, written in Rust, and
-keeps the web engine strictly for decoding audio. Real lists, real GNOME search,
-and media controls that answer from the top bar and the lock screen.
+so Slipmat draws its own interface, written in Rust, and keeps the web engine
+strictly for decoding audio. A GNOME app, a terminal player, and one background
+engine they share.
 
 The web engine is still there. You just never see it.
 
@@ -24,31 +24,21 @@ The web engine is still there. You just never see it.
 
 ## What it does
 
-**A native GNOME app.** GTK4 and libadwaita, written in Rust — real lists, real
-keyboard navigation, a window that tiles to half a screen. There is a web layer,
-because Apple's DRM leaves no choice, but it is one hidden process that decodes
-audio and nothing else. You never see a web page.
+- **Native, twice.** A GNOME app in GTK4 and libadwaita, and `climat` for the
+  terminal. Both drive the same engine, so they agree about what is playing.
+- **Your library.** Songs, albums, artists and playlists, each filtered and
+  ordered its own way. Play anything and that list becomes the queue.
+- **A player worth the name.** Gapless, with a full-size view, the queue beside
+  it and the cover behind it.
+- **Controls where you already look.** The GNOME top bar, the lock screen, your
+  media keys. Close every window and the music keeps going.
+- **All of Apple Music, searchable.** Artists, albums, playlists and songs, more
+  arriving as you scroll, each opening a page you can play from.
+- **Quick, and out of the way.** Opens on your library, not a spinner. Your last
+  queue is waiting — restored, never resumed.
 
-**Your library.** Songs, albums, artists and playlists, each with type-to-find
-filtering and its own sorting. Click anything and the list you are looking at
-becomes the queue.
-
-**A player worth the name.** Gapless, with a full-size view you can pull up, the
-queue beside it, and the cover behind it.
-
-**Controls where you already look.** Play, pause and skip from the GNOME top
-bar, from the lock screen, or with your keyboard's media keys — cover and title
-alongside them, and the position honest while it plays. Close the window and the
-music keeps going; it quits when you tell it to, not when you tidy your desktop.
-
-**All of Apple Music, searchable.** Artists, albums, playlists and songs in one
-list, paginated as you scroll, each opening a page you can play from and drill
-through.
-
-**Quick, and out of the way.** It opens on your library rather than on a
-spinner, a five-hundred-track list scrolls without stuttering, and whatever you
-were playing is waiting next launch — restored, never resumed. An app that
-starts making noise because you opened it is a hostile one.
+There is a web layer, because Apple's DRM leaves no choice. It is one hidden
+process that decodes audio and nothing else; you never see a web page.
 
 <table>
   <tr>
@@ -93,16 +83,18 @@ is the Widevine boundary and there is no smaller version of it.
 
 ### Arch and derivatives
 
-Both packages are on the AUR:
-
 ```bash
 yay -S slipmat        # the latest release
-yay -S slipmat-git    # tracks main
+yay -S slipmat-git    # tracks main: the GNOME app
+yay -S climat-git     # tracks main: the terminal player
 ```
 
-They conflict with each other, as the convention requires. `slipmat-git`
-rebuilds from whatever is on `main`, so it picks up unreleased work — including
-anything half-finished.
+The release and `-git` lines conflict with each other, as the convention
+requires. `slipmat-git` rebuilds from whatever is on `main`, so it picks up
+unreleased work — including anything half-finished.
+
+Either `-git` front-end pulls in `slipmat-daemon-git`, which is the engine and
+the sidecar. Install both and they share one copy of it, and one player.
 
 ### Flatpak — any distribution
 
@@ -131,10 +123,15 @@ flatpak remote-add --if-not-exists --user flathub \
 
 It is **not on Flathub** and is not intended to be.
 
+The bundle carries the GNOME app, the engine and the sidecar. `climat` is not in
+it — a terminal player inside a desktop sandbox is a strange place to put one,
+and the AUR package or a build from source is the better route.
+
 ### From source
 
 ```bash
-sudo pacman -S --needed base-devel pkgconf rust gtk4 libadwaita librsvg nodejs npm
+sudo pacman -S --needed base-devel pkgconf rust gtk4 libadwaita librsvg \
+                        nodejs npm libpulse
 make install     # build + install to ~/.local, no sudo
 ```
 
@@ -142,10 +139,16 @@ Also needs Rust ≥ 1.93 (relm4 0.11's MSRV) and Node — verified on Node 26. T
 launch **Slipmat** from the app grid, or run `slipmat`. If that command is not
 found, `~/.local/bin` is not on your `PATH`.
 
+`climat` installs alongside it. It needs a graphical session even though it
+draws in a terminal — not for itself, but because the daemon behind it runs
+Chromium, and Chromium wants a display server even with its window hidden. So it
+will not work over a plain SSH connection to a headless machine. That is
+Widevine, not a shortcut taken here.
+
 ### First run
 
 Apple's own sign-in window opens once, and hides for good after you
-authenticate. Notifications need the app to be installed — running from a build
+authenticate. It is the same session whichever front-end you start. Notifications need the app to be installed — running from a build
 tree, the shell has no `.desktop` entry to attach them to.
 
 ## Support
@@ -167,6 +170,9 @@ These are properties of the platform, not a to-do list:
 - **~200 MB on disk for the sidecar.** It is a full Chromium. That is the cost
   of the only CDM that exists.
 - **x86_64 only.** No ARM Widevine on Linux.
+- **`climat` needs a desktop session.** A terminal player that will not work
+  over SSH is a surprise, and it is the same chain: the daemon runs Chromium,
+  and Chromium wants a display server even with its window never mapped.
 - **Apple can change `music.apple.com`.** The hook that drives MusicKit is small
   and defensive, but it is the one surface outside our control. If Apple moves
   something, Slipmat says so rather than silently spinning.
@@ -183,28 +189,38 @@ CDM that exists is the one Google ships inside Chromium. There is no way around
 that — WebKitGTK has no CDM, and GStreamer cannot decrypt the stream. **A 100%
 native Apple Music player cannot be built.**
 
-So Slipmat splits the problem:
+So Slipmat splits the problem three ways:
 
 ```
-┌──────────────────────────────────────────────────┐
-│  Slipmat — Rust · relm4 · libadwaita             │  ← everything you see
-│  library · search · queue · Now Playing          │
-│  MPRIS · notifications · media keys · artwork    │
-│  HTTPS ─────────────────► api.music.apple.com    │
-└───────────────────────┬──────────────────────────┘
-                        │  newline-delimited JSON over stdio
-┌───────────────────────▼──────────────────────────┐
-│  sidecar — castLabs Electron                      │  ← invisible after login
-│  hidden music.apple.com  +  MusicKit  +  Widevine │
-│  → audio straight to PipeWire, untouched          │
-└───────────────────────────────────────────────────┘
+┌────────────────────────────┐   ┌────────────────────────────┐
+│  Slipmat — GTK4/libadwaita │   │  climat — the terminal     │  ← what you see
+│  library · search · queue  │   │  same, drawn in text       │
+└─────────────┬──────────────┘   └─────────────┬──────────────┘
+              │      newline-delimited JSON over a Unix socket
+              └──────────────┬─────────────────┘
+┌────────────────────────────▼─────────────────────────────────┐
+│  slipmatd — the engine                        ← no window     │
+│  owns the queue · MPRIS · artwork · the library cache         │
+│  HTTPS ──────────────────────────────► api.music.apple.com    │
+└────────────────────────────┬─────────────────────────────────┘
+                             │  the same JSON, over stdio
+┌────────────────────────────▼─────────────────────────────────┐
+│  sidecar — castLabs Electron               ← invisible        │
+│  hidden music.apple.com  +  MusicKit  +  Widevine             │
+│  → audio straight to PipeWire, untouched                      │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-All browsing, search and metadata is native code talking to Apple's REST API and
-drawing native widgets. Only the **audio decode** happens in the sidecar — a
-Chromium window with `show: false`, displayed exactly once for Apple's own
-sign-in and then never again. It is never rendered, it does not appear in the
-dash, and it does not publish an MPRIS player of its own.
+- **The daemon exists because the sidecar cannot be shared.** One Widevine CDM,
+  one Chromium profile lock — two apps cannot each run one. So the engine owns
+  it and everything else is a client, which is why closing a window stops
+  nothing and two of them agree about the track.
+- **Nothing has to enable it.** The first client to start finds no daemon and
+  starts one. It puts Chromium down after five idle minutes and picks it back
+  up when asked.
+- **Only the audio decode is not native.** Browsing, search and metadata are
+  Rust talking to Apple's REST API. The sidecar is a Chromium window with
+  `show: false`, shown exactly once for Apple's sign-in and never again.
 
 Slipmat plays through Apple's own MusicKit player with Google's official CDM. It
 is a native front-end and a remote control for a licensed session. It does not
@@ -213,16 +229,23 @@ strip DRM, does not use extracted CDMs, and does not download anything.
 ## Development
 
 ```bash
-cargo run                                    # dev
-RUST_LOG=slipmat=debug cargo run             # trace the sidecar protocol
+cargo run                                    # the GNOME app
+cargo run -p climat                          # the terminal player
+RUST_LOG=slipmatd=debug cargo run -p slipmatd   # the engine, with its protocol
 make sidecar-run                             # sidecar alone, window VISIBLE
 make gapless                                 # watch the audio stream across a boundary
 cargo clippy --all-targets -- -D warnings    # the bar
 make check                                   # fmt + clippy + test
 ```
 
-Debug in layers — `make sidecar-run` first. If a track won't play with the
-window visible, the problem is DRM or Apple, not Rust.
+Debug in layers, from the bottom — `make sidecar-run` first. If a track will not
+play with the window visible, the problem is DRM or Apple, not Rust. If it plays
+there but not in an app, the layer above is the daemon, and it is the one with
+the logs.
+
+Both front-ends start a daemon if none is listening, so a stale one from an
+earlier build is easy to be fooled by. `pgrep -x slipmatd` before doubting a
+change.
 
 The module headers in `src/` say what each file is for,
 the long comments are the traps and the measurements behind them,
