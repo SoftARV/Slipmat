@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=climat
+GenericName=Music Player
+Comment=Play your Apple Music library from a terminal
+Exec=climat
+Icon=dev.miguelrincon.Climat
+# The whole point: the desktop launches a terminal and runs climat inside it.
+# Which terminal is the desktop's business, not ours.
+Terminal=true
+# `ConsoleOnly` is what tells a launcher this needs a terminal — some hide it
+# from graphical-only menus on the strength of it, which is correct.
+Categories=AudioVideo;Audio;Player;ConsoleOnly;
+Keywords=Music;Apple;Player;Audio;Terminal;TUI;
+# The terminal owns the window, so there is nothing of ours for the shell to
+# wait on or to match a window against — no StartupWMClass, and no notification.
+StartupNotify=false

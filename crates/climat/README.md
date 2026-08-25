@@ -4,7 +4,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
 <p align="center">
-  <img src="../../data/icons/climat.svg" width="96" alt="The climat icon: the Slipmat record's pattern, pixelated, on a near-black ground">
+  <img src="../../data/icons/hicolor/scalable/apps/dev.miguelrincon.Climat.svg" width="96" alt="The climat icon: the Slipmat record's pattern, pixelated, on a near-black ground">
 </p>
 
 # climat
