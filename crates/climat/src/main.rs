@@ -23,7 +23,7 @@ use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyEventKind};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use futures::StreamExt;
 use slipmat_core::ipc::{
-    Event, PlayMode, Request, Snapshot, Stage, Transport, View as LibraryView,
+    CatalogFilter, Event, PlayMode, Request, Snapshot, Stage, Transport, View as LibraryView,
 };
 use slipmat_core::player::protocol::RepeatMode;
 
@@ -97,6 +97,7 @@ async fn run() -> Result<()> {
                         stage: &app.stage,
                         focus: app.focus,
                         typing: app.browser.typing,
+                        catalog: app.browser.showing.is_catalog() || app.browser.from_catalog,
                         browser: &mut app.browser,
                         queue: &mut app.queue,
                         message: app.message.as_ref().map(|(text, _)| text.as_str()),
@@ -208,6 +209,12 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
                 Focus::Queue => Focus::Browser,
             }
         }
+        // Not a section of the library — the rest of Apple Music, which is
+        // empty until it is asked for.
+        KeyCode::Char('5') => {
+            app.focus = Focus::Browser;
+            app.show_catalog();
+        }
         KeyCode::Char(d @ '1'..='4') => {
             // Selecting a section is also a request to look at it, so it takes
             // focus — otherwise the arrows would still be driving the queue.
@@ -249,9 +256,12 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
 
 /// The filter, which owns the keyboard while it is open.
 ///
-/// Every edit re-browses. That is affordable *because it is not Apple*: the
-/// daemon answers from the library it already holds, so this is a round trip to
-/// a local socket rather than a request per keystroke to someone's API.
+/// **Who answers decides what a keystroke costs.** Over the library every edit
+/// re-browses, which is affordable because the daemon replies from the cache it
+/// already holds — a local socket, not Apple. Over the catalog every query is a
+/// real request to somebody else's API, so keystrokes only edit the text and
+/// `↵` is what sends it. Same box, same key, two rules, and the hint row says
+/// which one is in force.
 fn typing(code: KeyCode, link: &link::Link, app: &mut App) {
     match code {
         KeyCode::Char(c) => app.browser.filter.push(c),
@@ -261,17 +271,29 @@ fn typing(code: KeyCode, link: &link::Link, app: &mut App) {
         KeyCode::Esc => {
             app.browser.filter.clear();
             app.browser.typing = false;
+            if app.browser.showing.is_catalog() {
+                app.browser.rows.clear();
+            } else {
+                app.browser.reset();
+                app.browse(link);
+            }
+            return;
         }
         KeyCode::Enter => {
-            // Keeps the filter, closes the box: the list stays filtered and the
-            // arrows go back to moving through it.
+            // Keeps the filter, closes the box: the arrows go back to moving
+            // through the list. Over the catalog this is also the send.
             app.browser.typing = false;
+            if app.browser.showing.is_catalog() {
+                app.search(link);
+            }
             return;
         }
         _ => return,
     }
-    app.browser.reset();
-    app.browse(link);
+    if !app.browser.showing.is_catalog() {
+        app.browser.reset();
+        app.browse(link);
+    }
 }
 
 impl App {
@@ -294,6 +316,32 @@ impl App {
         self.browse(link);
     }
 
+    /// Open the catalog pane. Nothing is fetched — it waits to be asked.
+    fn show_catalog(&mut self) {
+        self.browser.showing = browser::Showing::Catalog { searching: false };
+        self.browser.rows.clear();
+        self.browser.filter.clear();
+        self.browser.reset();
+        // Straight into the box: `5` is only ever pressed in order to type.
+        self.browser.typing = true;
+    }
+
+    fn search(&mut self, link: &link::Link) {
+        let query = self.browser.filter.trim().to_owned();
+        if query.is_empty() {
+            self.browser.rows.clear();
+            return;
+        }
+        self.browser.showing = browser::Showing::Catalog { searching: true };
+        self.browser.rows.clear();
+        self.browser.reset();
+        link.send(Request::Search {
+            query,
+            filter: CatalogFilter::All,
+            offset: 0,
+        });
+    }
+
     fn pane_cursor(&mut self, delta: isize) {
         match self.focus {
             Focus::Browser => self.browser.move_cursor(delta),
@@ -308,6 +356,7 @@ impl App {
                 index: self.queue.cursor,
             });
         }
+        let came_from_catalog = self.browser.showing.is_catalog();
         let Some(entry) = self.browser.selected() else {
             return;
         };
@@ -319,6 +368,7 @@ impl App {
                 subtitle: entry.subtitle(),
                 loading: true,
             };
+            self.browser.from_catalog = came_from_catalog;
             self.browser.rows.clear();
             self.browser.reset();
             return link.send(Request::Open { kind, id });
@@ -342,6 +392,15 @@ impl App {
     /// Esc: out of a page first, then out of a filter.
     fn back(&mut self, link: &link::Link) {
         if matches!(self.browser.showing, Showing::Page { .. }) {
+            // **Back to where the page was opened from.** An album reached from
+            // a catalog search belongs to the search, and returning to the
+            // library instead loses the results and the question that found it.
+            // The rows were cleared to open the page, so this costs the one
+            // request again.
+            if self.browser.from_catalog {
+                self.browser.from_catalog = false;
+                return self.search(link);
+            }
             let view = self.browser.view;
             return self.show_library(view, link);
         }
@@ -388,7 +447,23 @@ impl App {
             Event::Snapshot(snap) => self.snap = snap,
             Event::Queue { items, position } => self.queue.replace(items, position),
             Event::Stage(stage) => self.stage = stage,
-            Event::Rows { entries, total, .. } => self.browser.replace(entries, total),
+            Event::Rows { entries, total, .. } => {
+                // Ignored while the catalog is showing: a stale library answer
+                // must not overwrite the results somebody asked Apple for.
+                if !self.browser.showing.is_catalog() {
+                    self.browser.replace(entries, total);
+                }
+            }
+            Event::Results { query, entries, .. } => {
+                // Only if it is still the question being asked — a slow answer
+                // to an abandoned query would otherwise land on screen.
+                if self.browser.showing.is_catalog() && query == self.browser.filter.trim() {
+                    self.browser.showing = browser::Showing::Catalog { searching: false };
+                    let total = entries.len();
+                    self.browser.replace(entries, total);
+                    self.browser.reset();
+                }
+            }
             Event::Page {
                 header, entries, ..
             } => {

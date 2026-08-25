@@ -45,6 +45,9 @@ pub struct View<'a> {
     pub queue: &'a mut Queue,
     pub focus: Focus,
     pub typing: bool,
+    /// Whether the pane is showing Apple Music rather than the library, which
+    /// changes what typing costs and therefore what the hints promise.
+    pub catalog: bool,
     pub message: Option<&'a str>,
 }
 
@@ -102,7 +105,12 @@ pub fn draw(frame: &mut Frame, view: View) {
     browser::render(frame, lib, view.browser, view.focus == Focus::Browser);
 
     frame.render_widget(
-        Paragraph::new(key_hints(area.width as usize, view.focus, view.typing)),
+        Paragraph::new(key_hints(
+            area.width as usize,
+            view.focus,
+            view.typing,
+            view.catalog,
+        )),
         hints,
     );
 }
@@ -191,12 +199,21 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
 /// runs out, so a narrow terminal loses the least useful hint rather than
 /// losing the row. Leaving and quitting are reserved from the start — a player
 /// you cannot see how to leave is worse than one with no hints at all.
-fn key_hints(width: usize, focus: Focus, typing: bool) -> Line<'static> {
+fn key_hints(width: usize, focus: Focus, typing: bool, catalog: bool) -> Line<'static> {
     const LEAVING: [(&str, &str); 2] = [("_", "hide"), ("q", "quit")];
 
     // While typing, every letter goes into the filter, so advertising the
     // transport keys would be a lie about what the keyboard does.
-    let keys: Vec<(&str, &str)> = if typing {
+    let keys: Vec<(&str, &str)> = if typing && catalog {
+        // **Say that this one leaves the machine.** Over the library the list
+        // narrows as you type; here nothing happens until `↵`, and a box that
+        // looks identical while behaving differently has to announce it.
+        vec![
+            ("↵", "search Apple Music"),
+            ("esc", "cancel"),
+            ("⌫", "back"),
+        ]
+    } else if typing {
         vec![("↵", "done"), ("esc", "clear"), ("⌫", "back")]
     } else if focus == Focus::Browser {
         vec![
@@ -204,7 +221,7 @@ fn key_hints(width: usize, focus: Focus, typing: bool) -> Line<'static> {
             ("↑↓", "move"),
             ("↵", "play/open"),
             ("/", "filter"),
-            ("1-4", "section"),
+            ("1-5", "section"),
             ("⇥", "pane"),
             ("esc", "back"),
         ]

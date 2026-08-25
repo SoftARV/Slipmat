@@ -51,7 +51,8 @@ That is a limit imposed by the DRM, not a shortcut taken here.
 | `s` `r` | Shuffle / repeat |
 | `⇥` | Switch between the library and the queue |
 | `1` – `4` | Songs · albums · artists · playlists |
-| `/` | Filter the library |
+| `5` | All of Apple Music |
+| `/` | Filter the library, or search Apple Music |
 | `esc` | Out of a page, then out of a filter |
 | `↑` `↓`, `k` `j` | Move the cursor |
 | `Home` | Put the cursor back on the playing track |
@@ -63,9 +64,12 @@ That is a limit imposed by the DRM, not a shortcut taken here.
 
 A `▸` marks a row that opens a page rather than playing.
 
-Filtering runs on every keystroke, which is affordable because it never
-reaches Apple: the daemon answers from the library it already holds, so it is a
-round trip to a local socket. Catalog search is not wired up yet.
+**Who answers decides what a keystroke costs.** Over the library the list
+narrows as you type, which is affordable because it never reaches Apple — the
+daemon replies from the library it already holds, a round trip to a local
+socket. Over Apple Music every query is a real request to somebody else's API,
+so typing only edits the text and `↵` is what sends it. Same box, same key, two
+rules, and the bottom row says which one is in force.
 
 The bottom row changes with which pane has focus — only the queue reorders,
 only the library filters — and shows the keys that fit, dropping the least essential first —

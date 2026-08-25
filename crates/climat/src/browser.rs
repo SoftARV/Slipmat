@@ -26,9 +26,16 @@ pub const SECTIONS: [(View, &str); 4] = [
     (View::Playlists, "PLAYLISTS"),
 ];
 
-/// What the pane is showing: a section of the library, or a page opened from it.
+/// What the pane is showing: a section of the library, all of Apple Music, or a
+/// page opened from either.
 pub enum Showing {
     Library,
+    /// Catalog results. **Nothing is fetched until it is asked for** — every
+    /// query here is a request to Apple, where a library filter is a read of
+    /// the daemon's own cache.
+    Catalog {
+        searching: bool,
+    },
     /// An album, artist or playlist. `header` is `None` until the daemon
     /// answers, so an opening page says whose it is rather than going blank.
     Page {
@@ -48,9 +55,18 @@ pub struct Browser {
     /// lying about what the library holds.
     pub filter: String,
     pub typing: bool,
+    /// Whether the page on screen was opened from a catalog search, so `esc`
+    /// knows which list to go back to.
+    pub from_catalog: bool,
     /// How many matched before the page limit, so a truncated list says so.
     pub total: usize,
     offset: usize,
+}
+
+impl Showing {
+    pub fn is_catalog(&self) -> bool {
+        matches!(self, Showing::Catalog { .. })
+    }
 }
 
 impl Default for Browser {
@@ -62,6 +78,7 @@ impl Default for Browser {
             showing: Showing::Library,
             filter: String::new(),
             typing: false,
+            from_catalog: false,
             total: 0,
             offset: 0,
         }
@@ -146,24 +163,19 @@ pub fn header(browser: &Browser) -> Line<'static> {
         return Line::from(spans);
     }
 
+    let catalog = browser.showing.is_catalog();
     let mut spans = Vec::new();
     for (view, name) in SECTIONS {
-        let on = view == browser.view;
-        spans.push(Span::styled(
-            if on {
-                name.to_string()
-            } else {
-                name.to_lowercase()
-            },
-            if on {
-                Style::from(ACCENT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::from(DIM)
-            },
-        ));
+        let on = !catalog && view == browser.view;
+        spans.push(tab(name, on));
         spans.push(Span::raw("   "));
     }
+    // The fifth tab is not a section of anything — it is the rest of Apple
+    // Music, and it is empty until asked.
+    spans.push(tab("APPLE MUSIC", catalog));
+
     if browser.typing || !browser.filter.is_empty() {
+        spans.push(Span::raw("   "));
         spans.push(Span::styled(
             format!("/{}", browser.filter),
             Style::from(if browser.typing { BRIGHT } else { MUTED }),
@@ -174,13 +186,37 @@ pub fn header(browser: &Browser) -> Line<'static> {
             spans.push(Span::styled("▌", Style::from(ACCENT)));
         }
     }
+    if matches!(browser.showing, Showing::Catalog { searching: true }) {
+        spans.push(Span::styled("   asking Apple…", Style::from(DIM)));
+    }
     Line::from(spans)
+}
+
+fn tab(name: &str, on: bool) -> Span<'static> {
+    Span::styled(
+        if on {
+            name.to_string()
+        } else {
+            name.to_lowercase()
+        },
+        if on {
+            Style::from(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::from(DIM)
+        },
+    )
 }
 
 pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser, focused: bool) {
     if browser.rows.is_empty() {
         let what = match &browser.showing {
             Showing::Page { loading: true, .. } => "Opening…",
+            Showing::Catalog { searching: true } => "Searching Apple Music…",
+            // The catalog is empty until asked, so an empty pane means "type
+            // something", not "there is nothing" — two very different things to
+            // read on a screen that looks identical.
+            Showing::Catalog { .. } if browser.filter.is_empty() => "Press / to search Apple Music",
+            Showing::Catalog { .. } => "Nothing on Apple Music matches",
             _ if !browser.filter.is_empty() => "Nothing matches",
             _ => "Nothing here",
         };
@@ -270,6 +306,22 @@ mod tests {
         let (ids, index) = b.queue_from_here();
         assert_eq!(ids, vec!["c1", "c2"]);
         assert_eq!(index, 1, "counted rows the daemon is about to discard");
+    }
+
+    #[test]
+    fn an_empty_catalog_invites_a_search_rather_than_reporting_none() {
+        // The two states look identical — an empty pane — and mean opposite
+        // things. "Nothing matches" over a catalog nobody has queried yet is a
+        // lie about Apple's library.
+        let mut b = Browser {
+            showing: Showing::Catalog { searching: false },
+            ..Default::default()
+        };
+        assert!(b.filter.is_empty());
+        assert!(b.showing.is_catalog());
+
+        b.filter = "odesza".into();
+        assert!(b.showing.is_catalog(), "still the catalog once asked");
     }
 
     #[test]
