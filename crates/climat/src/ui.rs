@@ -63,13 +63,13 @@ pub fn draw(frame: &mut Frame, view: View) {
     // fixed rows also claiming their share the two over-subscribe it, and the
     // browser is what gets squeezed, down to a single visible row on a short
     // window.
-    let [top, note, lib_head, lib, queue_head, queue, hints] = Layout::vertical([
-        Constraint::Length(5),
+    let [top, note, queue_head, queue, lib_head, lib, hints] = Layout::vertical([
+        Constraint::Length(4),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
         Constraint::Length(2),
-        Constraint::Fill(3),
-        Constraint::Length(2),
         Constraint::Fill(2),
+        Constraint::Length(2),
+        Constraint::Fill(3),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -79,23 +79,41 @@ pub fn draw(frame: &mut Frame, view: View) {
         // Rule 4 reaching the terminal: a request the daemon refused says so
         // rather than looking like a key that did not register.
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
+            Paragraph::new(spaced(Line::from(Span::styled(
                 fit(message, area.width as usize),
                 Style::from(ACCENT),
-            ))),
+            )))),
             note,
         );
     }
 
-    frame.render_widget(Paragraph::new(browser::header(view.browser)), lib_head);
-    browser::render(frame, lib, view.browser, view.focus == Focus::Browser);
-    frame.render_widget(Paragraph::new(queue::header(view.queue)), queue_head);
+    // The queue sits under the transport, because it is what the transport is
+    // moving through. The library is below it, and keeps the larger share:
+    // browsing is the reading you do, the queue is the decision already made.
+    frame.render_widget(
+        Paragraph::new(spaced(queue::header(view.queue))),
+        queue_head,
+    );
     queue::render(frame, queue, view.queue, view.focus == Focus::Queue);
+    frame.render_widget(
+        Paragraph::new(spaced(browser::header(view.browser))),
+        lib_head,
+    );
+    browser::render(frame, lib, view.browser, view.focus == Focus::Browser);
 
     frame.render_widget(
         Paragraph::new(key_hints(area.width as usize, view.focus, view.typing)),
         hints,
     );
+}
+
+/// A label with its blank line *above* it.
+///
+/// The gap has to lead, not trail: a section is separated from what comes
+/// before it, and putting the blank after the label only looked right while the
+/// library happened to be the first pane on screen.
+fn spaced(line: Line<'static>) -> Vec<Line<'static>> {
+    vec![Line::default(), line]
 }
 
 fn now_playing(view: &View) -> Vec<Line<'static>> {

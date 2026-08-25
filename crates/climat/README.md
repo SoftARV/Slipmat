@@ -17,19 +17,16 @@ and a window open at once are two views of one player rather than two players.
   ▶   ██░░░░░░░░░░░░░░░░░░░░░░░   0:21 / 5:03
       shuffle off   repeat off   vol ██████████
 
-  SONGS   albums   artists   playlists   /muse
-
-  ▸ Absolution                          Muse · 2003
-  ▸ Drones                              Muse · 2015
-  ▸ The Resistance                      Muse · 2009
-
   QUEUE   30 tracks
-
   ▸   1  Addicted To a Memory (feat. Bahari)     Zedd              5:03
       2  Aftershock (feat. Jacquie Lee)          Cash Cash         3:26
-      3  The Age of the Understatement           The Last Shadow…  3:07
 
-  space play/pause   ↑↓ move   ↵ play   z prev   b next   d remove   _ hide   q quit
+  SONGS   albums   artists   playlists   /muse
+  ▸ Absolution                            Muse · 2003
+  ▸ Drones                                Muse · 2015
+  ▸ The Resistance                        Muse · 2009
+
+  space play/pause   ↑↓ move   ↵ play/open   / filter   1-4 section   ⇥ pane   _ hide   q quit
 ```
 
 ## It needs a graphical session
