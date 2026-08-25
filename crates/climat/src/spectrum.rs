@@ -273,11 +273,12 @@ fn take(stream: &mut Stream) -> Option<Vec<f32>> {
     loop {
         match stream.peek() {
             Ok(PeekResult::Data(bytes)) => {
-                out.extend(
-                    bytes
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
-                );
+                // `as_chunks` rather than `chunks_exact(4)`: the size is a
+                // constant, so this hands back arrays instead of slices and
+                // `from_le_bytes` takes them directly, with no indexing that
+                // could be wrong.
+                let (frames, _) = bytes.as_chunks::<4>();
+                out.extend(frames.iter().copied().map(f32::from_le_bytes));
                 stream.discard().ok()?;
             }
             // A hole is the server telling us it dropped audio rather than
