@@ -14,9 +14,7 @@ use slipmat_core::ipc::{Snapshot, Stage};
 
 use crate::browser::{self, Browser};
 use crate::queue::{self, Queue};
-use crate::theme::{
-    accent as ACCENT, bright as BRIGHT, dim as DIM, mix, muted as MUTED, peak as PEAK,
-};
+use crate::theme::{accent as ACCENT, bright as BRIGHT, dim as DIM, mix, muted as MUTED};
 
 /// Which list the one pane is showing.
 ///
@@ -31,6 +29,27 @@ pub enum Pane {
     #[default]
     Browser,
     Queue,
+}
+
+/// Winamp's own ramp for the bars: green at the bottom, through yellow, to
+/// orange at the top.
+///
+/// **Fixed, not derived.** The neutrals are mixed from the terminal's own
+/// background so the app sits in whatever theme is there — but this is the
+/// visualiser's identity the way the accent is Slipmat's, and a spectrum that
+/// changed colour with the wallpaper would be neither.
+const BAR_LOW: Color = Color::Rgb(0x2E, 0xD5, 0x73);
+const BAR_MID: Color = Color::Rgb(0xF2, 0xD0, 0x2C);
+const BAR_TOP: Color = Color::Rgb(0xFF, 0x6B, 0x1F);
+
+/// Where `t` of the way up a bar lands on that ramp.
+fn heat(t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        mix(BAR_LOW, BAR_MID, t * 2.0)
+    } else {
+        mix(BAR_MID, BAR_TOP, (t - 0.5) * 2.0)
+    }
 }
 
 /// The volume meter.
@@ -408,16 +427,11 @@ fn bars(levels: &[f32], width: usize, rows: usize) -> Vec<Vec<Span<'static>>> {
                     let height = (v.clamp(0.0, 1.0) * total as f32).round() as usize;
                     let eighths = height.saturating_sub(floor).min(STEPS.len());
                     // Where this cell sits in the whole column decides its
-                    // colour, so the gradient runs over the bars rather than
-                    // over each one separately.
+                    // colour, so the ramp runs over the bars rather than over
+                    // each one separately.
                     let foot = floor as f32 / total as f32;
                     let head = (floor + STEPS.len()) as f32 / total as f32;
-                    cell(
-                        eighths,
-                        mix(ACCENT(), PEAK(), foot),
-                        mix(ACCENT(), PEAK(), head),
-                        &STEPS,
-                    )
+                    cell(eighths, heat(foot), heat(head), &STEPS)
                 })
                 .collect(),
         );

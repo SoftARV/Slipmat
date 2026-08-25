@@ -11,7 +11,9 @@
 //!
 //! So the background is asked for, once, and the greys are mixed from it toward
 //! the foreground. The accent stays Apple Music's red — that is the identity,
-//! and it is what should sit *on* the theme rather than dissolve into it.
+//! and it is what should sit *on* the theme rather than dissolve into it. The
+//! spectrum's green-to-orange ramp is fixed for the same reason, and lives with
+//! the drawing rather than here.
 
 use std::io::{Read, Write};
 use std::sync::OnceLock;
@@ -31,7 +33,6 @@ const ASSUMED_BG: Color = Color::Rgb(0x14, 0x12, 0x13);
 
 pub struct Palette {
     pub accent: Color,
-    pub peak: Color,
     pub bright: Color,
     pub muted: Color,
     pub dim: Color,
@@ -41,9 +42,6 @@ static PALETTE: OnceLock<Palette> = OnceLock::new();
 
 pub fn accent() -> Color {
     palette().accent
-}
-pub fn peak() -> Color {
-    palette().peak
 }
 pub fn bright() -> Color {
     palette().bright
@@ -79,7 +77,6 @@ fn build(bg: Color) -> Palette {
     };
     Palette {
         accent: APPLE_RED,
-        peak: fg,
         bright: mix(bg, fg, 0.95),
         muted: mix(bg, fg, 0.62),
         dim: mix(bg, fg, 0.34),
