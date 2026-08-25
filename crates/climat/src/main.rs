@@ -527,10 +527,16 @@ fn reorder(link: &link::Link, app: &mut App, delta: isize) {
 /// Volume, which only the daemon knows: MusicKit never reports it back, so the
 /// snapshot's value is the last one somebody set and the right thing to step
 /// from.
-fn volume(link: &link::Link, app: &App, delta: f64) {
-    link.send(Request::Transport(Transport::SetVolume {
-        volume: (app.snap.volume + delta).clamp(0.0, 1.0),
-    }));
+fn volume(link: &link::Link, app: &mut App, delta: f64) {
+    let volume = (app.snap.volume + delta).clamp(0.0, 1.0);
+    link.send(Request::Transport(Transport::SetVolume { volume }));
+    // **Adopted, not awaited.** Every other control here waits for the daemon
+    // to say what happened, because the daemon is the one that knows. Volume is
+    // the exception: MusicKit never reports it, so the daemon's record is
+    // exactly the number just sent and there is nothing to disagree with.
+    // Waiting would mean each press stepping from the value the *last* one
+    // started at — hold the key and it sends the same volume over and over.
+    app.snap.volume = volume;
 }
 
 /// Seek relative to where the clock has got to, not to the last snapshot — the

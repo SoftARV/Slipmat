@@ -809,6 +809,14 @@ fn answer(
                     // MusicKit does not report volume back, so this is the only
                     // record of it — the same reason the GTK client keeps its own.
                     daemon.model.borrow_mut().volume = volume;
+                    // **Said at once, like a seek.** Nothing will ever echo this
+                    // back, so without it the only way a client learns the new
+                    // volume is the periodic snapshot — twice a second while
+                    // playing, and *never* while paused. A meter that moves a
+                    // beat late reads as a key that did not register, and a
+                    // client stepping from the value it last saw sends the same
+                    // number again.
+                    daemon.publish_snapshot();
                 }
                 // **Adopted before MusicKit confirms it.** A seek takes a
                 // moment to land, and the tick in between would otherwise
