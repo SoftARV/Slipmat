@@ -17,3 +17,11 @@ tokio.workspace = true
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 futures = "0.3"
+
+# **PulseAudio, not PipeWire.** PipeWire ships `pipewire-pulse` and this machine
+# reports `PulseAudio (on PipeWire 1.6.8)`, so one backend covers both servers
+# and every distro that runs either. Reading a sink's *monitor* source is how a
+# visualiser watches audio it does not own.
+libpulse-binding = { version = "2", default-features = false }
+libpulse-simple-binding = { version = "2", default-features = false }
+rustfft = "6"

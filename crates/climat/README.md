@@ -14,6 +14,7 @@ and a window open at once are two views of one player rather than two players.
 ```
   Addicted To a Memory (feat. Bahari)  —  Zedd
 
+  ▂▂▁▁▁▃▃▃▃▂▅▆▅▄▄▄▄▄▄▄▄▄▅▄▄▄▄▃
   ▶   ██░░░░░░░░░░░░░░░░░░░░░░░   0:21 / 5:03
       shuffle off   repeat off   vol ██████████
 
@@ -41,6 +42,19 @@ with a desktop session — a terminal emulator under Wayland or X11, or `tmux`
 inside one. It will not work over a plain SSH connection to a headless box.
 That is a limit imposed by the DRM, not a shortcut taken here.
 
+## The bars
+
+climat never touches the audio — the sidecar owns the stream — so the
+visualiser *listens*, reading the sink's monitor source, the loopback every
+output exposes. That is how `cava` and every other visualiser works, and it
+means the bars follow whatever is playing, including a track the GNOME window
+started.
+
+It talks PulseAudio rather than PipeWire, because PipeWire ships
+`pipewire-pulse` and answers to it — one backend covers both servers. If there
+is no audio server to listen to, the bars simply never appear and nothing else
+changes.
+
 ## Keys
 
 | Key | What it does |
@@ -49,6 +63,7 @@ That is a limit imposed by the DRM, not a shortcut taken here.
 | `z` `b` | Previous / next track |
 | `←` `→` | Seek five seconds |
 | `s` `r` | Shuffle / repeat |
+| `-` `+` | Volume |
 | `⇥` | Switch between the library and the queue |
 | `1` – `4` | Songs · albums · artists · playlists |
 | `5` | All of Apple Music |

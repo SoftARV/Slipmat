@@ -147,7 +147,11 @@ package_climat-git() {
   # No toolkit: it draws itself. The daemon behind it still needs a display
   # server for Chromium, which is why this cannot run over plain SSH — see the
   # README it installs.
-  depends=("slipmat-daemon-git=$pkgver-$pkgrel")
+  #
+  # `libpulse` is the visualiser's, and it is a real link rather than a
+  # convention — `ldd` shows libpulse.so.0 and libpulse-simple.so.0. PipeWire
+  # users have it too, through `pipewire-pulse`.
+  depends=("slipmat-daemon-git=$pkgver-$pkgrel" 'libpulse')
   provides=("climat=$pkgver")
   # **Only `climat`.** The release `slipmat` package owns the same sidecar paths
   # the daemon does, so it would be tempting to name it here — but `slipmat-git`

@@ -48,6 +48,7 @@ pub struct View<'a> {
     /// Whether the pane is showing Apple Music rather than the library, which
     /// changes what typing costs and therefore what the hints promise.
     pub catalog: bool,
+    pub bars: &'a [f32],
     pub message: Option<&'a str>,
 }
 
@@ -140,6 +141,15 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
         ))];
     }
 
+    // **Under the title, where Winamp put it.** It replaces a blank line rather
+    // than claiming one, so a terminal with no audio server to listen to loses
+    // nothing but the bars.
+    let spectrum = if view.bars.iter().any(|v| *v > 0.0) {
+        Line::from(Span::styled(bars(view.bars), Style::from(ACCENT)))
+    } else {
+        Line::default()
+    };
+
     let title = Line::from(vec![
         Span::styled(
             view.snap.title.clone(),
@@ -188,7 +198,7 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
         Span::styled(rest(view.snap.volume, VOL), Style::from(DIM)),
     ]);
 
-    vec![title, Line::default(), transport, modes]
+    vec![title, spectrum, transport, modes]
 }
 
 /// The always-there row. **Nothing has to be memorised**, which is the whole
@@ -276,6 +286,26 @@ pub fn fit(text: &str, width: usize) -> String {
     format!("{kept}… ")
 }
 
+/// One cell per bar, its height the level. Eight steps is what a block
+/// character gives, and it is plenty: the eye reads the *shape* moving, not the
+/// exact height of any one bar.
+fn bars(levels: &[f32]) -> String {
+    const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    levels
+        .iter()
+        .map(|v| {
+            let i = (v.clamp(0.0, 1.0) * STEPS.len() as f32).round() as usize;
+            // Zero is a space, not the shortest block: a floor of stubs across
+            // the whole width reads as a broken bar rather than as silence.
+            if i == 0 {
+                ' '
+            } else {
+                STEPS[(i - 1).min(STEPS.len() - 1)]
+            }
+        })
+        .collect()
+}
+
 fn mode(on: bool, text: &str) -> Span<'static> {
     Span::styled(
         text.to_owned(),
@@ -338,6 +368,15 @@ fn stage_text(stage: &Stage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_silent_bar_is_a_space_rather_than_a_stub() {
+        // A row of ▁ across the whole width reads as a broken meter; silence
+        // should read as nothing at all.
+        assert_eq!(bars(&[0.0, 0.0]), "  ");
+        assert_eq!(bars(&[1.0]), "█");
+        assert_eq!(bars(&[0.0, 1.0]).chars().count(), 2);
+    }
 
     #[test]
     fn a_clock_grows_a_field_only_when_it_needs_one() {

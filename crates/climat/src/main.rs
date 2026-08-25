@@ -16,6 +16,7 @@
 mod browser;
 mod link;
 mod queue;
+mod spectrum;
 mod ui;
 
 use anyhow::Result;
@@ -51,6 +52,9 @@ struct App {
     message: Option<(String, std::time::Instant)>,
     /// Set by `q`. `_` leaves without it, and the daemon keeps playing.
     quit_daemon: bool,
+    /// The visualiser's last frame. All zeroes when there is nothing to hear,
+    /// or when there was no audio server to listen to in the first place.
+    bars: [f32; spectrum::BARS],
 }
 
 fn main() -> Result<()> {
@@ -79,6 +83,9 @@ async fn run() -> Result<()> {
     // rather than waiting for a key. It comes from the daemon's cache, so this
     // is a local socket round trip and not a request to Apple.
     app.browse(&link);
+    // Decoration: if there is no audio server to listen to, the bars simply
+    // never appear and everything else works exactly as before.
+    let mut spectrum = spectrum::start();
     let mut keys = EventStream::new();
     let mut frame = tokio::time::interval(std::time::Duration::from_millis(FRAME_MS));
     // Drawn on the first pass, then only when something moved. The tick runs
@@ -98,6 +105,7 @@ async fn run() -> Result<()> {
                         focus: app.focus,
                         typing: app.browser.typing,
                         catalog: app.browser.showing.is_catalog() || app.browser.from_catalog,
+                        bars: &app.bars,
                         browser: &mut app.browser,
                         queue: &mut app.queue,
                         message: app.message.as_ref().map(|(text, _)| text.as_str()),
@@ -140,6 +148,17 @@ async fn run() -> Result<()> {
                     return Ok(());
                 }
             },
+            // `spectrum.as_mut()` so a missing visualiser is a branch that
+            // never completes rather than a second code path through the loop.
+            Some(bars) = async {
+                match spectrum.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                app.bars = bars;
+                dirty = true;
+            }
             _ = frame.tick() => {
                 // Carry the clock forward between snapshots, so the time reads
                 // like a clock rather than stepping twice a second.
@@ -202,6 +221,10 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Char('r') => link.send(Request::Transport(Transport::SetRepeat {
             mode: next_repeat(app.snap.repeat),
         })),
+        // `=` beside `+` so it works without shift, the way every player that
+        // uses these keys does it.
+        KeyCode::Char('-') => volume(link, app, -0.05),
+        KeyCode::Char('+') | KeyCode::Char('=') => volume(link, app, 0.05),
 
         KeyCode::Tab | KeyCode::BackTab => {
             app.focus = match app.focus {
@@ -244,7 +267,11 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
 
         // Leaves the daemon alone: the music keeps playing, and a GTK
         // window or another terminal still has a player to attach to.
-        KeyCode::Char('_') | KeyCode::Char('-') => return false,
+        //
+        // **`_` only.** `-` was an alias here, because `_` needs shift — but it
+        // is now volume down, and one physical key meaning "quieter" unshifted
+        // and "leave" shifted is a trap rather than a convenience.
+        KeyCode::Char('_') => return false,
         KeyCode::Char('q') => {
             app.quit_daemon = true;
             return false;
@@ -430,6 +457,15 @@ fn reorder(link: &link::Link, app: &mut App, delta: isize) {
         to,
     });
     app.queue.cursor_to(to);
+}
+
+/// Volume, which only the daemon knows: MusicKit never reports it back, so the
+/// snapshot's value is the last one somebody set and the right thing to step
+/// from.
+fn volume(link: &link::Link, app: &App, delta: f64) {
+    link.send(Request::Transport(Transport::SetVolume {
+        volume: (app.snap.volume + delta).clamp(0.0, 1.0),
+    }));
 }
 
 /// Seek relative to where the clock has got to, not to the last snapshot — the
