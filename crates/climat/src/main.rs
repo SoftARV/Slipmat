@@ -316,26 +316,35 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
         // Out of a page, then out of a filter — the order they were entered.
         KeyCode::Esc => app.back(link),
 
-        KeyCode::Up | KeyCode::Char('k') => app.pane_cursor(-1),
-        KeyCode::Down | KeyCode::Char('j') => app.pane_cursor(1),
+        KeyCode::Up => app.pane_cursor(-1),
+        KeyCode::Down => app.pane_cursor(1),
         KeyCode::PageUp => app.pane_cursor(-10),
         KeyCode::PageDown => app.pane_cursor(10),
         KeyCode::Home if app.pane == Pane::Queue => app.queue.follow(),
         KeyCode::Enter => app.activate(link),
 
-        // Queue the selected row without disturbing what is playing: `n` right
-        // after the current track, `a` at the end.
-        KeyCode::Char('n') if app.pane == Pane::Browser => app.enqueue(link, true),
-        KeyCode::Char('a') if app.pane == Pane::Browser => app.enqueue(link, false),
+        // **The `ijkl` cluster, laid out the way it sits under the hand.**
+        //
+        //         i          move the row up
+        //     j   k   l      queue next · move it down · queue last
+        //
+        // `i` above `k` is up above down, and `j` before `l` is sooner before
+        // later. It costs vim's `j`/`k` for the cursor, which the arrows still
+        // do.
+        KeyCode::Char('j') if app.pane == Pane::Browser => app.enqueue(link, true),
+        KeyCode::Char('l') if app.pane == Pane::Browser => app.enqueue(link, false),
+        KeyCode::Char('i') if app.pane == Pane::Queue => reorder(link, app, -1),
+        KeyCode::Char('k') if app.pane == Pane::Queue => reorder(link, app, 1),
+        // **Said, not swallowed.** Reordering only means something in the
+        // queue, and pressing it elsewhere used to do nothing at all — which
+        // reads as a broken key rather than as the wrong place for it.
+        KeyCode::Char('i') | KeyCode::Char('k') => {
+            app.message = Some(Notice::bad("Reordering lives in the queue — press 6"))
+        }
 
         KeyCode::Char('d') if app.pane == Pane::Queue => link.send(Request::RemoveFromQueue {
             index: app.queue.cursor,
         }),
-        // Shift moves the row rather than the cursor. The cursor goes with it,
-        // so the selection stays on the track being moved and a second press
-        // moves the same one again.
-        KeyCode::Char('K') if app.pane == Pane::Queue => reorder(link, app, -1),
-        KeyCode::Char('J') if app.pane == Pane::Queue => reorder(link, app, 1),
 
         // Leaves the daemon alone, the way Ctrl+C above does: the music keeps
         // playing and a GTK window or another terminal still has a player to

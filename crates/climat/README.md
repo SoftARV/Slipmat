@@ -27,7 +27,7 @@ and a window open at once are two views of one player rather than two players.
     Addicted To a Memory (feat. Bahari)     Zedd — True Colors
     Aftershock (feat. Jacquie Lee)          Cash Cash — Blood, Sweat & 3 Years
 
-  space play/pause   ↑↓ move   ↵ play/open   / filter   1-6 tab   ^C hide   q quit
+  space play/pause   ↑↓ move   ↵ play/open   jl next/last   1-6 tab   ^C hide   q quit
 ```
 
 ## It needs a graphical session
@@ -70,6 +70,17 @@ set of bands and the drawing side folds them into however many columns there
 are, keeping the peak of each — an average is what turns a spectrum into a
 smooth hump.
 
+### The `ijkl` cluster
+
+```
+      i           move the row up
+  j   k   l       queue next · move it down · queue last
+```
+
+`i` above `k` is up above down; `j` before `l` is sooner before later. Queueing
+works in the library tabs, reordering in the queue — press one in the wrong
+place and it says so rather than doing nothing.
+
 ## Colours
 
 The accent is Apple Music's red, fixed. **Everything else is mixed from your
@@ -93,19 +104,19 @@ tenth of a second and gets the original palette.
 | `⇥` | Walk the tabs |
 | `/` | Filter the library, or search Apple Music |
 | `esc` | Out of a page, then out of a filter |
-| `↑` `↓`, `k` `j` | Move the cursor |
+| `↑` `↓` | Move the cursor |
 | `Home` | Put the cursor back on the playing track |
 | `↵` | Play the selected track, or open the album it leads to |
-| `n` | Queue it to play next |
-| `a` | Queue it at the end |
+| `j` | Queue it to play next |
+| `l` | Queue it at the end |
 | `d` | Remove it from the queue |
-| `K` `J` | Move it up / down |
+| `i` `k` | Move it up / down in the queue |
 | `Ctrl+C` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |
 
 A `▸` marks a row that opens a page rather than playing.
 
-`n` and `a` put a track in the queue without disturbing what is playing —
+`j` and `l` put a track in the queue without disturbing what is playing —
 straight after the current track, or at the end. They work on songs; an album
 has no playable id of its own, so open it first and queue from inside.
 

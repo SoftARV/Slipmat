@@ -307,7 +307,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("↑↓", "move"),
             ("↵", "play/open"),
             ("/", "filter"),
-            ("na", "next/queue"),
+            ("jl", "next/last"),
             ("1-6", "tab"),
             ("esc", "back"),
         ]
@@ -317,7 +317,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("↑↓", "move"),
             ("↵", "play"),
             ("d", "remove"),
-            ("KJ", "reorder"),
+            ("ik", "reorder"),
             ("1-6", "tab"),
             ("-=", "volume"),
         ]
