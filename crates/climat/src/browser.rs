@@ -220,12 +220,6 @@ pub fn header(browser: &Browser, queue: Option<usize>, width: usize) -> Line<'st
     spans.push(tab("APPLE MUSIC", !showing_queue && catalog));
     spans.push(Span::raw("   "));
     spans.push(tab("QUEUE", showing_queue));
-    if let Some(count) = queue {
-        spans.push(Span::styled(
-            format!("  {count}"),
-            Style::from(if showing_queue { MUTED() } else { DIM() }),
-        ));
-    }
 
     if browser.typing || !browser.filter.is_empty() {
         spans.push(Span::raw("   "));
@@ -240,28 +234,38 @@ pub fn header(browser: &Browser, queue: Option<usize>, width: usize) -> Line<'st
         }
     }
 
-    // **The order goes to the far end, with a rule reaching it.** At the end of
-    // the tabs it read as a seventh tab; pushed right and ruled off, it reads
-    // as what the list *is* rather than somewhere to go.
-    if matches!(browser.showing, Showing::Library) {
+    // **The rule runs to the far end of every tab, and carries whatever that
+    // tab has to say about itself.** At the end of the tabs these read as one
+    // more tab; pushed right and ruled off, they read as what the list *is*
+    // rather than somewhere to go.
+    let right = if showing_queue {
+        queue.map(|n| format!("[{n}]"))
+    } else if catalog {
+        // **Nothing at the end here**, just the rule. A catalog list has no
+        // order of ours — it comes back in Apple's — and a count of results is
+        // not a property of the list the way a queue's length is.
+        None
+    } else {
         let (by, reversed) = browser.sort();
         let arrow = if reversed != by.descends_by_default() {
             "↑"
         } else {
             "↓"
         };
-        let order = format!("[{arrow} {}]", by.label().to_lowercase());
-        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-        // One space either side of the rule, and never less than one dash —
-        // on a window too narrow for both, the order still wins its place.
-        let rule = width
-            .saturating_sub(used + order.chars().count() + 2)
-            .max(1);
-        spans.push(Span::styled(
-            format!(" {} ", "─".repeat(rule)),
-            Style::from(DIM()),
-        ));
-        spans.push(Span::styled(order, Style::from(MUTED())));
+        Some(format!("[{arrow} {}]", by.label().to_lowercase()))
+    };
+
+    let tail = right.unwrap_or_default();
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    // A space either side of the rule, and never less than one dash — on a
+    // window too narrow for both, the value still wins its place.
+    let rule = width.saturating_sub(used + tail.chars().count() + 2).max(1);
+    spans.push(Span::styled(
+        format!(" {} ", "─".repeat(rule)),
+        Style::from(DIM()),
+    ));
+    if !tail.is_empty() {
+        spans.push(Span::styled(tail, Style::from(MUTED())));
     }
 
     Line::from(spans)
