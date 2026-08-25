@@ -35,6 +35,10 @@ check:
 	cargo fmt --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test
+	# The Flatpak build is offline and does not run on pull requests, so a
+	# dependency added without regenerating the source list only fails after
+	# a merge. Two files and a second, here instead.
+	python3 packaging/flatpak/check-sources.py
 
 # Fetch castLabs Electron. Two steps, both required: `npm install` brings down
 # the ~14 MB wrapper, and install.js fetches the ~200 MB Chromium itself.
