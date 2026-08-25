@@ -16,6 +16,7 @@
 mod bus;
 mod heal;
 mod library;
+mod mixer;
 mod serve;
 mod state;
 mod watchdog;

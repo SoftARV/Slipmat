@@ -15,7 +15,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use slipmat_core::ipc::QueueItem;
 
-use crate::ui::{ACCENT, BRIGHT, DIM, MUTED, clock, fit};
+use crate::theme::{accent as ACCENT, bright as BRIGHT, dim as DIM, muted as MUTED};
+use crate::ui::{clock, fit};
 
 /// How wide the artist column is, when there is room for one at all.
 const ARTIST: usize = 22;
@@ -104,21 +105,13 @@ impl Queue {
     }
 }
 
-pub fn header(queue: &Queue) -> Line<'static> {
-    let count = match queue.items.len() {
-        1 => "1 track".to_string(),
-        n => format!("{n} tracks"),
-    };
-    Line::from(vec![
-        Span::styled("QUEUE", Style::from(MUTED).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("   {count}"), Style::from(DIM)),
-    ])
-}
-
-pub fn render(frame: &mut Frame, area: Rect, queue: &mut Queue, focused: bool) {
+pub fn render(frame: &mut Frame, area: Rect, queue: &mut Queue) {
     if queue.items.is_empty() {
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled("Nothing queued", Style::from(DIM)))),
+            Paragraph::new(Line::from(Span::styled(
+                "Nothing queued",
+                Style::from(DIM()),
+            ))),
             area,
         );
         return;
@@ -134,22 +127,14 @@ pub fn render(frame: &mut Frame, area: Rect, queue: &mut Queue, focused: bool) {
         .enumerate()
         .skip(queue.offset)
         .take(height)
-        .map(|(i, item)| row(i, item, queue, width, focused))
+        .map(|(i, item)| row(i, item, queue, width))
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
 }
 
-fn row(
-    index: usize,
-    item: &QueueItem,
-    queue: &Queue,
-    width: usize,
-    focused: bool,
-) -> Line<'static> {
+fn row(index: usize, item: &QueueItem, queue: &Queue, width: usize) -> Line<'static> {
     let playing = index == queue.position;
-    // Only the focused pane draws a cursor: two highlighted rows on screen
-    // would both look like the thing the next key acts on.
-    let selected = focused && index == queue.cursor;
+    let selected = index == queue.cursor;
 
     // The marker column carries "this is playing" so the row still says so in a
     // terminal with no colour, and so it survives the cursor's own highlight.
@@ -164,14 +149,14 @@ fn row(
     let title_room = width.saturating_sub(fixed + artist_room);
 
     let base = if playing {
-        Style::from(ACCENT)
+        Style::from(ACCENT())
     } else {
-        Style::from(BRIGHT)
+        Style::from(BRIGHT())
     };
     let quiet = if playing {
-        Style::from(ACCENT)
+        Style::from(ACCENT())
     } else {
-        Style::from(MUTED)
+        Style::from(MUTED())
     };
     let (base, quiet) = if selected {
         (

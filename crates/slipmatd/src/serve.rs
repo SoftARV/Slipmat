@@ -88,6 +88,9 @@ pub struct Daemon {
     pub idle: std::cell::Cell<bool>,
     /// Rung when a client turns up and the sidecar is not running.
     pub wake: tokio::sync::Notify,
+    /// The desktop's own volume for this application, or `None` where there is
+    /// no audio server to talk to.
+    pub mixer: Option<crate::mixer::Mixer>,
     /// Rung by [`Request::Quit`], and answered where SIGTERM is — so leaving on
     /// purpose and being stopped by a service manager take the same path.
     pub quitting: tokio::sync::Notify,
@@ -177,6 +180,7 @@ pub async fn run() -> Result<()> {
         idle: std::cell::Cell::new(false),
         wake: tokio::sync::Notify::new(),
         quitting: tokio::sync::Notify::new(),
+        mixer: crate::mixer::Mixer::start(),
     });
 
     // After the `Rc` exists: MPRIS holds one so a button on a bar can reach the
@@ -224,7 +228,16 @@ pub async fn run() -> Result<()> {
         let mut watch = watchdog::Watch::default();
         loop {
             tick.tick().await;
-            if ticking.model.borrow().player.state.is_playing() {
+            // **Whoever moved it, everyone hears.** The desktop's audio panel
+            // can change this without Slipmat being asked, and a client still
+            // showing the old number is the disagreement this whole thing
+            // moved to fix.
+            let outside = ticking.mixer.as_ref().and_then(|m| m.current());
+            let moved = outside.is_some_and(|v| (v - ticking.model.borrow().volume).abs() > 0.005);
+            if moved {
+                ticking.model.borrow_mut().volume = outside.unwrap_or_default();
+            }
+            if moved || ticking.model.borrow().player.state.is_playing() {
                 ticking.publish_snapshot();
             }
             // On every tick, not only the playing ones: a stall is measured
@@ -801,14 +814,32 @@ fn answer(
                 tracing::info!(index, "nothing is open yet — opening the queue first");
                 daemon.send(Command::ChangeToIndex { index });
             }
-            let command = command_for(transport);
-            tracing::debug!(cmd = command.name(), "transport");
-            daemon.send(command);
+            if let Some(command) = command_for(transport) {
+                tracing::debug!(cmd = command.name(), "transport");
+                daemon.send(command);
+            }
             match transport {
                 Transport::SetVolume { volume } => {
-                    // MusicKit does not report volume back, so this is the only
-                    // record of it — the same reason the GTK client keeps its own.
+                    // **The stream, not the player.** MusicKit has a volume of
+                    // its own and driving it left two independent gains for one
+                    // application — Slipmat at 50% while the desktop's mixer
+                    // said 100%, multiplying, with only one of them where
+                    // anybody would look for it. This is the one the audio
+                    // panel shows.
+                    if let Some(mixer) = &daemon.mixer {
+                        mixer.set(volume);
+                    }
+                    // Kept regardless: it is what a client is told while
+                    // nothing is playing and there is no stream to ask.
                     daemon.model.borrow_mut().volume = volume;
+                    // **Said at once, like a seek.** Nothing will ever echo this
+                    // back, so without it the only way a client learns the new
+                    // volume is the periodic snapshot — twice a second while
+                    // playing, and *never* while paused. A meter that moves a
+                    // beat late reads as a key that did not register, and a
+                    // client stepping from the value it last saw sends the same
+                    // number again.
+                    daemon.publish_snapshot();
                 }
                 // **Adopted before MusicKit confirms it.** A seek takes a
                 // moment to land, and the tick in between would otherwise
@@ -1202,18 +1233,24 @@ fn event_name(event: &PlayerEvent) -> &'static str {
     }
 }
 
-fn command_for(transport: Transport) -> Command {
-    match transport {
+/// What the sidecar is told, if anything.
+///
+/// **Volume is `None` on purpose.** It is applied to the audio stream instead
+/// (see `mixer`), and sending it here as well would put two gains in series on
+/// one player — which is the bug that moved it in the first place, not a
+/// belt-and-braces.
+fn command_for(transport: Transport) -> Option<Command> {
+    Some(match transport {
         Transport::Play => Command::Play,
         Transport::Pause => Command::Pause,
         Transport::PlayPause => Command::PlayPause,
         Transport::Next => Command::Next,
         Transport::Previous => Command::Previous,
         Transport::Seek { position_ms } => Command::Seek { position_ms },
-        Transport::SetVolume { volume } => Command::SetVolume { volume },
+        Transport::SetVolume { .. } => return None,
         Transport::SetShuffle { shuffle } => Command::SetShuffle { shuffle },
         Transport::SetRepeat { mode } => Command::SetRepeat { mode },
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1239,9 +1276,16 @@ mod tests {
             },
         ];
         for verb in verbs {
-            // Panics on an unmapped verb; the point is that it compiles
-            // exhaustively and runs without one.
-            let _ = command_for(verb);
+            // Exhaustive by construction; the point is that it compiles and
+            // runs. Volume is the one that deliberately maps to nothing —
+            // asserted rather than left implied, because a future edit adding
+            // it back would silently put two gains in series again.
+            let sent = command_for(verb);
+            assert_eq!(
+                sent.is_none(),
+                matches!(verb, Transport::SetVolume { .. }),
+                "{verb:?} mapped to {sent:?}"
+            );
         }
     }
 }

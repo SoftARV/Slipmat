@@ -16,10 +16,14 @@
 mod browser;
 mod link;
 mod queue;
+mod spectrum;
+mod theme;
 mod ui;
 
 use anyhow::Result;
-use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyEventKind};
+use crossterm::event::{
+    Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use futures::StreamExt;
 use slipmat_core::ipc::{
@@ -28,7 +32,7 @@ use slipmat_core::ipc::{
 use slipmat_core::player::protocol::RepeatMode;
 
 use crate::browser::{SECTIONS, Showing};
-use crate::ui::Focus;
+use crate::ui::Pane;
 
 /// How often to redraw while playing.
 ///
@@ -39,18 +43,36 @@ const FRAME_MS: u64 = 100;
 /// How long a refusal from the daemon stays on screen.
 const MESSAGE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[derive(Default)]
 struct App {
     snap: Snapshot,
     stage: Stage,
     browser: browser::Browser,
     queue: queue::Queue,
-    focus: Focus,
+    pane: Pane,
     /// The last thing the daemon refused, and when — so it can fade rather than
     /// sit there accusing a key that was pressed a minute ago.
     message: Option<(String, std::time::Instant)>,
     /// Set by `q`. `_` leaves without it, and the daemon keeps playing.
     quit_daemon: bool,
+    /// The visualiser's last frame. All zeroes when there is nothing to hear,
+    /// or when there was no audio server to listen to in the first place.
+    bars: [f32; spectrum::BANDS],
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            snap: Snapshot::default(),
+            stage: Stage::default(),
+            browser: browser::Browser::default(),
+            queue: queue::Queue::default(),
+            pane: Pane::default(),
+            message: None,
+            quit_daemon: false,
+            // `#[derive(Default)]` stops at arrays of 32.
+            bars: [0.0; spectrum::BANDS],
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -73,12 +95,20 @@ async fn run() -> Result<()> {
     // panic hook that gives it back. The teardown in `main` covers the one case
     // it does not: an error returned from here after this line.
     let mut term = ratatui::init();
+    // **After `init`, before the key stream.** The reply comes back on stdin as
+    // an escape sequence, so raw mode has to be on or it is echoed and
+    // line-buffered — and it has to happen before crossterm starts consuming
+    // stdin itself, or the answer is delivered as a keystroke.
+    theme::detect();
 
     let mut app = App::default();
     // The library is what the pane opens on, so ask for it with everything else
     // rather than waiting for a key. It comes from the daemon's cache, so this
     // is a local socket round trip and not a request to Apple.
     app.browse(&link);
+    // Decoration: if there is no audio server to listen to, the bars simply
+    // never appear and everything else works exactly as before.
+    let mut spectrum = spectrum::start();
     let mut keys = EventStream::new();
     let mut frame = tokio::time::interval(std::time::Duration::from_millis(FRAME_MS));
     // Drawn on the first pass, then only when something moved. The tick runs
@@ -95,9 +125,10 @@ async fn run() -> Result<()> {
                     ui::View {
                         snap: &app.snap,
                         stage: &app.stage,
-                        focus: app.focus,
+                        pane: app.pane,
                         typing: app.browser.typing,
                         catalog: app.browser.showing.is_catalog() || app.browser.from_catalog,
+                        bars: &app.bars,
                         browser: &mut app.browser,
                         queue: &mut app.queue,
                         message: app.message.as_ref().map(|(text, _)| text.as_str()),
@@ -113,7 +144,7 @@ async fn run() -> Result<()> {
             biased;
             Some(Ok(term_event)) = keys.next() => match term_event {
                 TermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                    if !on_key(key.code, &link, &mut app) {
+                    if !on_key(key, &link, &mut app) {
                         break;
                     }
                     // **Always.** A key is the one event that is definitely
@@ -140,6 +171,17 @@ async fn run() -> Result<()> {
                     return Ok(());
                 }
             },
+            // `spectrum.as_mut()` so a missing visualiser is a branch that
+            // never completes rather than a second code path through the loop.
+            Some(bars) = async {
+                match spectrum.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                app.bars = bars;
+                dirty = true;
+            }
             _ = frame.tick() => {
                 // Carry the clock forward between snapshots, so the time reads
                 // like a clock rather than stepping twice a second.
@@ -179,9 +221,18 @@ async fn run() -> Result<()> {
 /// the rows move when the daemon echoes — rule 3 at the third layer. The cursor
 /// and which pane has focus are the exceptions, because they are where this
 /// terminal is looking rather than anything about the player.
-fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
-    // **Typing comes first, and takes everything.** While the filter is open a
-    // letter is a letter: `q` must not quit and `d` must not remove a track.
+fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
+    // **Before everything, including the filter.** In raw mode Ctrl+C is a
+    // keystroke rather than a signal, so it has to be answered here — and it
+    // is the one key that should work whatever the app is in the middle of.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return false;
+    }
+    let code = key.code;
+
+    // **Typing comes next, and takes everything else.** While the filter is
+    // open a letter is a letter: `q` must not quit and `d` must not remove a
+    // track.
     if app.browser.typing {
         typing(code, link, app);
         return true;
@@ -202,27 +253,37 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Char('r') => link.send(Request::Transport(Transport::SetRepeat {
             mode: next_repeat(app.snap.repeat),
         })),
+        // Both faces of each key, now that neither means anything else: `-`
+        // and `_` are one key, and so are `=` and `+`.
+        KeyCode::Char('-') | KeyCode::Char('_') => volume(link, app, -0.05),
+        KeyCode::Char('=') | KeyCode::Char('+') => volume(link, app, 0.05),
 
-        KeyCode::Tab | KeyCode::BackTab => {
-            app.focus = match app.focus {
-                Focus::Browser => Focus::Queue,
-                Focus::Queue => Focus::Browser,
-            }
-        }
+        // **The tab strip in one key.** With a single pane there is nothing to
+        // switch focus between, so `⇥` walks the tabs instead — the library
+        // sections, then Apple Music, then the queue, then round.
+        KeyCode::Tab => app.next_tab(link),
+        KeyCode::BackTab => app.prev_tab(link),
         // Not a section of the library — the rest of Apple Music, which is
         // empty until it is asked for.
         KeyCode::Char('5') => {
-            app.focus = Focus::Browser;
+            app.pane = Pane::Browser;
             app.show_catalog();
+            // Straight into the box: `5` is only ever pressed in order to
+            // search. Arriving by `⇥` is not — and opening the filter there
+            // would swallow the very key that got you here.
+            app.browser.typing = true;
         }
+        // The queue's own tab, numbered like the rest. It does not get a hint
+        // of its own — `1-6` already says it, and saying it twice is noise.
+        KeyCode::Char('6') => app.pane = Pane::Queue,
         KeyCode::Char(d @ '1'..='4') => {
             // Selecting a section is also a request to look at it, so it takes
             // focus — otherwise the arrows would still be driving the queue.
             let (view, _) = SECTIONS[d as usize - '1' as usize];
-            app.focus = Focus::Browser;
+            app.pane = Pane::Browser;
             app.show_library(view, link);
         }
-        KeyCode::Char('/') if app.focus == Focus::Browser => app.browser.typing = true,
+        KeyCode::Char('/') if app.pane == Pane::Browser => app.browser.typing = true,
         // Out of a page, then out of a filter — the order they were entered.
         KeyCode::Esc => app.back(link),
 
@@ -230,21 +291,21 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Down | KeyCode::Char('j') => app.pane_cursor(1),
         KeyCode::PageUp => app.pane_cursor(-10),
         KeyCode::PageDown => app.pane_cursor(10),
-        KeyCode::Home if app.focus == Focus::Queue => app.queue.follow(),
+        KeyCode::Home if app.pane == Pane::Queue => app.queue.follow(),
         KeyCode::Enter => app.activate(link),
 
-        KeyCode::Char('d') if app.focus == Focus::Queue => link.send(Request::RemoveFromQueue {
+        KeyCode::Char('d') if app.pane == Pane::Queue => link.send(Request::RemoveFromQueue {
             index: app.queue.cursor,
         }),
         // Shift moves the row rather than the cursor. The cursor goes with it,
         // so the selection stays on the track being moved and a second press
         // moves the same one again.
-        KeyCode::Char('K') if app.focus == Focus::Queue => reorder(link, app, -1),
-        KeyCode::Char('J') if app.focus == Focus::Queue => reorder(link, app, 1),
+        KeyCode::Char('K') if app.pane == Pane::Queue => reorder(link, app, -1),
+        KeyCode::Char('J') if app.pane == Pane::Queue => reorder(link, app, 1),
 
-        // Leaves the daemon alone: the music keeps playing, and a GTK
-        // window or another terminal still has a player to attach to.
-        KeyCode::Char('_') | KeyCode::Char('-') => return false,
+        // Leaves the daemon alone, the way Ctrl+C above does: the music keeps
+        // playing and a GTK window or another terminal still has a player to
+        // attach to. `q` is the one that takes the player with it.
         KeyCode::Char('q') => {
             app.quit_daemon = true;
             return false;
@@ -322,8 +383,6 @@ impl App {
         self.browser.rows.clear();
         self.browser.filter.clear();
         self.browser.reset();
-        // Straight into the box: `5` is only ever pressed in order to type.
-        self.browser.typing = true;
     }
 
     fn search(&mut self, link: &link::Link) {
@@ -343,15 +402,48 @@ impl App {
     }
 
     fn pane_cursor(&mut self, delta: isize) {
-        match self.focus {
-            Focus::Browser => self.browser.move_cursor(delta),
-            Focus::Queue => self.queue.move_cursor(delta),
+        match self.pane {
+            Pane::Browser => self.browser.move_cursor(delta),
+            Pane::Queue => self.queue.move_cursor(delta),
         }
+    }
+
+    /// Walk the tab strip. Six places: four library sections, Apple Music, the
+    /// queue.
+    fn tab(&mut self, step: isize, link: &link::Link) {
+        let here = if self.pane == Pane::Queue {
+            5
+        } else if self.browser.showing.is_catalog() {
+            4
+        } else {
+            SECTIONS
+                .iter()
+                .position(|(v, _)| *v == self.browser.view)
+                .unwrap_or(0) as isize as usize
+        };
+        let next = (here as isize + step).rem_euclid(6) as usize;
+        self.pane = Pane::Browser;
+        match next {
+            5 => self.pane = Pane::Queue,
+            4 => self.show_catalog(),
+            n => {
+                let (view, _) = SECTIONS[n];
+                self.show_library(view, link);
+            }
+        }
+    }
+
+    fn next_tab(&mut self, link: &link::Link) {
+        self.tab(1, link);
+    }
+
+    fn prev_tab(&mut self, link: &link::Link) {
+        self.tab(-1, link);
     }
 
     /// Enter: play the selected row, or open the page it leads to.
     fn activate(&mut self, link: &link::Link) {
-        if self.focus == Focus::Queue {
+        if self.pane == Pane::Queue {
             return link.send(Request::JumpTo {
                 index: self.queue.cursor,
             });
@@ -430,6 +522,21 @@ fn reorder(link: &link::Link, app: &mut App, delta: isize) {
         to,
     });
     app.queue.cursor_to(to);
+}
+
+/// Volume, which only the daemon knows: MusicKit never reports it back, so the
+/// snapshot's value is the last one somebody set and the right thing to step
+/// from.
+fn volume(link: &link::Link, app: &mut App, delta: f64) {
+    let volume = (app.snap.volume + delta).clamp(0.0, 1.0);
+    link.send(Request::Transport(Transport::SetVolume { volume }));
+    // **Adopted, not awaited.** Every other control here waits for the daemon
+    // to say what happened, because the daemon is the one that knows. Volume is
+    // the exception: MusicKit never reports it, so the daemon's record is
+    // exactly the number just sent and there is nothing to disagree with.
+    // Waiting would mean each press stepping from the value the *last* one
+    // started at — hold the key and it sends the same volume over and over.
+    app.snap.volume = volume;
 }
 
 /// Seek relative to where the clock has got to, not to the last snapshot — the

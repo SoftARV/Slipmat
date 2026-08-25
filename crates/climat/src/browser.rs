@@ -16,7 +16,8 @@ use ratatui::widgets::Paragraph;
 use slipmat_core::entry::Entry;
 use slipmat_core::ipc::View;
 
-use crate::ui::{ACCENT, BRIGHT, DIM, MUTED, fit};
+use crate::theme::{accent as ACCENT, bright as BRIGHT, dim as DIM, muted as MUTED};
+use crate::ui::fit;
 
 /// The sections, in the order `1`–`4` select them.
 pub const SECTIONS: [(View, &str); 4] = [
@@ -143,7 +144,12 @@ impl Browser {
 }
 
 /// The section tabs, or the opened page's name — one line, either way.
-pub fn header(browser: &Browser) -> Line<'static> {
+/// The tab strip, or the opened page's name.
+///
+/// `queue` is the queue's own tab: it is not a section of the library and the
+/// browser knows nothing about it, but it belongs in the same row because it is
+/// one of the places the one pane can be showing.
+pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
     if let Showing::Page {
         title,
         subtitle,
@@ -152,42 +158,51 @@ pub fn header(browser: &Browser) -> Line<'static> {
     {
         let mut spans = vec![Span::styled(
             title.to_uppercase(),
-            Style::from(MUTED).add_modifier(Modifier::BOLD),
+            Style::from(MUTED()).add_modifier(Modifier::BOLD),
         )];
         if !subtitle.is_empty() {
-            spans.push(Span::styled(format!("   {subtitle}"), Style::from(DIM)));
+            spans.push(Span::styled(format!("   {subtitle}"), Style::from(DIM())));
         }
         if *loading {
-            spans.push(Span::styled("   opening…", Style::from(DIM)));
+            spans.push(Span::styled("   opening…", Style::from(DIM())));
         }
         return Line::from(spans);
     }
 
+    let showing_queue = queue.is_some();
     let catalog = browser.showing.is_catalog();
     let mut spans = Vec::new();
     for (view, name) in SECTIONS {
-        let on = !catalog && view == browser.view;
+        let on = !showing_queue && !catalog && view == browser.view;
         spans.push(tab(name, on));
         spans.push(Span::raw("   "));
     }
-    // The fifth tab is not a section of anything — it is the rest of Apple
-    // Music, and it is empty until asked.
-    spans.push(tab("APPLE MUSIC", catalog));
+    // The fifth is not a section of anything — it is the rest of Apple Music,
+    // and it is empty until asked.
+    spans.push(tab("APPLE MUSIC", !showing_queue && catalog));
+    spans.push(Span::raw("   "));
+    spans.push(tab("QUEUE", showing_queue));
+    if let Some(count) = queue {
+        spans.push(Span::styled(
+            format!("  {count}"),
+            Style::from(if showing_queue { MUTED() } else { DIM() }),
+        ));
+    }
 
     if browser.typing || !browser.filter.is_empty() {
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             format!("/{}", browser.filter),
-            Style::from(if browser.typing { BRIGHT } else { MUTED }),
+            Style::from(if browser.typing { BRIGHT() } else { MUTED() }),
         ));
         // A block, so it is obvious the next keystroke goes here and not to the
         // transport — `p` in a filter must never mean pause.
         if browser.typing {
-            spans.push(Span::styled("▌", Style::from(ACCENT)));
+            spans.push(Span::styled("▌", Style::from(ACCENT())));
         }
     }
     if matches!(browser.showing, Showing::Catalog { searching: true }) {
-        spans.push(Span::styled("   asking Apple…", Style::from(DIM)));
+        spans.push(Span::styled("   asking Apple…", Style::from(DIM())));
     }
     Line::from(spans)
 }
@@ -200,14 +215,14 @@ fn tab(name: &str, on: bool) -> Span<'static> {
             name.to_lowercase()
         },
         if on {
-            Style::from(ACCENT).add_modifier(Modifier::BOLD)
+            Style::from(ACCENT()).add_modifier(Modifier::BOLD)
         } else {
-            Style::from(DIM)
+            Style::from(DIM())
         },
     )
 }
 
-pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser, focused: bool) {
+pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser) {
     if browser.rows.is_empty() {
         let what = match &browser.showing {
             Showing::Page { loading: true, .. } => "Opening…",
@@ -221,7 +236,7 @@ pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser, focused: boo
             _ => "Nothing here",
         };
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(what, Style::from(DIM)))),
+            Paragraph::new(Line::from(Span::styled(what, Style::from(DIM())))),
             area,
         );
         return;
@@ -236,7 +251,7 @@ pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser, focused: boo
         .enumerate()
         .skip(browser.offset)
         .take(height)
-        .map(|(i, entry)| row(entry, i == browser.cursor && focused, width))
+        .map(|(i, entry)| row(entry, i == browser.cursor, width))
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
 }
@@ -252,11 +267,11 @@ fn row(entry: &Entry, selected: bool, width: usize) -> Line<'static> {
 
     let (title, quiet) = if selected {
         (
-            Style::from(BRIGHT).add_modifier(Modifier::REVERSED),
-            Style::from(MUTED).add_modifier(Modifier::REVERSED),
+            Style::from(BRIGHT()).add_modifier(Modifier::REVERSED),
+            Style::from(MUTED()).add_modifier(Modifier::REVERSED),
         )
     } else {
-        (Style::from(BRIGHT), Style::from(MUTED))
+        (Style::from(BRIGHT()), Style::from(MUTED()))
     };
 
     let mut spans = vec![
