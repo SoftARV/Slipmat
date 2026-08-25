@@ -33,9 +33,12 @@ pub enum Pane {
     Queue,
 }
 
-/// The volume meter, which stays small on purpose: it is a state to glance at,
-/// not a thing to read along. The progress bar takes the rest of the line.
-const VOL: usize = 10;
+/// The volume meter.
+///
+/// **Twenty, so a step is a cell.** The keys move volume by 5%, and over ten
+/// cells that is half a cell — `filled` rounds, so every other press changed
+/// nothing on screen and the whole control felt like it was missing keystrokes.
+const VOL: usize = 20;
 /// How much of the window the spectrum may take, and the bounds either side.
 /// Two rows is enough to read; more is where the gradient becomes visible.
 const SPECTRUM_SHARE: u16 = 6;
@@ -511,6 +514,22 @@ fn stage_text(stage: &Stage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_volume_step_moves_the_meter_by_exactly_one_cell() {
+        // The keys move volume by 5%. At ten cells that was half a cell, so
+        // `filled` rounded and every *other* press changed nothing on screen —
+        // which reads as the app missing keystrokes, not as a rounding choice.
+        const STEP: f64 = 0.05;
+        for i in 0..20 {
+            let from = i as f64 * STEP;
+            assert_eq!(
+                filled(from + STEP, VOL) - filled(from, VOL),
+                1,
+                "a step from {from:.2} did not move the meter"
+            );
+        }
+    }
 
     #[test]
     fn a_silent_bar_is_a_space_rather_than_a_stub() {

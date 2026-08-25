@@ -87,7 +87,16 @@ impl Mixer {
     }
 
     pub fn set(&self, volume: f64) {
-        let _ = self.tx.send(Ask::Set(volume.clamp(0.0, 1.0)));
+        let volume = volume.clamp(0.0, 1.0);
+        // **Recorded here, not when the poll next looks.** `current` is what
+        // the daemon compares against to notice somebody else moving the
+        // volume, and until the next poll it still holds the *old* value — so
+        // without this, the tick sees the change as an outside one and puts it
+        // back, and half a second later the poll puts it forward again. That
+        // is the volume visibly bouncing while a key is held.
+        self.seen
+            .store((volume * 10_000.0) as u32, Ordering::Relaxed);
+        let _ = self.tx.send(Ask::Set(volume));
     }
 
     /// What the stream was last seen at, if there is one.
