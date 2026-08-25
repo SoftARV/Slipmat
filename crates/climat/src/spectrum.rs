@@ -15,6 +15,7 @@
 //! server, so this follows the default sink rather than pinning a device that
 //! stops existing when somebody unplugs their headphones.
 
+use libpulse_binding::def::BufferAttr;
 use libpulse_binding::sample::{Format, Spec};
 use libpulse_binding::stream::Direction;
 use libpulse_simple_binding::Simple;
@@ -42,12 +43,19 @@ const RATE: u32 = 44_100;
 /// nothing.
 const FLOOR: f32 = 0.002;
 
-/// How far a bar falls in a second when nothing holds it up — Winamp's
-/// falloff, and the reason a spectrum reads as music rather than noise.
+/// The falloff: a bar drops to [`FALL_TO`] of its height in [`FALL_SECONDS`].
 ///
-/// Expressed per second rather than per frame, because per-frame decay is a
-/// number that silently means something different the moment `HOP` changes.
-const DECAY_PER_SECOND: f32 = 0.02;
+/// **This is what "responsive" actually means here**, and it is not the frame
+/// rate. Measured while chasing exactly that: the thread produces 86 frames a
+/// second and the screen draws 102, yet the bars still looked sluggish —
+/// because a full second to fall makes them drift between levels instead of
+/// punching. A quarter of a second is Winamp's, and it is the difference
+/// between a spectrum and a lava lamp.
+///
+/// Expressed as a time rather than a per-frame factor, because a per-frame
+/// constant silently means something different the moment `HOP` changes.
+const FALL_TO: f32 = 0.02;
+const FALL_SECONDS: f32 = 0.25;
 
 /// The decibel window the bars span.
 ///
@@ -56,8 +64,8 @@ const DECAY_PER_SECOND: f32 = 0.02;
 /// of bins, so no single one gets near full scale and the bars sat in the
 /// bottom third of their range. Measured on an ordinary track, per-band peaks
 /// land around -45dB, which this puts in the middle.
-const QUIET_DB: f32 = -70.0;
-const LOUD_DB: f32 = -18.0;
+const QUIET_DB: f32 = -62.0;
+const LOUD_DB: f32 = -26.0;
 
 /// Start listening. `None` if there is no audio server to listen to — the bars
 /// simply never appear, which is the right failure for decoration.
@@ -73,6 +81,23 @@ pub fn start() -> Option<tokio::sync::mpsc::Receiver<[f32; BARS]>> {
     // Opened here rather than in the thread so a missing server is answered now
     // — the caller learns there are no bars instead of a thread failing quietly
     // somewhere behind the screen.
+    // **Ask for small fragments, or the server chooses.** Left to its defaults
+    // PulseAudio hands a recording client audio in large chunks: `read` then
+    // returns a burst of frames and blocks for a long time, and a depth-one
+    // channel keeps only the last of each burst. Measured that way, the bars
+    // reached the screen **1.9 times a second** — the frame rate of the
+    // fragments, not of anything this code was doing.
+    //
+    // One hop per fragment is what makes delivery smooth. `!0` on the rest
+    // means "your default", which is right for every field that is about
+    // playback rather than capture.
+    let attr = BufferAttr {
+        maxlength: !0,
+        tlength: !0,
+        prebuf: !0,
+        minreq: !0,
+        fragsize: (HOP * std::mem::size_of::<f32>()) as u32,
+    };
     let source = Simple::new(
         None,
         "climat",
@@ -81,7 +106,7 @@ pub fn start() -> Option<tokio::sync::mpsc::Receiver<[f32; BARS]>> {
         "visualiser",
         &spec,
         None,
-        None,
+        Some(&attr),
     )
     .ok()?;
 
@@ -113,7 +138,8 @@ fn listen(source: Simple, tx: tokio::sync::mpsc::Sender<[f32; BARS]>) {
     let mut bars = [0f32; BARS];
     let mut was_silent = false;
 
-    let per_frame = DECAY_PER_SECOND.powf(HOP as f32 / RATE as f32);
+    let hop_seconds = HOP as f32 / RATE as f32;
+    let per_frame = FALL_TO.powf(hop_seconds / FALL_SECONDS);
 
     loop {
         let bytes = unsafe {

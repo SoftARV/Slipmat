@@ -68,7 +68,7 @@ pub fn draw(frame: &mut Frame, view: View) {
     // browser is what gets squeezed, down to a single visible row on a short
     // window.
     let [top, note, queue_head, queue, lib_head, lib, hints] = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(5),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
         Constraint::Length(2),
         Constraint::Fill(2),
@@ -141,13 +141,14 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
         ))];
     }
 
-    // **Under the title, where Winamp put it.** It replaces a blank line rather
-    // than claiming one, so a terminal with no audio server to listen to loses
-    // nothing but the bars.
-    let spectrum = if view.bars.iter().any(|v| *v > 0.0) {
-        Line::from(Span::styled(bars(view.bars), Style::from(ACCENT)))
+    // **Under the title, where Winamp put it**, and two rows tall — one row of
+    // block characters is only eight heights, and a bar has to travel an eighth
+    // of its range before anything changes on screen. That reads as a slow
+    // visualiser however fast the data behind it arrives.
+    let (upper, lower) = if view.bars.iter().any(|v| *v > 0.0) {
+        bars(view.bars)
     } else {
-        Line::default()
+        (String::new(), String::new())
     };
 
     let title = Line::from(vec![
@@ -198,7 +199,13 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
         Span::styled(rest(view.snap.volume, VOL), Style::from(DIM)),
     ]);
 
-    vec![title, spectrum, transport, modes]
+    vec![
+        title,
+        Line::from(Span::styled(upper, Style::from(ACCENT))),
+        Line::from(Span::styled(lower, Style::from(ACCENT))),
+        transport,
+        modes,
+    ]
 }
 
 /// The always-there row. **Nothing has to be memorised**, which is the whole
@@ -286,24 +293,23 @@ pub fn fit(text: &str, width: usize) -> String {
     format!("{kept}… ")
 }
 
-/// One cell per bar, its height the level. Eight steps is what a block
-/// character gives, and it is plenty: the eye reads the *shape* moving, not the
-/// exact height of any one bar.
-fn bars(levels: &[f32]) -> String {
+/// One cell per bar across two rows, so a level has sixteen steps rather than
+/// eight. Returns the upper row and the lower one.
+fn bars(levels: &[f32]) -> (String, String) {
     const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    levels
-        .iter()
-        .map(|v| {
-            let i = (v.clamp(0.0, 1.0) * STEPS.len() as f32).round() as usize;
-            // Zero is a space, not the shortest block: a floor of stubs across
-            // the whole width reads as a broken bar rather than as silence.
-            if i == 0 {
-                ' '
-            } else {
-                STEPS[(i - 1).min(STEPS.len() - 1)]
-            }
-        })
-        .collect()
+    let mut upper = String::new();
+    let mut lower = String::new();
+    for v in levels {
+        let eighths = (v.clamp(0.0, 1.0) * 16.0).round() as usize;
+        // The lower row fills first; the upper one only once the lower is full.
+        let below = eighths.min(8);
+        let above = eighths.saturating_sub(8);
+        // Zero is a space, not the shortest block: a floor of stubs across the
+        // whole width reads as a broken meter rather than as silence.
+        lower.push(if below == 0 { ' ' } else { STEPS[below - 1] });
+        upper.push(if above == 0 { ' ' } else { STEPS[above - 1] });
+    }
+    (upper, lower)
 }
 
 fn mode(on: bool, text: &str) -> Span<'static> {
@@ -373,9 +379,10 @@ mod tests {
     fn a_silent_bar_is_a_space_rather_than_a_stub() {
         // A row of ▁ across the whole width reads as a broken meter; silence
         // should read as nothing at all.
-        assert_eq!(bars(&[0.0, 0.0]), "  ");
-        assert_eq!(bars(&[1.0]), "█");
-        assert_eq!(bars(&[0.0, 1.0]).chars().count(), 2);
+        assert_eq!(bars(&[0.0, 0.0]), ("  ".into(), "  ".into()));
+        // Full height fills both rows; half fills only the lower one.
+        assert_eq!(bars(&[1.0]), ("█".into(), "█".into()));
+        assert_eq!(bars(&[0.5]), (" ".into(), "█".into()));
     }
 
     #[test]
