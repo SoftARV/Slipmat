@@ -33,10 +33,14 @@ pub const MUTED: Color = Color::Rgb(0x9A, 0x8E, 0x90);
 /// Times, labels, and everything that is only there when looked for.
 pub const DIM: Color = Color::Rgb(0x65, 0x5B, 0x5D);
 
-/// How wide the progress bar is drawn, in cells.
-const BAR: usize = 25;
-/// And the volume meter beside it.
+/// The volume meter, which stays small on purpose: it is a state to glance at,
+/// not a thing to read along. The progress bar takes the rest of the line.
 const VOL: usize = 10;
+/// What the transport line spends on things that are not the bar: the play
+/// glyph, the gaps either side, and `mm:ss / mm:ss`.
+const TRANSPORT_FURNITURE: usize = 22;
+/// White, for the top of the bars.
+const PEAK: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 
 pub struct View<'a> {
     pub snap: &'a Snapshot,
@@ -78,7 +82,7 @@ pub fn draw(frame: &mut Frame, view: View) {
     ])
     .areas(area);
 
-    frame.render_widget(Paragraph::new(now_playing(&view)), top);
+    frame.render_widget(Paragraph::new(now_playing(&view, area.width as usize)), top);
     if let Some(message) = view.message {
         // Rule 4 reaching the terminal: a request the daemon refused says so
         // rather than looking like a key that did not register.
@@ -125,7 +129,7 @@ fn spaced(line: Line<'static>) -> Vec<Line<'static>> {
     vec![Line::default(), line]
 }
 
-fn now_playing(view: &View) -> Vec<Line<'static>> {
+fn now_playing(view: &View, width: usize) -> Vec<Line<'static>> {
     // Anything but Ready has nothing to say about a track, so it says what it
     // is doing instead — a blank player looks broken, a waiting one does not.
     if !matches!(view.stage, Stage::Ready) {
@@ -146,9 +150,9 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
     // of its range before anything changes on screen. That reads as a slow
     // visualiser however fast the data behind it arrives.
     let (upper, lower) = if view.bars.iter().any(|v| *v > 0.0) {
-        bars(view.bars)
+        bars(view.bars, width)
     } else {
-        (String::new(), String::new())
+        (Vec::new(), Vec::new())
     };
 
     let title = Line::from(vec![
@@ -160,14 +164,17 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
         Span::styled(view.snap.artist.clone(), Style::from(MUTED)),
     ]);
 
+    // The bar takes the line: a seek bar you can aim at is worth more than
+    // whitespace, and every other list here already grows with the window.
+    let bar = width.saturating_sub(TRANSPORT_FURNITURE).max(8);
     let transport = Line::from(vec![
         Span::styled(
             if view.snap.playing { "▶" } else { "❚❚" },
             Style::from(ACCENT),
         ),
         Span::raw("   "),
-        Span::styled(meter(progress(view.snap), BAR), Style::from(ACCENT)),
-        Span::styled(rest(progress(view.snap), BAR), Style::from(DIM)),
+        Span::styled(meter(progress(view.snap), bar), Style::from(ACCENT)),
+        Span::styled(rest(progress(view.snap), bar), Style::from(DIM)),
         Span::raw("   "),
         Span::styled(
             format!(
@@ -201,8 +208,8 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
 
     vec![
         title,
-        Line::from(Span::styled(upper, Style::from(ACCENT))),
-        Line::from(Span::styled(lower, Style::from(ACCENT))),
+        Line::from(upper),
+        Line::from(lower),
         transport,
         modes,
     ]
@@ -293,23 +300,69 @@ pub fn fit(text: &str, width: usize) -> String {
     format!("{kept}… ")
 }
 
-/// One cell per bar across two rows, so a level has sixteen steps rather than
-/// eight. Returns the upper row and the lower one.
-fn bars(levels: &[f32]) -> (String, String) {
+/// One cell per column across two rows, so a level has sixteen steps rather
+/// than eight, and coloured from the accent at the bottom to white at the top.
+///
+/// Returns the upper row and the lower one, a span per cell — a block character
+/// takes one colour, so a gradient has to be built out of cells rather than
+/// painted over a string.
+fn bars(levels: &[f32], width: usize) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let mut upper = String::new();
-    let mut lower = String::new();
-    for v in levels {
-        let eighths = (v.clamp(0.0, 1.0) * 16.0).round() as usize;
+    let mut upper = Vec::with_capacity(width);
+    let mut lower = Vec::with_capacity(width);
+    for v in columns(levels, width) {
+        let sixteenths = (v.clamp(0.0, 1.0) * 16.0).round() as usize;
         // The lower row fills first; the upper one only once the lower is full.
-        let below = eighths.min(8);
-        let above = eighths.saturating_sub(8);
+        let below = sixteenths.min(8);
+        let above = sixteenths.saturating_sub(8);
         // Zero is a space, not the shortest block: a floor of stubs across the
         // whole width reads as a broken meter rather than as silence.
-        lower.push(if below == 0 { ' ' } else { STEPS[below - 1] });
-        upper.push(if above == 0 { ' ' } else { STEPS[above - 1] });
+        lower.push(cell(below, ACCENT, blend(ACCENT, PEAK, 0.5), &STEPS));
+        upper.push(cell(above, blend(ACCENT, PEAK, 0.5), PEAK, &STEPS));
     }
     (upper, lower)
+}
+
+/// One cell of a bar: how full it is picks both the glyph and, between `foot`
+/// and `head`, its colour — so a bar that only just reaches a row is still the
+/// colour of the row below it.
+fn cell(eighths: usize, foot: Color, head: Color, steps: &[char; 8]) -> Span<'static> {
+    if eighths == 0 {
+        return Span::raw(" ");
+    }
+    let t = eighths as f32 / steps.len() as f32;
+    Span::styled(
+        steps[eighths - 1].to_string(),
+        Style::from(blend(foot, head, t)),
+    )
+}
+
+fn blend(from: Color, to: Color, t: f32) -> Color {
+    let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (from, to) else {
+        return from;
+    };
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8;
+    Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
+}
+
+/// Fold the analysed bands into the columns actually on screen.
+///
+/// **The peak, not the average.** Averaging a band into a wider window is what
+/// turns a spectrum into a smooth hump: the loud thing is the one worth seeing,
+/// and it is the one an average throws away.
+fn columns(levels: &[f32], width: usize) -> Vec<f32> {
+    if width == 0 || levels.is_empty() {
+        return Vec::new();
+    }
+    (0..width)
+        .map(|c| {
+            let from = c * levels.len() / width;
+            let to = ((c + 1) * levels.len() / width)
+                .max(from + 1)
+                .min(levels.len());
+            levels[from..to].iter().fold(0f32, |m, v| m.max(*v))
+        })
+        .collect()
 }
 
 fn mode(on: bool, text: &str) -> Span<'static> {
@@ -379,10 +432,32 @@ mod tests {
     fn a_silent_bar_is_a_space_rather_than_a_stub() {
         // A row of ▁ across the whole width reads as a broken meter; silence
         // should read as nothing at all.
-        assert_eq!(bars(&[0.0, 0.0]), ("  ".into(), "  ".into()));
+        let glyphs = |(up, low): (Vec<Span>, Vec<Span>)| {
+            let text = |r: Vec<Span>| r.iter().map(|s| s.content.to_string()).collect::<String>();
+            (text(up), text(low))
+        };
+        assert_eq!(glyphs(bars(&[0.0, 0.0], 2)), ("  ".into(), "  ".into()));
         // Full height fills both rows; half fills only the lower one.
-        assert_eq!(bars(&[1.0]), ("█".into(), "█".into()));
-        assert_eq!(bars(&[0.5]), (" ".into(), "█".into()));
+        assert_eq!(glyphs(bars(&[1.0], 1)), ("█".into(), "█".into()));
+        assert_eq!(glyphs(bars(&[0.5], 1)), (" ".into(), "█".into()));
+    }
+
+    #[test]
+    fn the_bars_take_the_width_they_are_given() {
+        // Both directions: more columns than bands, and fewer.
+        let bands = [0.1, 0.9, 0.2, 0.8];
+        for width in [1usize, 3, 4, 12, 80] {
+            let (up, low) = bars(&bands, width);
+            assert_eq!(up.len(), width, "upper row at {width}");
+            assert_eq!(low.len(), width, "lower row at {width}");
+        }
+    }
+
+    #[test]
+    fn folding_bands_keeps_the_peak_rather_than_the_average() {
+        // A loud band next to quiet ones must survive the fold, or every
+        // spectrum flattens into the same hump as the window narrows.
+        assert_eq!(columns(&[0.0, 1.0, 0.0, 0.0], 2), vec![1.0, 0.0]);
     }
 
     #[test]
@@ -395,14 +470,17 @@ mod tests {
     #[test]
     fn a_meter_and_its_remainder_always_fill_the_width() {
         // Drawn as two spans in different colours, so a rounding disagreement
-        // between them would make the bar change length as it played.
-        for pct in 0..=100 {
-            let f = pct as f64 / 100.0;
-            assert_eq!(
-                meter(f, BAR).chars().count() + rest(f, BAR).chars().count(),
-                BAR,
-                "at {pct}%"
-            );
+        // between them would make the bar change length as it played. Checked
+        // at several widths now that it grows with the window.
+        for width in [8usize, 25, 60, 137] {
+            for pct in 0..=100 {
+                let f = pct as f64 / 100.0;
+                assert_eq!(
+                    meter(f, width).chars().count() + rest(f, width).chars().count(),
+                    width,
+                    "at {pct}% and width {width}"
+                );
+            }
         }
     }
 

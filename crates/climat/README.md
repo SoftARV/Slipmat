@@ -14,8 +14,8 @@ and a window open at once are two views of one player rather than two players.
 ```
   Addicted To a Memory (feat. Bahari)  —  Zedd
 
-    ▂▂▄▂▄▆▅█▁▂▁ ▁   ▂▂ ▁
-  ▅▅█████████████▆▇▇████▃▃▃▄▁
+  ▄▄▄▄▄▄▄▄████████████████████▆▆▆▄▄▃▃▃▆▆▆▅▃▃▃▂▃▅▅▅▄     ▃  ▂
+  ████████████████████████████████████████████████▇▅▇████▆█▇▇▇▇▅▇▇▆▇█
   ▶   ██░░░░░░░░░░░░░░░░░░░░░░░   0:21 / 5:03
       shuffle off   repeat off   vol ██████████
 
@@ -60,8 +60,14 @@ The windows overlap, so the bars move about every 12ms while each transform
 still looks at 46ms of audio — the frame rate and the frequency resolution are
 separate things. Two rows rather than one, because a block character gives
 eight heights and a bar has to cross an eighth of its range before anything
-changes on screen. Measured on a release build at 1.1% of a core playing, 0.1%
-paused.
+changes on screen — and coloured from the accent at the bottom to white at the
+top. Measured on a release build at 1.1% of a core playing, 0.1% paused.
+
+The bars and the seek bar both take the width they are given, the way the lists
+do. What is analysed does not change with it: the audio side produces a fixed
+set of bands and the drawing side folds them into however many columns there
+are, keeping the peak of each — an average is what turns a spectrum into a
+smooth hump.
 
 ## Keys
 

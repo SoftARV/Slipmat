@@ -21,11 +21,23 @@ use libpulse_binding::stream::Direction;
 use libpulse_simple_binding::Simple;
 use rustfft::{FftPlanner, num_complex::Complex};
 
-/// How many bars are drawn.
-pub const BARS: usize = 28;
+/// How many bands are analysed.
+///
+/// **Not how many bars are drawn.** The window decides that, and it changes
+/// when somebody resizes the terminal — which the audio thread has no business
+/// knowing about. So this is a generous fixed resolution and the drawing side
+/// folds it down to whatever width it has.
+pub const BANDS: usize = 96;
 
 /// How much audio each transform looks at. 2048 at 44.1kHz is ~46ms, which is
 /// what buys the frequency resolution — it is *not* what sets the frame rate.
+///
+/// **4096 is worse, which is not obvious.** It resolves the bottom of the
+/// spectrum better — bands are spaced by octave, so the lowest few span a
+/// handful of hertz and several share a bin at this size, drawing as one flat
+/// step. But doubling the window halves the energy in each bin *and* doubles
+/// the divisor below, and the ~6dB that costs takes the whole bass end under
+/// the floor. Tried, measured, reverted.
 const WINDOW: usize = 2048;
 
 /// How much of it is new each frame.
@@ -69,7 +81,7 @@ const LOUD_DB: f32 = -26.0;
 
 /// Start listening. `None` if there is no audio server to listen to — the bars
 /// simply never appear, which is the right failure for decoration.
-pub fn start() -> Option<tokio::sync::mpsc::Receiver<[f32; BARS]>> {
+pub fn start() -> Option<tokio::sync::mpsc::Receiver<[f32; BANDS]>> {
     let spec = Spec {
         format: Format::F32le,
         channels: 1,
@@ -120,7 +132,7 @@ pub fn start() -> Option<tokio::sync::mpsc::Receiver<[f32; BARS]>> {
     Some(rx)
 }
 
-fn listen(source: Simple, tx: tokio::sync::mpsc::Sender<[f32; BARS]>) {
+fn listen(source: Simple, tx: tokio::sync::mpsc::Sender<[f32; BANDS]>) {
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(WINDOW);
     // The Hann window, precomputed: without it every bar smears into its
@@ -135,7 +147,7 @@ fn listen(source: Simple, tx: tokio::sync::mpsc::Sender<[f32; BARS]>) {
     // The window slides over this; only `HOP` of it is new each time.
     let mut history = vec![0f32; WINDOW];
     let mut fresh_samples = vec![0f32; HOP];
-    let mut bars = [0f32; BARS];
+    let mut bars = [0f32; BANDS];
     let mut was_silent = false;
 
     let hop_seconds = HOP as f32 / RATE as f32;
@@ -191,17 +203,17 @@ fn listen(source: Simple, tx: tokio::sync::mpsc::Sender<[f32; BARS]>) {
 /// A linear split puts almost everything in the first two bars — half the bins
 /// of a 44.1kHz signal describe 11kHz and up, where music has very little. Ears
 /// hear pitch logarithmically, so the bars are spaced that way too.
-fn bands(spectrum: &[Complex<f32>]) -> [f32; BARS] {
+fn bands(spectrum: &[Complex<f32>]) -> [f32; BANDS] {
     // Only the first half is meaningful; the rest mirrors it.
     let bins = spectrum.len() / 2;
     let lowest = 30.0f32;
     let highest = 16_000.0f32;
     let hz_per_bin = RATE as f32 / spectrum.len() as f32;
 
-    let mut out = [0f32; BARS];
+    let mut out = [0f32; BANDS];
     for (i, slot) in out.iter_mut().enumerate() {
-        let lo = lowest * (highest / lowest).powf(i as f32 / BARS as f32);
-        let hi = lowest * (highest / lowest).powf((i + 1) as f32 / BARS as f32);
+        let lo = lowest * (highest / lowest).powf(i as f32 / BANDS as f32);
+        let hi = lowest * (highest / lowest).powf((i + 1) as f32 / BANDS as f32);
         let from = ((lo / hz_per_bin) as usize).min(bins - 1);
         let to = (((hi / hz_per_bin) as usize).max(from + 1)).min(bins);
 
@@ -254,9 +266,14 @@ mod tests {
         FftPlanner::new().plan_fft_forward(WINDOW).process(&mut buf);
 
         let out = bands(&buf);
+        // **Localised, not silent.** A tone spread over 96 bands lands in two
+        // or three of them, and with a deliberately narrow decibel window it is
+        // right that those reach the top. What would be wrong is the whole
+        // spectrum reaching it — the saturation bug this test was written for.
+        let lit = out.iter().filter(|v| **v > 0.0).count();
         assert!(
-            out.iter().filter(|v| **v >= 1.0).count() <= 1,
-            "bars are saturating: {out:?}"
+            (1..=6).contains(&lit),
+            "a single tone lit {lit} of {BANDS} bands: {out:?}"
         );
         let loudest = out
             .iter()
@@ -265,7 +282,7 @@ mod tests {
             .map(|(i, _)| i)
             .unwrap();
         // Which bar 1kHz lands in, from the same octave spacing `bands` uses.
-        let expected = (BARS as f32 * (hz / 30.0).log10() / (16_000.0f32 / 30.0).log10()) as usize;
+        let expected = (BANDS as f32 * (hz / 30.0).log10() / (16_000.0f32 / 30.0).log10()) as usize;
         assert!(
             loudest.abs_diff(expected) <= 1,
             "1kHz lit bar {loudest}, expected about {expected}"

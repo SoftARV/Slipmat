@@ -40,7 +40,6 @@ const FRAME_MS: u64 = 100;
 /// How long a refusal from the daemon stays on screen.
 const MESSAGE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[derive(Default)]
 struct App {
     snap: Snapshot,
     stage: Stage,
@@ -54,7 +53,23 @@ struct App {
     quit_daemon: bool,
     /// The visualiser's last frame. All zeroes when there is nothing to hear,
     /// or when there was no audio server to listen to in the first place.
-    bars: [f32; spectrum::BARS],
+    bars: [f32; spectrum::BANDS],
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            snap: Snapshot::default(),
+            stage: Stage::default(),
+            browser: browser::Browser::default(),
+            queue: queue::Queue::default(),
+            focus: Focus::default(),
+            message: None,
+            quit_daemon: false,
+            // `#[derive(Default)]` stops at arrays of 32.
+            bars: [0.0; spectrum::BANDS],
+        }
+    }
 }
 
 fn main() -> Result<()> {
