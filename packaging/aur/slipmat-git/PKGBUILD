@@ -68,7 +68,7 @@ check() {
 }
 
 package_slipmat-daemon-git() {
-  pkgdesc="Playback engine for Slipmat: the daemon and its Widevine sidecar (latest commit)"
+  pkgdesc="Slipmat's playback daemon and the hidden Chromium it drives (latest commit)"
   # Measured with `ldd` against the bundled Chromium rather than guessed. **gtk3
   # is the surprising one** — the sidecar needs it even though the app is GTK4,
   # and nothing else here pulls it in. It was never declared and worked only
@@ -143,7 +143,7 @@ package_slipmat-git() {
 }
 
 package_climat-git() {
-  pkgdesc="Apple Music in a terminal, in the shape of Winamp (latest commit)"
+  pkgdesc="Winamp-style Apple Music in a terminal; needs a graphical session (latest commit)"
   # No toolkit: it draws itself. The daemon behind it still needs a display
   # server for Chromium, which is why this cannot run over plain SSH — see the
   # README it installs.
