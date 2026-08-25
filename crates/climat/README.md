@@ -61,7 +61,9 @@ still looks at 46ms of audio — the frame rate and the frequency resolution are
 separate things. Two rows rather than one, because a block character gives
 eight heights and a bar has to cross an eighth of its range before anything
 changes on screen — and coloured from the accent at the bottom to white at the
-top. Measured on a release build at 1.1% of a core playing, 0.1% paused.
+top. It grows taller with the window — a share of the height, the same way it
+takes the width — because the gradient is only worth having once there are rows
+for it to run over. Measured on a release build at 1.1% of a core playing, 0.1% paused.
 
 The bars and the seek bar both take the width they are given, the way the lists
 do. What is analysed does not change with it: the audio side produces a fixed

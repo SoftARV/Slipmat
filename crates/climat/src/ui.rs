@@ -41,6 +41,11 @@ const VOL: usize = 10;
 const TRANSPORT_FURNITURE: usize = 22;
 /// White, for the top of the bars.
 const PEAK: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+/// How much of the window the spectrum may take, and the bounds either side.
+/// Two rows is enough to read; more is where the gradient becomes visible.
+const SPECTRUM_SHARE: u16 = 5;
+const SPECTRUM_MIN: usize = 2;
+const SPECTRUM_MAX: usize = 6;
 
 pub struct View<'a> {
     pub snap: &'a Snapshot,
@@ -71,8 +76,11 @@ pub fn draw(frame: &mut Frame, view: View) {
     // fixed rows also claiming their share the two over-subscribe it, and the
     // browser is what gets squeezed, down to a single visible row on a short
     // window.
+    let rows = spectrum_rows(area.height);
+    // title + spectrum + a blank + transport + modes.
+    let band = 1 + rows as u16 + 3;
     let [top, note, queue_head, queue, lib_head, lib, hints] = Layout::vertical([
-        Constraint::Length(5),
+        Constraint::Length(band),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
         Constraint::Length(2),
         Constraint::Fill(2),
@@ -82,7 +90,10 @@ pub fn draw(frame: &mut Frame, view: View) {
     ])
     .areas(area);
 
-    frame.render_widget(Paragraph::new(now_playing(&view, area.width as usize)), top);
+    frame.render_widget(
+        Paragraph::new(now_playing(&view, area.width as usize, rows)),
+        top,
+    );
     if let Some(message) = view.message {
         // Rule 4 reaching the terminal: a request the daemon refused says so
         // rather than looking like a key that did not register.
@@ -129,7 +140,16 @@ fn spaced(line: Line<'static>) -> Vec<Line<'static>> {
     vec![Line::default(), line]
 }
 
-fn now_playing(view: &View, width: usize) -> Vec<Line<'static>> {
+/// How tall the spectrum is, for a given window.
+///
+/// A share of the height rather than a constant, for the same reason the bars
+/// take the width: a tall terminal has room to show the gradient, and a short
+/// one has to spend its rows on the lists.
+fn spectrum_rows(height: u16) -> usize {
+    (height / SPECTRUM_SHARE).clamp(SPECTRUM_MIN as u16, SPECTRUM_MAX as u16) as usize
+}
+
+fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
     // Anything but Ready has nothing to say about a track, so it says what it
     // is doing instead — a blank player looks broken, a waiting one does not.
     if !matches!(view.stage, Stage::Ready) {
@@ -149,10 +169,10 @@ fn now_playing(view: &View, width: usize) -> Vec<Line<'static>> {
     // block characters is only eight heights, and a bar has to travel an eighth
     // of its range before anything changes on screen. That reads as a slow
     // visualiser however fast the data behind it arrives.
-    let (upper, lower) = if view.bars.iter().any(|v| *v > 0.0) {
-        bars(view.bars, width)
+    let spectrum = if view.bars.iter().any(|v| *v > 0.0) {
+        bars(view.bars, width, rows)
     } else {
-        (Vec::new(), Vec::new())
+        vec![Vec::new(); rows]
     };
 
     let title = Line::from(vec![
@@ -173,8 +193,11 @@ fn now_playing(view: &View, width: usize) -> Vec<Line<'static>> {
             Style::from(ACCENT),
         ),
         Span::raw("   "),
-        Span::styled(meter(progress(view.snap), bar), Style::from(ACCENT)),
-        Span::styled(rest(progress(view.snap), bar), Style::from(DIM)),
+        // **A line, not blocks.** Directly under a wall of block characters,
+        // a bar drawn out of the same glyphs reads as one more spectrum band
+        // that happens to be full. A rule is unmistakably a position.
+        Span::styled(meter(progress(view.snap), bar, '━'), Style::from(ACCENT)),
+        Span::styled(rest(progress(view.snap), bar, '─'), Style::from(DIM)),
         Span::raw("   "),
         Span::styled(
             format!(
@@ -202,17 +225,18 @@ fn now_playing(view: &View, width: usize) -> Vec<Line<'static>> {
             repeat_text(view.snap),
         ),
         Span::styled("   vol ", Style::from(DIM)),
-        Span::styled(meter(view.snap.volume, VOL), Style::from(ACCENT)),
-        Span::styled(rest(view.snap.volume, VOL), Style::from(DIM)),
+        Span::styled(meter(view.snap.volume, VOL, '█'), Style::from(ACCENT)),
+        Span::styled(rest(view.snap.volume, VOL, '░'), Style::from(DIM)),
     ]);
 
-    vec![
-        title,
-        Line::from(upper),
-        Line::from(lower),
-        transport,
-        modes,
-    ]
+    let mut band = vec![title];
+    band.extend(spectrum.into_iter().map(Line::from));
+    // **A blank between the bars and the transport.** Without it the seek line
+    // sits flush against the spectrum and reads as part of it.
+    band.push(Line::default());
+    band.push(transport);
+    band.push(modes);
+    band
 }
 
 /// The always-there row. **Nothing has to be memorised**, which is the whole
@@ -300,27 +324,43 @@ pub fn fit(text: &str, width: usize) -> String {
     format!("{kept}… ")
 }
 
-/// One cell per column across two rows, so a level has sixteen steps rather
-/// than eight, and coloured from the accent at the bottom to white at the top.
+/// One cell per column, `rows` tall, coloured from the accent at the bottom to
+/// white at the top. Returned top row first, the order they are drawn in.
 ///
-/// Returns the upper row and the lower one, a span per cell — a block character
-/// takes one colour, so a gradient has to be built out of cells rather than
-/// painted over a string.
-fn bars(levels: &[f32], width: usize) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+/// Height is where the gradient lives: over two rows it is two shades, over
+/// five it is a gradient somebody can actually see.
+fn bars(levels: &[f32], width: usize, rows: usize) -> Vec<Vec<Span<'static>>> {
     const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let mut upper = Vec::with_capacity(width);
-    let mut lower = Vec::with_capacity(width);
-    for v in columns(levels, width) {
-        let sixteenths = (v.clamp(0.0, 1.0) * 16.0).round() as usize;
-        // The lower row fills first; the upper one only once the lower is full.
-        let below = sixteenths.min(8);
-        let above = sixteenths.saturating_sub(8);
-        // Zero is a space, not the shortest block: a floor of stubs across the
-        // whole width reads as a broken meter rather than as silence.
-        lower.push(cell(below, ACCENT, blend(ACCENT, PEAK, 0.5), &STEPS));
-        upper.push(cell(above, blend(ACCENT, PEAK, 0.5), PEAK, &STEPS));
+    let total = rows * STEPS.len();
+    let columns = columns(levels, width);
+    // Bottom row first while filling, reversed at the end — a bar fills upward
+    // and it is simpler to say so than to invert the arithmetic.
+    let mut out: Vec<Vec<Span<'static>>> = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let floor = row * STEPS.len();
+        out.push(
+            columns
+                .iter()
+                .map(|&v| {
+                    let height = (v.clamp(0.0, 1.0) * total as f32).round() as usize;
+                    let eighths = height.saturating_sub(floor).min(STEPS.len());
+                    // Where this cell sits in the whole column decides its
+                    // colour, so the gradient runs over the bars rather than
+                    // over each one separately.
+                    let foot = floor as f32 / total as f32;
+                    let head = (floor + STEPS.len()) as f32 / total as f32;
+                    cell(
+                        eighths,
+                        blend(ACCENT, PEAK, foot),
+                        blend(ACCENT, PEAK, head),
+                        &STEPS,
+                    )
+                })
+                .collect(),
+        );
     }
-    (upper, lower)
+    out.reverse();
+    out
 }
 
 /// One cell of a bar: how full it is picks both the glyph and, between `foot`
@@ -392,12 +432,12 @@ fn progress(snap: &Snapshot) -> f64 {
     (snap.position_ms as f64 / snap.duration_ms as f64).clamp(0.0, 1.0)
 }
 
-fn meter(fraction: f64, width: usize) -> String {
-    "█".repeat(filled(fraction, width))
+fn meter(fraction: f64, width: usize, glyph: char) -> String {
+    glyph.to_string().repeat(filled(fraction, width))
 }
 
-fn rest(fraction: f64, width: usize) -> String {
-    "░".repeat(width - filled(fraction, width))
+fn rest(fraction: f64, width: usize, glyph: char) -> String {
+    glyph.to_string().repeat(width - filled(fraction, width))
 }
 
 fn filled(fraction: f64, width: usize) -> usize {
@@ -432,14 +472,16 @@ mod tests {
     fn a_silent_bar_is_a_space_rather_than_a_stub() {
         // A row of ▁ across the whole width reads as a broken meter; silence
         // should read as nothing at all.
-        let glyphs = |(up, low): (Vec<Span>, Vec<Span>)| {
-            let text = |r: Vec<Span>| r.iter().map(|s| s.content.to_string()).collect::<String>();
-            (text(up), text(low))
+        let glyphs = |rows: Vec<Vec<Span>>| {
+            rows.iter()
+                .map(|r| r.iter().map(|s| s.content.to_string()).collect::<String>())
+                .collect::<Vec<_>>()
         };
-        assert_eq!(glyphs(bars(&[0.0, 0.0], 2)), ("  ".into(), "  ".into()));
-        // Full height fills both rows; half fills only the lower one.
-        assert_eq!(glyphs(bars(&[1.0], 1)), ("█".into(), "█".into()));
-        assert_eq!(glyphs(bars(&[0.5], 1)), (" ".into(), "█".into()));
+        assert_eq!(glyphs(bars(&[0.0, 0.0], 2, 2)), vec!["  ", "  "]);
+        // Full height fills every row; half fills the lower half only.
+        assert_eq!(glyphs(bars(&[1.0], 1, 2)), vec!["█", "█"]);
+        assert_eq!(glyphs(bars(&[0.5], 1, 2)), vec![" ", "█"]);
+        assert_eq!(glyphs(bars(&[0.5], 1, 4)), vec![" ", " ", "█", "█"]);
     }
 
     #[test]
@@ -447,9 +489,13 @@ mod tests {
         // Both directions: more columns than bands, and fewer.
         let bands = [0.1, 0.9, 0.2, 0.8];
         for width in [1usize, 3, 4, 12, 80] {
-            let (up, low) = bars(&bands, width);
-            assert_eq!(up.len(), width, "upper row at {width}");
-            assert_eq!(low.len(), width, "lower row at {width}");
+            for rows in [2usize, 4, 6] {
+                let drawn = bars(&bands, width, rows);
+                assert_eq!(drawn.len(), rows, "row count at {width}x{rows}");
+                for row in &drawn {
+                    assert_eq!(row.len(), width, "row width at {width}x{rows}");
+                }
+            }
         }
     }
 
@@ -476,7 +522,7 @@ mod tests {
             for pct in 0..=100 {
                 let f = pct as f64 / 100.0;
                 assert_eq!(
-                    meter(f, width).chars().count() + rest(f, width).chars().count(),
+                    meter(f, width, '━').chars().count() + rest(f, width, '─').chars().count(),
                     width,
                     "at {pct}% and width {width}"
                 );
