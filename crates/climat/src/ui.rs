@@ -14,6 +14,9 @@ use slipmat_core::ipc::{Snapshot, Stage};
 
 use crate::browser::{self, Browser};
 use crate::queue::{self, Queue};
+use crate::theme::{
+    accent as ACCENT, bright as BRIGHT, dim as DIM, mix, muted as MUTED, peak as PEAK,
+};
 
 /// Which pane the arrow keys are talking to.
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -24,20 +27,9 @@ pub enum Focus {
     Queue,
 }
 
-/// Apple Music's red, and the only colour that means anything here.
-pub const ACCENT: Color = Color::Rgb(0xFF, 0x4A, 0x5E);
-/// Track titles and anything the eye should land on.
-pub const BRIGHT: Color = Color::Rgb(0xF2, 0xEC, 0xED);
-/// Artists, and the second half of a line.
-pub const MUTED: Color = Color::Rgb(0x9A, 0x8E, 0x90);
-/// Times, labels, and everything that is only there when looked for.
-pub const DIM: Color = Color::Rgb(0x65, 0x5B, 0x5D);
-
 /// The volume meter, which stays small on purpose: it is a state to glance at,
 /// not a thing to read along. The progress bar takes the rest of the line.
 const VOL: usize = 10;
-/// White, for the top of the bars.
-const PEAK: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 /// How much of the window the spectrum may take, and the bounds either side.
 /// Two rows is enough to read; more is where the gradient becomes visible.
 const SPECTRUM_SHARE: u16 = 6;
@@ -74,8 +66,8 @@ pub fn draw(frame: &mut Frame, view: View) {
     // browser is what gets squeezed, down to a single visible row on a short
     // window.
     let rows = spectrum_rows(area.height);
-    // title + album + spectrum + a blank + seek + state + modes.
-    let band = 2 + rows as u16 + 4;
+    // title + album + a blank + spectrum + a blank + seek + state + modes.
+    let band = 3 + rows as u16 + 4;
     let [top, note, queue_head, queue, lib_head, lib, hints] = Layout::vertical([
         Constraint::Length(band),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
@@ -97,7 +89,7 @@ pub fn draw(frame: &mut Frame, view: View) {
         frame.render_widget(
             Paragraph::new(spaced(Line::from(Span::styled(
                 fit(message, area.width as usize),
-                Style::from(ACCENT),
+                Style::from(ACCENT()),
             )))),
             note,
         );
@@ -152,13 +144,13 @@ fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
     if !matches!(view.stage, Stage::Ready) {
         return vec![Line::from(vec![Span::styled(
             stage_text(view.stage),
-            Style::from(MUTED),
+            Style::from(MUTED()),
         )])];
     }
     if view.snap.title.is_empty() {
         return vec![Line::from(Span::styled(
             "Nothing playing",
-            Style::from(MUTED),
+            Style::from(MUTED()),
         ))];
     }
 
@@ -175,21 +167,24 @@ fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
     let title = Line::from(vec![
         Span::styled(
             view.snap.title.clone(),
-            Style::from(BRIGHT).add_modifier(Modifier::BOLD),
+            Style::from(BRIGHT()).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  —  ", Style::from(DIM)),
-        Span::styled(view.snap.artist.clone(), Style::from(MUTED)),
+        Span::styled("  —  ", Style::from(DIM())),
+        Span::styled(view.snap.artist.clone(), Style::from(MUTED())),
     ]);
     // Its own line rather than a third clause on the title: an album is the
     // one field long enough to push the artist off a narrow window.
-    let album = Line::from(Span::styled(view.snap.album.clone(), Style::from(DIM)));
+    let album = Line::from(Span::styled(view.snap.album.clone(), Style::from(DIM())));
 
     // **The full width, exactly like the bars above it.** Nothing shares this
     // line, so the two meters line up and a seek is aimed at the same scale the
     // spectrum is drawn on.
     let seek = Line::from(vec![
-        Span::styled(meter(progress(view.snap), width, '━'), Style::from(ACCENT)),
-        Span::styled(rest(progress(view.snap), width, '─'), Style::from(DIM)),
+        Span::styled(
+            meter(progress(view.snap), width, '━'),
+            Style::from(ACCENT()),
+        ),
+        Span::styled(rest(progress(view.snap), width, '─'), Style::from(DIM())),
     ]);
 
     // What moved off the seek line: the state at one end, the clock at the
@@ -197,9 +192,9 @@ fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
     // a glyph alone to carry it.
     let state = Line::from(ends(
         vec![
-            Span::styled(view.snap.glyph(), Style::from(ACCENT)),
+            Span::styled(view.snap.glyph(), Style::from(ACCENT())),
             Span::raw("  "),
-            Span::styled(view.snap.state_word(), Style::from(MUTED)),
+            Span::styled(view.snap.state_word(), Style::from(MUTED())),
         ],
         vec![Span::styled(
             format!(
@@ -207,18 +202,18 @@ fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
                 clock(view.snap.position_ms),
                 clock(view.snap.duration_ms)
             ),
-            Style::from(DIM),
+            Style::from(DIM()),
         )],
         width,
     ));
 
     let modes = Line::from(vec![
-        Span::styled("shuffle ", Style::from(DIM)),
+        Span::styled("shuffle ", Style::from(DIM())),
         mode(
             view.snap.shuffle,
             if view.snap.shuffle { "on" } else { "off" },
         ),
-        Span::styled("   repeat ", Style::from(DIM)),
+        Span::styled("   repeat ", Style::from(DIM())),
         mode(
             !matches!(
                 view.snap.repeat,
@@ -226,12 +221,12 @@ fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
             ),
             repeat_text(view.snap),
         ),
-        Span::styled("   vol ", Style::from(DIM)),
-        Span::styled(meter(view.snap.volume, VOL, '█'), Style::from(ACCENT)),
-        Span::styled(rest(view.snap.volume, VOL, '░'), Style::from(DIM)),
+        Span::styled("   vol ", Style::from(DIM())),
+        Span::styled(meter(view.snap.volume, VOL, '█'), Style::from(ACCENT())),
+        Span::styled(rest(view.snap.volume, VOL, '░'), Style::from(DIM())),
     ]);
 
-    let mut band = vec![title, album];
+    let mut band = vec![title, album, Line::default()];
     band.extend(spectrum.into_iter().map(Line::from));
     // **A blank between the bars and the seek line.** Without it the rule sits
     // flush against the spectrum and reads as part of it.
@@ -321,9 +316,9 @@ fn key_hints(width: usize, focus: Focus, typing: bool, catalog: bool) -> Line<'s
         let (key, what) = pair;
         spans.push(Span::styled(
             key,
-            Style::from(MUTED).add_modifier(Modifier::BOLD),
+            Style::from(MUTED()).add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled(format!(" {what}   "), Style::from(DIM)));
+        spans.push(Span::styled(format!(" {what}   "), Style::from(DIM())));
     }
     Line::from(spans)
 }
@@ -371,8 +366,8 @@ fn bars(levels: &[f32], width: usize, rows: usize) -> Vec<Vec<Span<'static>>> {
                     let head = (floor + STEPS.len()) as f32 / total as f32;
                     cell(
                         eighths,
-                        blend(ACCENT, PEAK, foot),
-                        blend(ACCENT, PEAK, head),
+                        mix(ACCENT(), PEAK(), foot),
+                        mix(ACCENT(), PEAK(), head),
                         &STEPS,
                     )
                 })
@@ -393,16 +388,8 @@ fn cell(eighths: usize, foot: Color, head: Color, steps: &[char; 8]) -> Span<'st
     let t = eighths as f32 / steps.len() as f32;
     Span::styled(
         steps[eighths - 1].to_string(),
-        Style::from(blend(foot, head, t)),
+        Style::from(mix(foot, head, t)),
     )
-}
-
-fn blend(from: Color, to: Color, t: f32) -> Color {
-    let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (from, to) else {
-        return from;
-    };
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8;
-    Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
 }
 
 /// Fold the analysed bands into the columns actually on screen.
@@ -461,9 +448,9 @@ fn mode(on: bool, text: &str) -> Span<'static> {
     Span::styled(
         text.to_owned(),
         if on {
-            Style::from(ACCENT)
+            Style::from(ACCENT())
         } else {
-            Style::from(DIM)
+            Style::from(DIM())
         },
     )
 }

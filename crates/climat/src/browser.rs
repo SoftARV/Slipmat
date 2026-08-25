@@ -16,7 +16,8 @@ use ratatui::widgets::Paragraph;
 use slipmat_core::entry::Entry;
 use slipmat_core::ipc::View;
 
-use crate::ui::{ACCENT, BRIGHT, DIM, MUTED, fit};
+use crate::theme::{accent as ACCENT, bright as BRIGHT, dim as DIM, muted as MUTED};
+use crate::ui::fit;
 
 /// The sections, in the order `1`–`4` select them.
 pub const SECTIONS: [(View, &str); 4] = [
@@ -152,13 +153,13 @@ pub fn header(browser: &Browser) -> Line<'static> {
     {
         let mut spans = vec![Span::styled(
             title.to_uppercase(),
-            Style::from(MUTED).add_modifier(Modifier::BOLD),
+            Style::from(MUTED()).add_modifier(Modifier::BOLD),
         )];
         if !subtitle.is_empty() {
-            spans.push(Span::styled(format!("   {subtitle}"), Style::from(DIM)));
+            spans.push(Span::styled(format!("   {subtitle}"), Style::from(DIM())));
         }
         if *loading {
-            spans.push(Span::styled("   opening…", Style::from(DIM)));
+            spans.push(Span::styled("   opening…", Style::from(DIM())));
         }
         return Line::from(spans);
     }
@@ -178,16 +179,16 @@ pub fn header(browser: &Browser) -> Line<'static> {
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             format!("/{}", browser.filter),
-            Style::from(if browser.typing { BRIGHT } else { MUTED }),
+            Style::from(if browser.typing { BRIGHT() } else { MUTED() }),
         ));
         // A block, so it is obvious the next keystroke goes here and not to the
         // transport — `p` in a filter must never mean pause.
         if browser.typing {
-            spans.push(Span::styled("▌", Style::from(ACCENT)));
+            spans.push(Span::styled("▌", Style::from(ACCENT())));
         }
     }
     if matches!(browser.showing, Showing::Catalog { searching: true }) {
-        spans.push(Span::styled("   asking Apple…", Style::from(DIM)));
+        spans.push(Span::styled("   asking Apple…", Style::from(DIM())));
     }
     Line::from(spans)
 }
@@ -200,9 +201,9 @@ fn tab(name: &str, on: bool) -> Span<'static> {
             name.to_lowercase()
         },
         if on {
-            Style::from(ACCENT).add_modifier(Modifier::BOLD)
+            Style::from(ACCENT()).add_modifier(Modifier::BOLD)
         } else {
-            Style::from(DIM)
+            Style::from(DIM())
         },
     )
 }
@@ -221,7 +222,7 @@ pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser, focused: boo
             _ => "Nothing here",
         };
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(what, Style::from(DIM)))),
+            Paragraph::new(Line::from(Span::styled(what, Style::from(DIM())))),
             area,
         );
         return;
@@ -252,11 +253,11 @@ fn row(entry: &Entry, selected: bool, width: usize) -> Line<'static> {
 
     let (title, quiet) = if selected {
         (
-            Style::from(BRIGHT).add_modifier(Modifier::REVERSED),
-            Style::from(MUTED).add_modifier(Modifier::REVERSED),
+            Style::from(BRIGHT()).add_modifier(Modifier::REVERSED),
+            Style::from(MUTED()).add_modifier(Modifier::REVERSED),
         )
     } else {
-        (Style::from(BRIGHT), Style::from(MUTED))
+        (Style::from(BRIGHT()), Style::from(MUTED()))
     };
 
     let mut spans = vec![

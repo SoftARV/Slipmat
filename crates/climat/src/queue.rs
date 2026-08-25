@@ -15,7 +15,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use slipmat_core::ipc::QueueItem;
 
-use crate::ui::{ACCENT, BRIGHT, DIM, MUTED, clock, fit};
+use crate::theme::{accent as ACCENT, bright as BRIGHT, dim as DIM, muted as MUTED};
+use crate::ui::{clock, fit};
 
 /// How wide the artist column is, when there is room for one at all.
 const ARTIST: usize = 22;
@@ -110,15 +111,18 @@ pub fn header(queue: &Queue) -> Line<'static> {
         n => format!("{n} tracks"),
     };
     Line::from(vec![
-        Span::styled("QUEUE", Style::from(MUTED).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("   {count}"), Style::from(DIM)),
+        Span::styled("QUEUE", Style::from(MUTED()).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("   {count}"), Style::from(DIM())),
     ])
 }
 
 pub fn render(frame: &mut Frame, area: Rect, queue: &mut Queue, focused: bool) {
     if queue.items.is_empty() {
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled("Nothing queued", Style::from(DIM)))),
+            Paragraph::new(Line::from(Span::styled(
+                "Nothing queued",
+                Style::from(DIM()),
+            ))),
             area,
         );
         return;
@@ -164,14 +168,14 @@ fn row(
     let title_room = width.saturating_sub(fixed + artist_room);
 
     let base = if playing {
-        Style::from(ACCENT)
+        Style::from(ACCENT())
     } else {
-        Style::from(BRIGHT)
+        Style::from(BRIGHT())
     };
     let quiet = if playing {
-        Style::from(ACCENT)
+        Style::from(ACCENT())
     } else {
-        Style::from(MUTED)
+        Style::from(MUTED())
     };
     let (base, quiet) = if selected {
         (

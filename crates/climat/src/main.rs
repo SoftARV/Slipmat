@@ -17,6 +17,7 @@ mod browser;
 mod link;
 mod queue;
 mod spectrum;
+mod theme;
 mod ui;
 
 use anyhow::Result;
@@ -92,6 +93,11 @@ async fn run() -> Result<()> {
     // panic hook that gives it back. The teardown in `main` covers the one case
     // it does not: an error returned from here after this line.
     let mut term = ratatui::init();
+    // **After `init`, before the key stream.** The reply comes back on stdin as
+    // an escape sequence, so raw mode has to be on or it is echoed and
+    // line-buffered — and it has to happen before crossterm starts consuming
+    // stdin itself, or the answer is delivered as a keystroke.
+    theme::detect();
 
     let mut app = App::default();
     // The library is what the pane opens on, so ask for it with everything else

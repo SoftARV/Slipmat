@@ -72,6 +72,14 @@ set of bands and the drawing side folds them into however many columns there
 are, keeping the peak of each — an average is what turns a spectrum into a
 smooth hump.
 
+## Colours
+
+The accent is Apple Music's red, fixed. **Everything else is mixed from your
+terminal's own background**, which climat asks for on startup (`OSC 11`) — so
+the greys lean the way your theme does instead of being a warm grey chosen
+against somebody else's. A terminal that does not answer the query costs a
+tenth of a second and gets the original palette.
+
 ## Keys
 
 | Key | What it does |

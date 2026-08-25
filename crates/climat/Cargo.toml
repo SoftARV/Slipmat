@@ -25,3 +25,6 @@ futures = "0.3"
 libpulse-binding = { version = "2", default-features = false }
 libpulse-simple-binding = { version = "2", default-features = false }
 rustfft = "6"
+# For `poll` on stdin: asking the terminal its colour must not hang a client
+# whose terminal never answers.
+libc = "0.2"

@@ -305,6 +305,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "futures",
+ "libc",
  "libpulse-binding",
  "libpulse-simple-binding",
  "ratatui",
