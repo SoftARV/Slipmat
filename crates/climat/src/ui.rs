@@ -145,14 +145,17 @@ fn spectrum_rows(height: u16) -> usize {
 }
 
 fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
-    // The program's own name, in the accent, above everything. It is the first
-    // thing on screen in every state — including the ones where there is no
-    // track to describe, which is exactly when it is useful to be told what
-    // you are looking at.
-    let name = Line::from(Span::styled(
-        "climat",
-        Style::from(ACCENT()).add_modifier(Modifier::BOLD),
-    ));
+    // The program's own name, above everything. It is the first thing on
+    // screen in every state — including the ones with no track to describe,
+    // which is exactly when being told what you are looking at earns a line.
+    //
+    // **`CLI` carries the weight, `mat` trails off.** The name is two words
+    // folded together, and setting it in one colour hides that; the accent
+    // fading toward the neutral says it without an explanation.
+    let name = Line::from(vec![
+        Span::styled("CLI", Style::from(ACCENT()).add_modifier(Modifier::BOLD)),
+        Span::styled("mat", Style::from(mix(ACCENT(), MUTED(), 0.55))),
+    ]);
 
     // Anything but Ready has nothing to say about a track, so it says what it
     // is doing instead — a blank player looks broken, a waiting one does not.
