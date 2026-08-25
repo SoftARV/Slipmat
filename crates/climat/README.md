@@ -144,6 +144,12 @@ is measured rather than assumed: 0 of 541 carry one.
 straight after the current track, or at the end. They work on songs; an album
 has no playable id of its own, so open it first and queue from inside.
 
+**Each tab keeps its own text.** A filter belongs to the list it was typed for,
+the same way a sort does — so narrowing Songs leaves Albums alone, and coming
+back finds it as you left it. Apple Music keeps its query too, because that one
+is a question already answered and losing it would mean asking again. The queue
+has no field at all.
+
 `/` opens a field under the tabs, the width of the window, whose own border says
 what typing there will do — filter the library on a library tab, search Apple
 Music on that one. Two different questions, and the answer changes with the tab.

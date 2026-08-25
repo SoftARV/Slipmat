@@ -52,10 +52,20 @@ pub struct Browser {
     pub rows: Vec<Entry>,
     pub cursor: usize,
     pub showing: Showing,
-    /// The filter, and whether it is being typed into. `/` opens it; Esc closes
-    /// it and clears it, because a filter you cannot see is a list that is
-    /// lying about what the library holds.
-    pub filter: String,
+    /// The text narrowing each list, **kept per tab**.
+    ///
+    /// One shared string meant a filter typed on Songs followed you to Albums,
+    /// to Playlists, and to the queue — which has no filtering at all and sat
+    /// there showing a box full of somebody else's search. A filter belongs to
+    /// the list it was typed for, the same way a sort does.
+    ///
+    /// Five slots: the four library sections and the catalog, whose text is not
+    /// a filter but a question already asked of Apple — losing it on the way to
+    /// the queue and back would mean asking again.
+    filters: [String; 5],
+    /// Whether the field has the keyboard. `/` opens it; Esc closes it and
+    /// clears it, because a filter you cannot see is a list that is lying about
+    /// what the library holds.
     pub typing: bool,
     /// Which kinds of thing a catalog search asks Apple for.
     ///
@@ -96,7 +106,7 @@ impl Default for Browser {
             rows: Vec::new(),
             cursor: 0,
             showing: Showing::Library,
-            filter: String::new(),
+            filters: Default::default(),
             typing: false,
             kinds: CatalogFilter::default(),
             more: false,
@@ -115,6 +125,24 @@ fn slot(view: View) -> usize {
 }
 
 impl Browser {
+    /// Which slot the text on screen belongs to.
+    fn filter_slot(&self) -> usize {
+        if self.showing.is_catalog() {
+            SECTIONS.len()
+        } else {
+            slot(self.view)
+        }
+    }
+
+    pub fn filter(&self) -> &str {
+        &self.filters[self.filter_slot()]
+    }
+
+    pub fn filter_mut(&mut self) -> &mut String {
+        let at = self.filter_slot();
+        &mut self.filters[at]
+    }
+
     pub fn sort(&self) -> (SortBy, bool) {
         self.sorts[slot(self.view)]
     }
@@ -316,7 +344,7 @@ fn tab(name: &str, on: bool) -> Span<'static> {
 
 /// How many rows the search box takes, or none when it is not showing.
 pub fn search_height(browser: &Browser) -> u16 {
-    if browser.typing || !browser.filter.is_empty() {
+    if browser.typing || !browser.filter().is_empty() {
         3
     } else {
         0
@@ -355,7 +383,7 @@ pub fn search_box(browser: &Browser, width: usize) -> Vec<Line<'static>> {
     // The row is `│ ` + text + caret + padding + `│`, so text and padding
     // together are `width - 4`.
     let room = width.saturating_sub(4);
-    let typed: String = browser.filter.chars().take(room).collect();
+    let typed: String = browser.filter().chars().take(room).collect();
     let pad = room - typed.chars().count();
     let middle = vec![
         Span::styled("│ ", Style::from(DIM())),
@@ -386,9 +414,11 @@ pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser) {
             // The catalog is empty until asked, so an empty pane means "type
             // something", not "there is nothing" — two very different things to
             // read on a screen that looks identical.
-            Showing::Catalog { .. } if browser.filter.is_empty() => "Press / to search Apple Music",
+            Showing::Catalog { .. } if browser.filter().is_empty() => {
+                "Press / to search Apple Music"
+            }
             Showing::Catalog { .. } => "Nothing on Apple Music matches",
-            _ if !browser.filter.is_empty() => "Nothing matches",
+            _ if !browser.filter().is_empty() => "Nothing matches",
             _ => "Nothing here",
         };
         frame.render_widget(
@@ -488,10 +518,10 @@ mod tests {
             showing: Showing::Catalog { searching: false },
             ..Default::default()
         };
-        assert!(b.filter.is_empty());
+        assert!(b.filter().is_empty());
         assert!(b.showing.is_catalog());
 
-        b.filter = "odesza".into();
+        *b.filter_mut() = "odesza".into();
         assert!(b.showing.is_catalog(), "still the catalog once asked");
     }
 

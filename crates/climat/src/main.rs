@@ -355,7 +355,7 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
         // corner of the screen carries this instead.
         KeyCode::Char('t') if app.browser.showing.is_catalog() => {
             app.browser.cycle_kinds();
-            if !app.browser.filter.trim().is_empty() {
+            if !app.browser.filter().trim().is_empty() {
                 app.search(link);
             }
         }
@@ -409,12 +409,12 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
 /// which one is in force.
 fn typing(code: KeyCode, link: &link::Link, app: &mut App) {
     match code {
-        KeyCode::Char(c) => app.browser.filter.push(c),
+        KeyCode::Char(c) => app.browser.filter_mut().push(c),
         KeyCode::Backspace => {
-            app.browser.filter.pop();
+            app.browser.filter_mut().pop();
         }
         KeyCode::Esc => {
-            app.browser.filter.clear();
+            app.browser.filter_mut().clear();
             app.browser.typing = false;
             if app.browser.showing.is_catalog() {
                 app.browser.rows.clear();
@@ -447,7 +447,7 @@ impl App {
         let (sort, reverse) = self.browser.sort();
         link.send(Request::Browse {
             view: self.browser.view,
-            query: self.browser.filter.clone(),
+            query: self.browser.filter().to_owned(),
             sort,
             reverse,
             offset: 0,
@@ -465,15 +465,18 @@ impl App {
     }
 
     /// Open the catalog pane. Nothing is fetched — it waits to be asked.
+    /// Open the catalog pane. Nothing is fetched — it waits to be asked.
+    ///
+    /// **What was already asked stays.** The catalog's text is not a filter but
+    /// a question Apple has already answered; clearing it on the way past would
+    /// mean paying for the same search again on the way back.
     fn show_catalog(&mut self) {
         self.browser.showing = browser::Showing::Catalog { searching: false };
-        self.browser.rows.clear();
-        self.browser.filter.clear();
         self.browser.reset();
     }
 
     fn search(&mut self, link: &link::Link) {
-        let query = self.browser.filter.trim().to_owned();
+        let query = self.browser.filter().trim().to_owned();
         if query.is_empty() {
             self.browser.rows.clear();
             return;
@@ -492,7 +495,7 @@ impl App {
 
     /// Ask Apple for the next page of the search already on screen.
     fn page(&mut self, link: &link::Link) {
-        let query = self.browser.filter.trim().to_owned();
+        let query = self.browser.filter().trim().to_owned();
         if query.is_empty() {
             return;
         }
@@ -639,8 +642,8 @@ impl App {
             let view = self.browser.view;
             return self.show_library(view, link);
         }
-        if !self.browser.filter.is_empty() {
-            self.browser.filter.clear();
+        if !self.browser.filter().is_empty() {
+            self.browser.filter_mut().clear();
             self.browser.reset();
             self.browse(link);
         }
@@ -719,7 +722,7 @@ impl App {
             } => {
                 // Only if it is still the question being asked — a slow answer
                 // to an abandoned query would otherwise land on screen.
-                if self.browser.showing.is_catalog() && query == self.browser.filter.trim() {
+                if self.browser.showing.is_catalog() && query == self.browser.filter().trim() {
                     self.browser.showing = browser::Showing::Catalog { searching: false };
                     self.browser.more = more;
                     self.browser.paging = false;
