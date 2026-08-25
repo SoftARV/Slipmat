@@ -115,6 +115,13 @@ async fn run() -> Result<()> {
                     if !on_key(key.code, &link, &mut app) {
                         break;
                     }
+                    // **Always.** A key is the one event that is definitely
+                    // worth a frame: half of them move only the cursor or the
+                    // focus, which no daemon event will ever report back. Left
+                    // out, those keys drew nothing at all — and the 100ms tick
+                    // hid it completely while a track was playing, so the app
+                    // looked frozen exactly when it was idle.
+                    dirty = true;
                 }
                 // A resize invalidates the whole buffer, so it has to redraw
                 // even though nothing about the music changed.
