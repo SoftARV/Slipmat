@@ -27,7 +27,7 @@ use crossterm::event::{
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use futures::StreamExt;
 use slipmat_core::ipc::{
-    CatalogFilter, Event, PlayMode, Request, Snapshot, Stage, Transport, View as LibraryView,
+    Event, PlayMode, Request, Snapshot, Stage, Transport, View as LibraryView,
 };
 use slipmat_core::player::protocol::RepeatMode;
 
@@ -323,10 +323,20 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
         // Out of a page, then out of a filter — the order they were entered.
         KeyCode::Esc => app.back(link),
 
-        KeyCode::Up => app.pane_cursor(-1),
-        KeyCode::Down => app.pane_cursor(1),
-        KeyCode::PageUp => app.pane_cursor(-10),
-        KeyCode::PageDown => app.pane_cursor(10),
+        KeyCode::Up => {
+            app.pane_cursor(-1);
+        }
+        KeyCode::Down => {
+            app.pane_cursor(1);
+            app.maybe_page(link);
+        }
+        KeyCode::PageUp => {
+            app.pane_cursor(-10);
+        }
+        KeyCode::PageDown => {
+            app.pane_cursor(10);
+            app.maybe_page(link);
+        }
         KeyCode::Home if app.pane == Pane::Queue => app.queue.follow(),
         KeyCode::Enter => app.activate(link),
 
@@ -340,6 +350,15 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
         // do.
         // `o` for order: the key steps through what a section can honestly be
         // sorted by, `O` turns it round.
+        // What Apple is asked for, on the catalog tab. `o` is the order on a
+        // library section; a catalog list has no order of ours, so the same
+        // corner of the screen carries this instead.
+        KeyCode::Char('t') if app.browser.showing.is_catalog() => {
+            app.browser.cycle_kinds();
+            if !app.browser.filter.trim().is_empty() {
+                app.search(link);
+            }
+        }
         KeyCode::Char('o') if app.pane == Pane::Browser => {
             if app.browser.cycle_sort() {
                 app.browser.reset();
@@ -462,10 +481,28 @@ impl App {
         self.browser.showing = browser::Showing::Catalog { searching: true };
         self.browser.rows.clear();
         self.browser.reset();
+        self.browser.more = false;
+        self.browser.paging = false;
         link.send(Request::Search {
             query,
-            filter: CatalogFilter::All,
+            filter: self.browser.kinds,
             offset: 0,
+        });
+    }
+
+    /// Ask Apple for the next page of the search already on screen.
+    fn page(&mut self, link: &link::Link) {
+        let query = self.browser.filter.trim().to_owned();
+        if query.is_empty() {
+            return;
+        }
+        // Marked before the request goes, not when it comes back: every
+        // keypress near the end would otherwise ask for the same page again.
+        self.browser.paging = true;
+        link.send(Request::Search {
+            query,
+            filter: self.browser.kinds,
+            offset: self.browser.rows.len(),
         });
     }
 
@@ -473,6 +510,17 @@ impl App {
         match self.pane {
             Pane::Browser => self.browser.move_cursor(delta),
             Pane::Queue => self.queue.move_cursor(delta),
+        }
+    }
+
+    /// Fetch the next page if the cursor has come close enough to the end.
+    ///
+    /// Called after every cursor move rather than on a key of its own: paging
+    /// is not something to ask for, it is what a list does when you reach the
+    /// bottom of it.
+    fn maybe_page(&mut self, link: &link::Link) {
+        if self.pane == Pane::Browser && self.browser.wants_more() {
+            self.page(link);
         }
     }
 
@@ -663,14 +711,27 @@ impl App {
                     self.browser.replace(entries, total);
                 }
             }
-            Event::Results { query, entries, .. } => {
+            Event::Results {
+                query,
+                entries,
+                offset,
+                more,
+            } => {
                 // Only if it is still the question being asked — a slow answer
                 // to an abandoned query would otherwise land on screen.
                 if self.browser.showing.is_catalog() && query == self.browser.filter.trim() {
                     self.browser.showing = browser::Showing::Catalog { searching: false };
-                    let total = entries.len();
-                    self.browser.replace(entries, total);
-                    self.browser.reset();
+                    self.browser.more = more;
+                    self.browser.paging = false;
+                    if offset == 0 {
+                        let total = entries.len();
+                        self.browser.replace(entries, total);
+                        self.browser.reset();
+                    } else {
+                        // A page, not an answer: it goes under what is already
+                        // there and the cursor stays where somebody left it.
+                        self.browser.extend(entries);
+                    }
                 }
             }
             Event::Page {
