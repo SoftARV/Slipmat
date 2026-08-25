@@ -18,9 +18,15 @@ use crate::theme::{
     accent as ACCENT, bright as BRIGHT, dim as DIM, mix, muted as MUTED, peak as PEAK,
 };
 
-/// Which pane the arrow keys are talking to.
+/// Which list the one pane is showing.
+///
+/// **One pane, not two.** A permanently visible queue costs rows every moment
+/// it is not being read, and on a short window it and the library were both too
+/// small to use. The queue is somewhere you go — a tab beside the others,
+/// reachable in one key and left the same way — which is how the GNOME client
+/// treats it too.
 #[derive(Clone, Copy, PartialEq, Default)]
-pub enum Focus {
+pub enum Pane {
     /// Where a fresh client starts: the library is what you came to look at.
     #[default]
     Browser,
@@ -41,7 +47,7 @@ pub struct View<'a> {
     pub stage: &'a Stage,
     pub browser: &'a mut Browser,
     pub queue: &'a mut Queue,
-    pub focus: Focus,
+    pub pane: Pane,
     pub typing: bool,
     /// Whether the pane is showing Apple Music rather than the library, which
     /// changes what typing costs and therefore what the hints promise.
@@ -68,13 +74,11 @@ pub fn draw(frame: &mut Frame, view: View) {
     let rows = spectrum_rows(area.height);
     // title + album + a blank + spectrum + a blank + seek + state + modes.
     let band = 3 + rows as u16 + 4;
-    let [top, note, queue_head, queue, lib_head, lib, hints] = Layout::vertical([
+    let [top, note, tabs, list, hints] = Layout::vertical([
         Constraint::Length(band),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
         Constraint::Length(2),
-        Constraint::Fill(2),
-        Constraint::Length(2),
-        Constraint::Fill(3),
+        Constraint::Fill(1),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -95,24 +99,23 @@ pub fn draw(frame: &mut Frame, view: View) {
         );
     }
 
-    // The queue sits under the transport, because it is what the transport is
-    // moving through. The library is below it, and keeps the larger share:
-    // browsing is the reading you do, the queue is the decision already made.
+    let queued = view.queue.items.len();
     frame.render_widget(
-        Paragraph::new(spaced(queue::header(view.queue))),
-        queue_head,
+        Paragraph::new(spaced(browser::header(
+            view.browser,
+            (view.pane == Pane::Queue).then_some(queued),
+        ))),
+        tabs,
     );
-    queue::render(frame, queue, view.queue, view.focus == Focus::Queue);
-    frame.render_widget(
-        Paragraph::new(spaced(browser::header(view.browser))),
-        lib_head,
-    );
-    browser::render(frame, lib, view.browser, view.focus == Focus::Browser);
+    match view.pane {
+        Pane::Browser => browser::render(frame, list, view.browser),
+        Pane::Queue => queue::render(frame, list, view.queue),
+    }
 
     frame.render_widget(
         Paragraph::new(key_hints(
             area.width as usize,
-            view.focus,
+            view.pane,
             view.typing,
             view.catalog,
         )),
@@ -262,7 +265,7 @@ fn ends(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Ve
 /// runs out, so a narrow terminal loses the least useful hint rather than
 /// losing the row. Leaving and quitting are reserved from the start — a player
 /// you cannot see how to leave is worse than one with no hints at all.
-fn key_hints(width: usize, focus: Focus, typing: bool, catalog: bool) -> Line<'static> {
+fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'static> {
     const LEAVING: [(&str, &str); 2] = [("_", "hide"), ("q", "quit")];
 
     // While typing, every letter goes into the filter, so advertising the
@@ -278,14 +281,14 @@ fn key_hints(width: usize, focus: Focus, typing: bool, catalog: bool) -> Line<'s
         ]
     } else if typing {
         vec![("↵", "done"), ("esc", "clear"), ("⌫", "back")]
-    } else if focus == Focus::Browser {
+    } else if pane == Pane::Browser {
         vec![
             ("space", "play/pause"),
             ("↑↓", "move"),
             ("↵", "play/open"),
             ("/", "filter"),
-            ("1-5", "section"),
-            ("⇥", "pane"),
+            ("1-6", "tab"),
+            ("6", "queue"),
             ("esc", "back"),
         ]
     } else {
@@ -295,7 +298,7 @@ fn key_hints(width: usize, focus: Focus, typing: bool, catalog: bool) -> Line<'s
             ("↵", "play"),
             ("d", "remove"),
             ("KJ", "reorder"),
-            ("⇥", "pane"),
+            ("1-6", "tab"),
             ("zb", "prev/next"),
         ]
     };

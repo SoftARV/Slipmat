@@ -144,7 +144,12 @@ impl Browser {
 }
 
 /// The section tabs, or the opened page's name — one line, either way.
-pub fn header(browser: &Browser) -> Line<'static> {
+/// The tab strip, or the opened page's name.
+///
+/// `queue` is the queue's own tab: it is not a section of the library and the
+/// browser knows nothing about it, but it belongs in the same row because it is
+/// one of the places the one pane can be showing.
+pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
     if let Showing::Page {
         title,
         subtitle,
@@ -164,16 +169,25 @@ pub fn header(browser: &Browser) -> Line<'static> {
         return Line::from(spans);
     }
 
+    let showing_queue = queue.is_some();
     let catalog = browser.showing.is_catalog();
     let mut spans = Vec::new();
     for (view, name) in SECTIONS {
-        let on = !catalog && view == browser.view;
+        let on = !showing_queue && !catalog && view == browser.view;
         spans.push(tab(name, on));
         spans.push(Span::raw("   "));
     }
-    // The fifth tab is not a section of anything — it is the rest of Apple
-    // Music, and it is empty until asked.
-    spans.push(tab("APPLE MUSIC", catalog));
+    // The fifth is not a section of anything — it is the rest of Apple Music,
+    // and it is empty until asked.
+    spans.push(tab("APPLE MUSIC", !showing_queue && catalog));
+    spans.push(Span::raw("   "));
+    spans.push(tab("QUEUE", showing_queue));
+    if let Some(count) = queue {
+        spans.push(Span::styled(
+            format!("  {count}"),
+            Style::from(if showing_queue { MUTED() } else { DIM() }),
+        ));
+    }
 
     if browser.typing || !browser.filter.is_empty() {
         spans.push(Span::raw("   "));
@@ -208,7 +222,7 @@ fn tab(name: &str, on: bool) -> Span<'static> {
     )
 }
 
-pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser, focused: bool) {
+pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser) {
     if browser.rows.is_empty() {
         let what = match &browser.showing {
             Showing::Page { loading: true, .. } => "Opening…",
@@ -237,7 +251,7 @@ pub fn render(frame: &mut Frame, area: Rect, browser: &mut Browser, focused: boo
         .enumerate()
         .skip(browser.offset)
         .take(height)
-        .map(|(i, entry)| row(entry, i == browser.cursor && focused, width))
+        .map(|(i, entry)| row(entry, i == browser.cursor, width))
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
 }

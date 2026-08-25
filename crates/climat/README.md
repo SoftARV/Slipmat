@@ -22,12 +22,9 @@ and a window open at once are two views of one player rather than two players.
   ▶  Playing                                                          1:42 / 2:54
   shuffle on   repeat off   vol ████████░░
 
-  QUEUE   30 tracks
-  ▸   1  Addicted To a Memory (feat. Bahari)     Zedd              5:03
-      2  Aftershock (feat. Jacquie Lee)          Cash Cash         3:26
-
-  SONGS   albums   artists   playlists   APPLE MUSIC   /odesza
-  ▸ ODESZA                                ODESZA · Electronic
+  SONGS   albums   artists   playlists   apple music   queue  30
+    Addicted To a Memory (feat. Bahari)     Zedd — True Colors
+    Aftershock (feat. Jacquie Lee)          Cash Cash — Blood, Sweat & 3 Years
 
   space play/pause   ↑↓ move   ↵ play/open   / filter   1-5 section   _ hide   q quit
 ```
@@ -89,9 +86,10 @@ tenth of a second and gets the original palette.
 | `←` `→` | Seek five seconds |
 | `s` `r` | Shuffle / repeat |
 | `-` `+` | Volume |
-| `⇥` | Switch between the library and the queue |
 | `1` – `4` | Songs · albums · artists · playlists |
 | `5` | All of Apple Music |
+| `6` | The queue |
+| `⇥` | Walk the tabs |
 | `/` | Filter the library, or search Apple Music |
 | `esc` | Out of a page, then out of a filter |
 | `↑` `↓`, `k` `j` | Move the cursor |
@@ -115,6 +113,11 @@ The bottom row changes with which pane has focus — only the queue reorders,
 only the library filters — and shows the keys that fit, dropping the least essential first —
 so a narrow window loses the reorder hints rather than losing the row. Leaving
 and quitting are always on it.
+
+**One pane, six tabs.** The queue is somewhere you go rather than something
+always on screen — a permanently visible queue costs rows every moment nobody
+is reading it, and on a short window it and the library were both too small to
+use. `6` goes there and `6` again is not needed: any other tab key comes back.
 
 Nothing here edits the queue directly. A key sends a request and the rows move
 when the daemon echoes, which is what keeps a terminal and a GTK window from

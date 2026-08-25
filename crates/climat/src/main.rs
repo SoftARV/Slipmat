@@ -30,7 +30,7 @@ use slipmat_core::ipc::{
 use slipmat_core::player::protocol::RepeatMode;
 
 use crate::browser::{SECTIONS, Showing};
-use crate::ui::Focus;
+use crate::ui::Pane;
 
 /// How often to redraw while playing.
 ///
@@ -46,7 +46,7 @@ struct App {
     stage: Stage,
     browser: browser::Browser,
     queue: queue::Queue,
-    focus: Focus,
+    pane: Pane,
     /// The last thing the daemon refused, and when — so it can fade rather than
     /// sit there accusing a key that was pressed a minute ago.
     message: Option<(String, std::time::Instant)>,
@@ -64,7 +64,7 @@ impl Default for App {
             stage: Stage::default(),
             browser: browser::Browser::default(),
             queue: queue::Queue::default(),
-            focus: Focus::default(),
+            pane: Pane::default(),
             message: None,
             quit_daemon: false,
             // `#[derive(Default)]` stops at arrays of 32.
@@ -123,7 +123,7 @@ async fn run() -> Result<()> {
                     ui::View {
                         snap: &app.snap,
                         stage: &app.stage,
-                        focus: app.focus,
+                        pane: app.pane,
                         typing: app.browser.typing,
                         catalog: app.browser.showing.is_catalog() || app.browser.from_catalog,
                         bars: &app.bars,
@@ -247,26 +247,32 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Char('-') => volume(link, app, -0.05),
         KeyCode::Char('+') | KeyCode::Char('=') => volume(link, app, 0.05),
 
-        KeyCode::Tab | KeyCode::BackTab => {
-            app.focus = match app.focus {
-                Focus::Browser => Focus::Queue,
-                Focus::Queue => Focus::Browser,
-            }
-        }
+        // **The tab strip in one key.** With a single pane there is nothing to
+        // switch focus between, so `⇥` walks the tabs instead — the library
+        // sections, then Apple Music, then the queue, then round.
+        KeyCode::Tab => app.next_tab(link),
+        KeyCode::BackTab => app.prev_tab(link),
         // Not a section of the library — the rest of Apple Music, which is
         // empty until it is asked for.
         KeyCode::Char('5') => {
-            app.focus = Focus::Browser;
+            app.pane = Pane::Browser;
             app.show_catalog();
+            // Straight into the box: `5` is only ever pressed in order to
+            // search. Arriving by `⇥` is not — and opening the filter there
+            // would swallow the very key that got you here.
+            app.browser.typing = true;
         }
+        // Not a section of the library either: the queue is a place, and this
+        // is the key that goes there and comes back.
+        KeyCode::Char('6') => app.pane = Pane::Queue,
         KeyCode::Char(d @ '1'..='4') => {
             // Selecting a section is also a request to look at it, so it takes
             // focus — otherwise the arrows would still be driving the queue.
             let (view, _) = SECTIONS[d as usize - '1' as usize];
-            app.focus = Focus::Browser;
+            app.pane = Pane::Browser;
             app.show_library(view, link);
         }
-        KeyCode::Char('/') if app.focus == Focus::Browser => app.browser.typing = true,
+        KeyCode::Char('/') if app.pane == Pane::Browser => app.browser.typing = true,
         // Out of a page, then out of a filter — the order they were entered.
         KeyCode::Esc => app.back(link),
 
@@ -274,17 +280,17 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Down | KeyCode::Char('j') => app.pane_cursor(1),
         KeyCode::PageUp => app.pane_cursor(-10),
         KeyCode::PageDown => app.pane_cursor(10),
-        KeyCode::Home if app.focus == Focus::Queue => app.queue.follow(),
+        KeyCode::Home if app.pane == Pane::Queue => app.queue.follow(),
         KeyCode::Enter => app.activate(link),
 
-        KeyCode::Char('d') if app.focus == Focus::Queue => link.send(Request::RemoveFromQueue {
+        KeyCode::Char('d') if app.pane == Pane::Queue => link.send(Request::RemoveFromQueue {
             index: app.queue.cursor,
         }),
         // Shift moves the row rather than the cursor. The cursor goes with it,
         // so the selection stays on the track being moved and a second press
         // moves the same one again.
-        KeyCode::Char('K') if app.focus == Focus::Queue => reorder(link, app, -1),
-        KeyCode::Char('J') if app.focus == Focus::Queue => reorder(link, app, 1),
+        KeyCode::Char('K') if app.pane == Pane::Queue => reorder(link, app, -1),
+        KeyCode::Char('J') if app.pane == Pane::Queue => reorder(link, app, 1),
 
         // Leaves the daemon alone: the music keeps playing, and a GTK
         // window or another terminal still has a player to attach to.
@@ -370,8 +376,6 @@ impl App {
         self.browser.rows.clear();
         self.browser.filter.clear();
         self.browser.reset();
-        // Straight into the box: `5` is only ever pressed in order to type.
-        self.browser.typing = true;
     }
 
     fn search(&mut self, link: &link::Link) {
@@ -391,15 +395,48 @@ impl App {
     }
 
     fn pane_cursor(&mut self, delta: isize) {
-        match self.focus {
-            Focus::Browser => self.browser.move_cursor(delta),
-            Focus::Queue => self.queue.move_cursor(delta),
+        match self.pane {
+            Pane::Browser => self.browser.move_cursor(delta),
+            Pane::Queue => self.queue.move_cursor(delta),
         }
+    }
+
+    /// Walk the tab strip. Six places: four library sections, Apple Music, the
+    /// queue.
+    fn tab(&mut self, step: isize, link: &link::Link) {
+        let here = if self.pane == Pane::Queue {
+            5
+        } else if self.browser.showing.is_catalog() {
+            4
+        } else {
+            SECTIONS
+                .iter()
+                .position(|(v, _)| *v == self.browser.view)
+                .unwrap_or(0) as isize as usize
+        };
+        let next = (here as isize + step).rem_euclid(6) as usize;
+        self.pane = Pane::Browser;
+        match next {
+            5 => self.pane = Pane::Queue,
+            4 => self.show_catalog(),
+            n => {
+                let (view, _) = SECTIONS[n];
+                self.show_library(view, link);
+            }
+        }
+    }
+
+    fn next_tab(&mut self, link: &link::Link) {
+        self.tab(1, link);
+    }
+
+    fn prev_tab(&mut self, link: &link::Link) {
+        self.tab(-1, link);
     }
 
     /// Enter: play the selected row, or open the page it leads to.
     fn activate(&mut self, link: &link::Link) {
-        if self.focus == Focus::Queue {
+        if self.pane == Pane::Queue {
             return link.send(Request::JumpTo {
                 index: self.queue.cursor,
             });
