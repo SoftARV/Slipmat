@@ -23,9 +23,18 @@ use rustfft::{FftPlanner, num_complex::Complex};
 /// How many bars are drawn.
 pub const BARS: usize = 28;
 
-/// Samples per frame. 2048 at 44.1kHz is ~46ms — around 21 frames a second,
-/// which reads as motion without asking the terminal to repaint at audio rates.
+/// How much audio each transform looks at. 2048 at 44.1kHz is ~46ms, which is
+/// what buys the frequency resolution — it is *not* what sets the frame rate.
 const WINDOW: usize = 2048;
+
+/// How much of it is new each frame.
+///
+/// **The two are separate, and tying them together is what made this feel
+/// slow.** Reading a whole fresh window meant one frame per 46ms — 21 a second,
+/// which reads as choppy beside a visualiser doing 60. Overlapping windows keep
+/// the resolution and quadruple the rate: each frame slides 512 samples in and
+/// transforms the last 2048, so the bars move every ~12ms.
+const HOP: usize = 512;
 const RATE: u32 = 44_100;
 
 /// Below this a frame counts as silence, and silence is not sent: a paused
@@ -33,9 +42,12 @@ const RATE: u32 = 44_100;
 /// nothing.
 const FLOOR: f32 = 0.002;
 
-/// How fast a bar falls when the music stops holding it up. Winamp's falloff,
-/// and the reason a spectrum reads as music rather than noise.
-const DECAY: f32 = 0.82;
+/// How far a bar falls in a second when nothing holds it up — Winamp's
+/// falloff, and the reason a spectrum reads as music rather than noise.
+///
+/// Expressed per second rather than per frame, because per-frame decay is a
+/// number that silently means something different the moment `HOP` changes.
+const DECAY_PER_SECOND: f32 = 0.02;
 
 /// The decibel window the bars span.
 ///
@@ -95,29 +107,35 @@ fn listen(source: Simple, tx: tokio::sync::mpsc::Sender<[f32; BARS]>) {
         })
         .collect();
 
-    let mut samples = vec![0f32; WINDOW];
+    // The window slides over this; only `HOP` of it is new each time.
+    let mut history = vec![0f32; WINDOW];
+    let mut fresh_samples = vec![0f32; HOP];
     let mut bars = [0f32; BARS];
     let mut was_silent = false;
 
+    let per_frame = DECAY_PER_SECOND.powf(HOP as f32 / RATE as f32);
+
     loop {
         let bytes = unsafe {
-            std::slice::from_raw_parts_mut(samples.as_mut_ptr().cast::<u8>(), WINDOW * 4)
+            std::slice::from_raw_parts_mut(fresh_samples.as_mut_ptr().cast::<u8>(), HOP * 4)
         };
         if source.read(bytes).is_err() {
             return; // the server went away; the bars stop, nothing else does
         }
+        history.copy_within(HOP.., 0);
+        history[WINDOW - HOP..].copy_from_slice(&fresh_samples);
 
         // **Look before transforming.** A paused player still delivers silence
         // down the monitor at real time, so without this the thread runs an FFT
         // twenty times a second to discover nothing is happening. A peak over
         // the raw samples costs a pass and answers the same question.
-        let loudest = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+        let loudest = history.iter().fold(0f32, |m, s| m.max(s.abs()));
         if loudest < FLOOR && bars.iter().all(|v| *v < FLOOR) {
             was_silent = true;
             continue;
         }
 
-        let mut buf: Vec<Complex<f32>> = samples
+        let mut buf: Vec<Complex<f32>> = history
             .iter()
             .zip(&hann)
             .map(|(s, w)| Complex { re: s * w, im: 0.0 })
@@ -127,7 +145,7 @@ fn listen(source: Simple, tx: tokio::sync::mpsc::Sender<[f32; BARS]>) {
         let fresh = bands(&buf);
         let silent = fresh.iter().all(|v| *v < FLOOR);
         for (bar, new) in bars.iter_mut().zip(fresh) {
-            *bar = new.max(*bar * DECAY);
+            *bar = new.max(*bar * per_frame);
         }
 
         // Send the frame that settles the bars at rest, then stop until there
