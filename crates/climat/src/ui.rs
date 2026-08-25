@@ -323,7 +323,8 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
         ]
     };
 
-    let cost = |(key, what): &(&str, &str)| key.chars().count() + what.chars().count() + 4;
+    // Two cells of padding inside the cap, one gap after the label.
+    let cost = |(key, what): &(&str, &str)| key.chars().count() + what.chars().count() + 6;
     let reserved: usize = LEAVING.iter().map(cost).sum();
 
     let mut spans = Vec::new();
@@ -337,11 +338,16 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             used += cost(&pair);
         }
         let (key, what) = pair;
+        // **A cap, not a letter.** Reversed with a cell of padding either side,
+        // the key reads as something to press rather than as the first word of
+        // its own description — which is what `z prev x play` looked like at a
+        // glance. Reverse video rather than an explicit background, so the cap
+        // is the terminal's own colours whatever they are.
         spans.push(Span::styled(
-            key,
-            Style::from(MUTED()).add_modifier(Modifier::BOLD),
+            format!(" {key} "),
+            Style::from(MUTED()).add_modifier(Modifier::REVERSED),
         ));
-        spans.push(Span::styled(format!(" {what}   "), Style::from(DIM())));
+        spans.push(Span::styled(format!(" {what}  "), Style::from(DIM())));
     }
     Line::from(spans)
 }

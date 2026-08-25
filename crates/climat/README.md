@@ -27,7 +27,7 @@ and a window open at once are two views of one player rather than two players.
     Addicted To a Memory (feat. Bahari)     Zedd — True Colors
     Aftershock (feat. Jacquie Lee)          Cash Cash — Blood, Sweat & 3 Years
 
-  space play/pause   ↑↓ move   ↵ play/open   jl next/last   1-6 tab   ^C hide   q quit
+   space  play/pause    ↑↓  move    ↵  play/open    jl  next/last    1-6  tab    ^C  hide    q  quit
 ```
 
 ## It needs a graphical session
@@ -137,7 +137,9 @@ socket. Over Apple Music every query is a real request to somebody else's API,
 so typing only edits the text and `↵` is what sends it. Same box, same key, two
 rules, and the bottom row says which one is in force.
 
-The bottom row changes with which pane has focus — only the queue reorders,
+Each key is drawn as a cap — reversed, with a cell of padding — so it reads as
+something to press rather than as the first word of its own label. The bottom
+row changes with which pane has focus — only the queue reorders,
 only the library filters — and shows the keys that fit, dropping the least essential first —
 so a narrow window loses the reorder hints rather than losing the row. Leaving
 and quitting are always on it.
