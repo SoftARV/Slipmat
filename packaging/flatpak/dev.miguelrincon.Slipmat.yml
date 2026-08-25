@@ -40,6 +40,13 @@ finish-args:
   # `GtkApplication` exits 0 with no window if it cannot register. MPRIS needs
   # its own name on top of that — it is the headline feature.
   - --own-name=org.mpris.MediaPlayer2.Slipmat
+  # **The sandbox's own sidecar, for every process in it.** The launcher
+  # exports this and the daemon used to get it only by being the launcher's
+  # child — true today, and a thin thing to rest on now that the daemon is a
+  # separate process in its own session. Set here it also survives
+  # `flatpak run --command=slipmatd`. Getting it wrong fails in the documented
+  # nasty way: fresh Rust against stale JavaScript, silently.
+  - --env=SLIPMAT_SIDECAR=/app/share/slipmat/sidecar
   # Slipmat keeps nothing of the user's outside its own directories: settings,
   # the artwork cache, the session, and the CDM all live under the app's
   # config and cache. So no home access at all.
@@ -80,8 +87,21 @@ modules:
         dest: electron-dist
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
-      - cargo --offline build --release --verbose
+      # **Only what this package ships.** The workspace also holds `climat`,
+      # the terminal client, which the Flatpak deliberately does not install —
+      # this stays the GNOME application. Its crates still have to be
+      # *vendored*, because `fetch` resolves the whole workspace, but there is
+      # no reason to compile a binary nothing will install.
+      - cargo --offline build --release --verbose -p slipmat -p slipmatd
       - install -Dm755 target/release/slipmat /app/bin/slipmat.real
+      # **Required, not optional.** The app is a client of the daemon: it looks
+      # for `slipmatd` beside its own binary and starts one if nothing is
+      # listening. Without it here the window comes up and stays on
+      # "Connecting" forever, redialling a socket nobody is bound to.
+      #
+      # No systemd unit goes with it. The daemon starts itself on the first
+      # connection, which is the whole point — nothing for anyone to enable.
+      - install -Dm755 target/release/slipmatd /app/bin/slipmatd
 
       # The sidecar, laid out exactly where `electron_binary()` looks:
       # <sidecar>/node_modules/electron/dist/electron
