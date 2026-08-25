@@ -115,7 +115,7 @@ pub fn header(queue: &Queue) -> Line<'static> {
     ])
 }
 
-pub fn render(frame: &mut Frame, area: Rect, queue: &mut Queue) {
+pub fn render(frame: &mut Frame, area: Rect, queue: &mut Queue, focused: bool) {
     if queue.items.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled("Nothing queued", Style::from(DIM)))),
@@ -134,14 +134,22 @@ pub fn render(frame: &mut Frame, area: Rect, queue: &mut Queue) {
         .enumerate()
         .skip(queue.offset)
         .take(height)
-        .map(|(i, item)| row(i, item, queue, width))
+        .map(|(i, item)| row(i, item, queue, width, focused))
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
 }
 
-fn row(index: usize, item: &QueueItem, queue: &Queue, width: usize) -> Line<'static> {
+fn row(
+    index: usize,
+    item: &QueueItem,
+    queue: &Queue,
+    width: usize,
+    focused: bool,
+) -> Line<'static> {
     let playing = index == queue.position;
-    let selected = index == queue.cursor;
+    // Only the focused pane draws a cursor: two highlighted rows on screen
+    // would both look like the thing the next key acts on.
+    let selected = focused && index == queue.cursor;
 
     // The marker column carries "this is playing" so the row still says so in a
     // terminal with no colour, and so it survives the cursor's own highlight.

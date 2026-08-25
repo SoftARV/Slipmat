@@ -12,7 +12,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use slipmat_core::ipc::{Snapshot, Stage};
 
+use crate::browser::{self, Browser};
 use crate::queue::{self, Queue};
+
+/// Which pane the arrow keys are talking to.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum Focus {
+    /// Where a fresh client starts: the library is what you came to look at.
+    #[default]
+    Browser,
+    Queue,
+}
 
 /// Apple Music's red, and the only colour that means anything here.
 pub const ACCENT: Color = Color::Rgb(0xFF, 0x4A, 0x5E);
@@ -31,7 +41,10 @@ const VOL: usize = 10;
 pub struct View<'a> {
     pub snap: &'a Snapshot,
     pub stage: &'a Stage,
+    pub browser: &'a mut Browser,
     pub queue: &'a mut Queue,
+    pub focus: Focus,
+    pub typing: bool,
     pub message: Option<&'a str>,
 }
 
@@ -44,11 +57,19 @@ pub fn draw(frame: &mut Frame, view: View) {
         width: frame.area().width.saturating_sub(4),
         height: frame.area().height.saturating_sub(2),
     };
-    let [top, note, label, rows, hints] = Layout::vertical([
+    // The browser gets the larger share of what is *left over*: it is what you
+    // are reading, and the queue is what you already decided. `Fill` rather
+    // than `Percentage`, which measures against the whole area — with the
+    // fixed rows also claiming their share the two over-subscribe it, and the
+    // browser is what gets squeezed, down to a single visible row on a short
+    // window.
+    let [top, note, lib_head, lib, queue_head, queue, hints] = Layout::vertical([
         Constraint::Length(5),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
         Constraint::Length(2),
-        Constraint::Min(0),
+        Constraint::Fill(3),
+        Constraint::Length(2),
+        Constraint::Fill(2),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -65,9 +86,16 @@ pub fn draw(frame: &mut Frame, view: View) {
             note,
         );
     }
-    frame.render_widget(Paragraph::new(queue::header(view.queue)), label);
-    queue::render(frame, rows, view.queue);
-    frame.render_widget(Paragraph::new(key_hints(area.width as usize)), hints);
+
+    frame.render_widget(Paragraph::new(browser::header(view.browser)), lib_head);
+    browser::render(frame, lib, view.browser, view.focus == Focus::Browser);
+    frame.render_widget(Paragraph::new(queue::header(view.queue)), queue_head);
+    queue::render(frame, queue, view.queue, view.focus == Focus::Queue);
+
+    frame.render_widget(
+        Paragraph::new(key_hints(area.width as usize, view.focus, view.typing)),
+        hints,
+    );
 }
 
 fn now_playing(view: &View) -> Vec<Line<'static>> {
@@ -140,37 +168,52 @@ fn now_playing(view: &View) -> Vec<Line<'static>> {
 /// The always-there row. **Nothing has to be memorised**, which is the whole
 /// reason it is always there rather than behind a key.
 ///
-/// It is built by priority and stops when the window runs out, so a narrow
-/// terminal loses the reorder keys rather than losing the row. Leaving and
-/// quitting are reserved from the start: a player you cannot see how to leave
-/// is the one thing worse than a player with no hints at all.
-fn key_hints(width: usize) -> Line<'static> {
+/// It changes with focus, because the keys do: only the queue reorders, only
+/// the browser filters. And it is built by priority and stops when the window
+/// runs out, so a narrow terminal loses the least useful hint rather than
+/// losing the row. Leaving and quitting are reserved from the start — a player
+/// you cannot see how to leave is worse than one with no hints at all.
+fn key_hints(width: usize, focus: Focus, typing: bool) -> Line<'static> {
     const LEAVING: [(&str, &str); 2] = [("_", "hide"), ("q", "quit")];
-    const KEYS: [(&str, &str); 8] = [
-        ("space", "play/pause"),
-        ("↑↓", "move"),
-        ("↵", "play"),
-        ("z", "prev"),
-        ("b", "next"),
-        ("d", "remove"),
-        ("KJ", "reorder"),
-        ("sr", "shuffle/repeat"),
-    ];
 
-    let cost = |(key, what): (&str, &str)| key.chars().count() + what.chars().count() + 4;
-    let reserved: usize = LEAVING.into_iter().map(cost).sum();
+    // While typing, every letter goes into the filter, so advertising the
+    // transport keys would be a lie about what the keyboard does.
+    let keys: Vec<(&str, &str)> = if typing {
+        vec![("↵", "done"), ("esc", "clear"), ("⌫", "back")]
+    } else if focus == Focus::Browser {
+        vec![
+            ("space", "play/pause"),
+            ("↑↓", "move"),
+            ("↵", "play/open"),
+            ("/", "filter"),
+            ("1-4", "section"),
+            ("⇥", "pane"),
+            ("esc", "back"),
+        ]
+    } else {
+        vec![
+            ("space", "play/pause"),
+            ("↑↓", "move"),
+            ("↵", "play"),
+            ("d", "remove"),
+            ("KJ", "reorder"),
+            ("⇥", "pane"),
+            ("zb", "prev/next"),
+        ]
+    };
+
+    let cost = |(key, what): &(&str, &str)| key.chars().count() + what.chars().count() + 4;
+    let reserved: usize = LEAVING.iter().map(cost).sum();
 
     let mut spans = Vec::new();
     let mut used = 0;
-    for pair in KEYS.into_iter().chain(LEAVING) {
-        // The reserved pair is already paid for, so only the optional ones are
-        // measured against what is left.
+    for pair in keys.iter().copied().chain(LEAVING) {
         let optional = !LEAVING.contains(&pair);
-        if optional && used + cost(pair) + reserved > width {
-            continue;
-        }
         if optional {
-            used += cost(pair);
+            if used + cost(&pair) + reserved > width {
+                continue;
+            }
+            used += cost(&pair);
         }
         let (key, what) = pair;
         spans.push(Span::styled(

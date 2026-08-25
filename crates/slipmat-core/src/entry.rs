@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ipc::PageKind;
 use crate::music::types::{Album, Artist, Playlist, Track};
 
 /// What a row stands for. Songs play; everything else opens a page.
@@ -68,5 +69,42 @@ impl Entry {
     /// Albums and artists lead somewhere; songs are the destination.
     pub fn opens_a_page(&self) -> bool {
         !matches!(self, Entry::Song(_))
+    }
+
+    /// What opening this row asks the daemon for, if it opens anything.
+    ///
+    /// **The library/catalog split comes from the flag, never from the id.**
+    /// The two id spaces are not interchangeable — a library id 404s against
+    /// `/catalog` and a catalog id against `/me/library` — and the flag is set
+    /// at the parse site by whichever call fetched the row, which is the only
+    /// place that actually knows.
+    pub fn page_target(&self) -> Option<(PageKind, String)> {
+        match self {
+            Entry::Song(_) => None,
+            Entry::Album(a) => Some((
+                if a.library {
+                    PageKind::LibraryAlbum
+                } else {
+                    PageKind::Album
+                },
+                a.id.clone(),
+            )),
+            Entry::Artist(a) => Some((
+                if a.library {
+                    PageKind::LibraryArtist
+                } else {
+                    PageKind::Artist
+                },
+                a.id.clone(),
+            )),
+            Entry::Playlist(p) => Some((
+                if p.library {
+                    PageKind::LibraryPlaylist
+                } else {
+                    PageKind::Playlist
+                },
+                p.id.clone(),
+            )),
+        }
     }
 }

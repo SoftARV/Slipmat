@@ -13,6 +13,7 @@
 //! daemon runs, which wants a display server even with its window hidden. That
 //! is Widevine, not a shortcut, and it is why this cannot run over plain SSH.
 
+mod browser;
 mod link;
 mod queue;
 mod ui;
@@ -21,8 +22,13 @@ use anyhow::Result;
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyEventKind};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use futures::StreamExt;
-use slipmat_core::ipc::{Event, Request, Snapshot, Stage, Transport};
+use slipmat_core::ipc::{
+    Event, PlayMode, Request, Snapshot, Stage, Transport, View as LibraryView,
+};
 use slipmat_core::player::protocol::RepeatMode;
+
+use crate::browser::{SECTIONS, Showing};
+use crate::ui::Focus;
 
 /// How often to redraw while playing.
 ///
@@ -37,7 +43,9 @@ const MESSAGE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 struct App {
     snap: Snapshot,
     stage: Stage,
+    browser: browser::Browser,
     queue: queue::Queue,
+    focus: Focus,
     /// The last thing the daemon refused, and when — so it can fade rather than
     /// sit there accusing a key that was pressed a minute ago.
     message: Option<(String, std::time::Instant)>,
@@ -67,6 +75,10 @@ async fn run() -> Result<()> {
     let mut term = ratatui::init();
 
     let mut app = App::default();
+    // The library is what the pane opens on, so ask for it with everything else
+    // rather than waiting for a key. It comes from the daemon's cache, so this
+    // is a local socket round trip and not a request to Apple.
+    app.browse(&link);
     let mut keys = EventStream::new();
     let mut frame = tokio::time::interval(std::time::Duration::from_millis(FRAME_MS));
     // Drawn on the first pass, then only when something moved. The tick runs
@@ -83,6 +95,9 @@ async fn run() -> Result<()> {
                     ui::View {
                         snap: &app.snap,
                         stage: &app.stage,
+                        focus: app.focus,
+                        typing: app.browser.typing,
+                        browser: &mut app.browser,
                         queue: &mut app.queue,
                         message: app.message.as_ref().map(|(text, _)| text.as_str()),
                     },
@@ -152,10 +167,18 @@ async fn run() -> Result<()> {
 
 /// Returns whether to keep running.
 ///
-/// **No arm here changes the queue.** Each sends a request and the rows move
-/// when the daemon echoes — rule 3 at the third layer. The cursor is the one
-/// thing this owns, so it moves immediately.
+/// **No arm here changes the queue or the library.** Each sends a request and
+/// the rows move when the daemon echoes — rule 3 at the third layer. The cursor
+/// and which pane has focus are the exceptions, because they are where this
+/// terminal is looking rather than anything about the player.
 fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
+    // **Typing comes first, and takes everything.** While the filter is open a
+    // letter is a letter: `q` must not quit and `d` must not remove a track.
+    if app.browser.typing {
+        typing(code, link, app);
+        return true;
+    }
+
     match code {
         // Winamp put play and pause on separate keys because its buttons were
         // separate. Nothing else has since: one key that toggles is what a
@@ -172,23 +195,38 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
             mode: next_repeat(app.snap.repeat),
         })),
 
-        KeyCode::Up | KeyCode::Char('k') => app.queue.move_cursor(-1),
-        KeyCode::Down | KeyCode::Char('j') => app.queue.move_cursor(1),
-        KeyCode::PageUp => app.queue.move_cursor(-10),
-        KeyCode::PageDown => app.queue.move_cursor(10),
-        // Back to the music, for a cursor that has wandered down a long queue.
-        KeyCode::Home => app.queue.follow(),
-        KeyCode::Enter => link.send(Request::JumpTo {
-            index: app.queue.cursor,
-        }),
-        KeyCode::Char('d') => link.send(Request::RemoveFromQueue {
+        KeyCode::Tab | KeyCode::BackTab => {
+            app.focus = match app.focus {
+                Focus::Browser => Focus::Queue,
+                Focus::Queue => Focus::Browser,
+            }
+        }
+        KeyCode::Char(d @ '1'..='4') => {
+            // Selecting a section is also a request to look at it, so it takes
+            // focus — otherwise the arrows would still be driving the queue.
+            let (view, _) = SECTIONS[d as usize - '1' as usize];
+            app.focus = Focus::Browser;
+            app.show_library(view, link);
+        }
+        KeyCode::Char('/') if app.focus == Focus::Browser => app.browser.typing = true,
+        // Out of a page, then out of a filter — the order they were entered.
+        KeyCode::Esc => app.back(link),
+
+        KeyCode::Up | KeyCode::Char('k') => app.pane_cursor(-1),
+        KeyCode::Down | KeyCode::Char('j') => app.pane_cursor(1),
+        KeyCode::PageUp => app.pane_cursor(-10),
+        KeyCode::PageDown => app.pane_cursor(10),
+        KeyCode::Home if app.focus == Focus::Queue => app.queue.follow(),
+        KeyCode::Enter => app.activate(link),
+
+        KeyCode::Char('d') if app.focus == Focus::Queue => link.send(Request::RemoveFromQueue {
             index: app.queue.cursor,
         }),
         // Shift moves the row rather than the cursor. The cursor goes with it,
         // so the selection stays on the track being moved and a second press
         // moves the same one again.
-        KeyCode::Char('K') => reorder(link, app, -1),
-        KeyCode::Char('J') => reorder(link, app, 1),
+        KeyCode::Char('K') if app.focus == Focus::Queue => reorder(link, app, -1),
+        KeyCode::Char('J') if app.focus == Focus::Queue => reorder(link, app, 1),
 
         // Leaves the daemon alone: the music keeps playing, and a GTK
         // window or another terminal still has a player to attach to.
@@ -200,6 +238,112 @@ fn on_key(code: KeyCode, link: &link::Link, app: &mut App) -> bool {
         _ => {}
     }
     true
+}
+
+/// The filter, which owns the keyboard while it is open.
+///
+/// Every edit re-browses. That is affordable *because it is not Apple*: the
+/// daemon answers from the library it already holds, so this is a round trip to
+/// a local socket rather than a request per keystroke to someone's API.
+fn typing(code: KeyCode, link: &link::Link, app: &mut App) {
+    match code {
+        KeyCode::Char(c) => app.browser.filter.push(c),
+        KeyCode::Backspace => {
+            app.browser.filter.pop();
+        }
+        KeyCode::Esc => {
+            app.browser.filter.clear();
+            app.browser.typing = false;
+        }
+        KeyCode::Enter => {
+            // Keeps the filter, closes the box: the list stays filtered and the
+            // arrows go back to moving through it.
+            app.browser.typing = false;
+            return;
+        }
+        _ => return,
+    }
+    app.browser.reset();
+    app.browse(link);
+}
+
+impl App {
+    /// Ask for whatever the browser is currently meant to be showing.
+    fn browse(&self, link: &link::Link) {
+        link.send(Request::Browse {
+            view: self.browser.view,
+            query: self.browser.filter.clone(),
+            offset: 0,
+            // The daemon answers from its own cache, so the whole section costs
+            // no more than a page of it and saves paging entirely.
+            limit: 0,
+        });
+    }
+
+    fn show_library(&mut self, view: LibraryView, link: &link::Link) {
+        self.browser.view = view;
+        self.browser.showing = Showing::Library;
+        self.browser.reset();
+        self.browse(link);
+    }
+
+    fn pane_cursor(&mut self, delta: isize) {
+        match self.focus {
+            Focus::Browser => self.browser.move_cursor(delta),
+            Focus::Queue => self.queue.move_cursor(delta),
+        }
+    }
+
+    /// Enter: play the selected row, or open the page it leads to.
+    fn activate(&mut self, link: &link::Link) {
+        if self.focus == Focus::Queue {
+            return link.send(Request::JumpTo {
+                index: self.queue.cursor,
+            });
+        }
+        let Some(entry) = self.browser.selected() else {
+            return;
+        };
+        if let Some((kind, id)) = entry.page_target() {
+            // Named before the daemon answers, so an album that takes a moment
+            // to arrive shows whose it is rather than going blank.
+            self.browser.showing = Showing::Page {
+                title: entry.title().to_owned(),
+                subtitle: entry.subtitle(),
+                loading: true,
+            };
+            self.browser.rows.clear();
+            self.browser.reset();
+            return link.send(Request::Open { kind, id });
+        }
+        // A song: the queue is the whole list it sits in, opened at this row.
+        let (ids, index) = self.browser.queue_from_here();
+        if ids.is_empty() {
+            self.message = Some((
+                "Nothing here can be streamed".into(),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
+        link.send(Request::Play {
+            ids,
+            index,
+            start: PlayMode::InOrder,
+        });
+    }
+
+    /// Esc: out of a page first, then out of a filter.
+    fn back(&mut self, link: &link::Link) {
+        if matches!(self.browser.showing, Showing::Page { .. }) {
+            let view = self.browser.view;
+            return self.show_library(view, link);
+        }
+        if !self.browser.filter.is_empty() {
+            self.browser.filter.clear();
+            self.browser.reset();
+            self.browse(link);
+        }
+    }
 }
 
 /// Off, then all, then one — the order every player cycles them in.
@@ -237,6 +381,18 @@ impl App {
             Event::Snapshot(snap) => self.snap = snap,
             Event::Queue { items, position } => self.queue.replace(items, position),
             Event::Stage(stage) => self.stage = stage,
+            Event::Rows { entries, total, .. } => self.browser.replace(entries, total),
+            Event::Page {
+                header, entries, ..
+            } => {
+                self.browser.showing = Showing::Page {
+                    title: header.title().to_owned(),
+                    subtitle: header.subtitle(),
+                    loading: false,
+                };
+                self.browser.replace(entries, 0);
+                self.browser.reset();
+            }
             // The daemon refuses things — removing the track it is playing is
             // the one that will be hit most. Saying so is rule 4's job.
             Event::Error { detail } => self.message = Some((detail, std::time::Instant::now())),

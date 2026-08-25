@@ -17,6 +17,12 @@ and a window open at once are two views of one player rather than two players.
   ▶   ██░░░░░░░░░░░░░░░░░░░░░░░   0:21 / 5:03
       shuffle off   repeat off   vol ██████████
 
+  SONGS   albums   artists   playlists   /muse
+
+  ▸ Absolution                          Muse · 2003
+  ▸ Drones                              Muse · 2015
+  ▸ The Resistance                      Muse · 2009
+
   QUEUE   30 tracks
 
   ▸   1  Addicted To a Memory (feat. Bahari)     Zedd              5:03
@@ -46,15 +52,26 @@ That is a limit imposed by the DRM, not a shortcut taken here.
 | `z` `b` | Previous / next track |
 | `←` `→` | Seek five seconds |
 | `s` `r` | Shuffle / repeat |
+| `⇥` | Switch between the library and the queue |
+| `1` – `4` | Songs · albums · artists · playlists |
+| `/` | Filter the library |
+| `esc` | Out of a page, then out of a filter |
 | `↑` `↓`, `k` `j` | Move the cursor |
 | `Home` | Put the cursor back on the playing track |
-| `↵` | Play the selected track |
+| `↵` | Play the selected track, or open the album it leads to |
 | `d` | Remove it from the queue |
 | `K` `J` | Move it up / down |
 | `_` | Hide — leave, and let the music keep playing |
 | `q` | Quit — stop the daemon and the music with it |
 
-The bottom row shows the keys that fit, dropping the least essential first —
+A `▸` marks a row that opens a page rather than playing.
+
+Filtering runs on every keystroke, which is affordable because it never
+reaches Apple: the daemon answers from the library it already holds, so it is a
+round trip to a local socket. Catalog search is not wired up yet.
+
+The bottom row changes with which pane has focus — only the queue reorders,
+only the library filters — and shows the keys that fit, dropping the least essential first —
 so a narrow window loses the reorder hints rather than losing the row. Leaving
 and quitting are always on it.
 
