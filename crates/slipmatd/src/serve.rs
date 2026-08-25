@@ -685,9 +685,13 @@ fn answer(
             query,
             offset,
             limit,
+            sort,
+            reverse,
         } => {
             let model = daemon.model.borrow();
-            let (entries, total) = model.library.browse(view, &query, offset, limit);
+            let (entries, total) = model
+                .library
+                .browse(view, &query, offset, limit, sort, reverse);
             Some(Event::Rows {
                 view,
                 entries,

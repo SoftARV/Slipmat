@@ -338,6 +338,21 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
         // `i` above `k` is up above down, and `j` before `l` is sooner before
         // later. It costs vim's `j`/`k` for the cursor, which the arrows still
         // do.
+        // `o` for order: the key steps through what a section can honestly be
+        // sorted by, `O` turns it round.
+        KeyCode::Char('o') if app.pane == Pane::Browser => {
+            if app.browser.cycle_sort() {
+                app.browser.reset();
+                app.browse(link);
+            } else {
+                app.message = Some(Notice::bad("Nothing else to sort these by"));
+            }
+        }
+        KeyCode::Char('O') if app.pane == Pane::Browser => {
+            app.browser.flip_sort();
+            app.browser.reset();
+            app.browse(link);
+        }
         KeyCode::Char('j') if app.pane == Pane::Browser => app.enqueue(link, true),
         KeyCode::Char('l') if app.pane == Pane::Browser => app.enqueue(link, false),
         KeyCode::Char('i') if app.pane == Pane::Queue => reorder(link, app, -1),
@@ -410,9 +425,12 @@ fn typing(code: KeyCode, link: &link::Link, app: &mut App) {
 impl App {
     /// Ask for whatever the browser is currently meant to be showing.
     fn browse(&self, link: &link::Link) {
+        let (sort, reverse) = self.browser.sort();
         link.send(Request::Browse {
             view: self.browser.view,
             query: self.browser.filter.clone(),
+            sort,
+            reverse,
             offset: 0,
             // The daemon answers from its own cache, so the whole section costs
             // no more than a page of it and saves paging entirely.

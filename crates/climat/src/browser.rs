@@ -15,6 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use slipmat_core::entry::Entry;
 use slipmat_core::ipc::View;
+use slipmat_core::sort::SortBy;
 
 use crate::theme::{accent as ACCENT, bright as BRIGHT, dim as DIM, muted as MUTED};
 use crate::ui::fit;
@@ -56,6 +57,13 @@ pub struct Browser {
     /// lying about what the library holds.
     pub filter: String,
     pub typing: bool,
+    /// What each section is ordered by, and which way round.
+    ///
+    /// **Per section, not one shared setting.** The keys differ because the
+    /// data does — an album has a year, a playlist has neither an artist nor a
+    /// year — so choosing "Recently Added" for albums must not leave songs
+    /// claiming to be sorted by a date they do not carry.
+    pub sorts: [(SortBy, bool); 4],
     /// Whether the page on screen was opened from a catalog search, so `esc`
     /// knows which list to go back to.
     pub from_catalog: bool,
@@ -79,6 +87,7 @@ impl Default for Browser {
             showing: Showing::Library,
             filter: String::new(),
             typing: false,
+            sorts: [(SortBy::Title, false); 4],
             from_catalog: false,
             total: 0,
             offset: 0,
@@ -86,7 +95,36 @@ impl Default for Browser {
     }
 }
 
+/// Where a section's sort lives in [`Browser::sorts`].
+fn slot(view: View) -> usize {
+    SECTIONS.iter().position(|(v, _)| *v == view).unwrap_or(0)
+}
+
 impl Browser {
+    pub fn sort(&self) -> (SortBy, bool) {
+        self.sorts[slot(self.view)]
+    }
+
+    /// Step to the next key this section can honestly be ordered by.
+    ///
+    /// Returns false when there is only one — a library artist carries a name
+    /// and nothing else, so there is nothing to step through and saying so
+    /// beats a key that appears to do nothing.
+    pub fn cycle_sort(&mut self) -> bool {
+        let keys = SortBy::for_view(self.view);
+        if keys.len() < 2 {
+            return false;
+        }
+        let (by, _) = self.sort();
+        let next = keys[(keys.iter().position(|k| *k == by).unwrap_or(0) + 1) % keys.len()];
+        self.sorts[slot(self.view)].0 = next;
+        true
+    }
+
+    pub fn flip_sort(&mut self) {
+        let at = slot(self.view);
+        self.sorts[at].1 = !self.sorts[at].1;
+    }
     pub fn replace(&mut self, rows: Vec<Entry>, total: usize) {
         self.rows = rows;
         self.total = total;
@@ -149,7 +187,7 @@ impl Browser {
 /// `queue` is the queue's own tab: it is not a section of the library and the
 /// browser knows nothing about it, but it belongs in the same row because it is
 /// one of the places the one pane can be showing.
-pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
+pub fn header(browser: &Browser, queue: Option<usize>, width: usize) -> Line<'static> {
     if let Showing::Page {
         title,
         subtitle,
@@ -182,12 +220,6 @@ pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
     spans.push(tab("APPLE MUSIC", !showing_queue && catalog));
     spans.push(Span::raw("   "));
     spans.push(tab("QUEUE", showing_queue));
-    if let Some(count) = queue {
-        spans.push(Span::styled(
-            format!("  {count}"),
-            Style::from(if showing_queue { MUTED() } else { DIM() }),
-        ));
-    }
 
     if browser.typing || !browser.filter.is_empty() {
         spans.push(Span::raw("   "));
@@ -201,9 +233,41 @@ pub fn header(browser: &Browser, queue: Option<usize>) -> Line<'static> {
             spans.push(Span::styled("▌", Style::from(ACCENT())));
         }
     }
-    if matches!(browser.showing, Showing::Catalog { searching: true }) {
-        spans.push(Span::styled("   asking Apple…", Style::from(DIM())));
+
+    // **The rule runs to the far end of every tab, and carries whatever that
+    // tab has to say about itself.** At the end of the tabs these read as one
+    // more tab; pushed right and ruled off, they read as what the list *is*
+    // rather than somewhere to go.
+    let right = if showing_queue {
+        queue.map(|n| format!("[{n}]"))
+    } else if catalog {
+        // **Nothing at the end here**, just the rule. A catalog list has no
+        // order of ours — it comes back in Apple's — and a count of results is
+        // not a property of the list the way a queue's length is.
+        None
+    } else {
+        let (by, reversed) = browser.sort();
+        let arrow = if reversed != by.descends_by_default() {
+            "↑"
+        } else {
+            "↓"
+        };
+        Some(format!("[{arrow} {}]", by.label().to_lowercase()))
+    };
+
+    let tail = right.unwrap_or_default();
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    // A space either side of the rule, and never less than one dash — on a
+    // window too narrow for both, the value still wins its place.
+    let rule = width.saturating_sub(used + tail.chars().count() + 2).max(1);
+    spans.push(Span::styled(
+        format!(" {} ", "─".repeat(rule)),
+        Style::from(DIM()),
+    ));
+    if !tail.is_empty() {
+        spans.push(Span::styled(tail, Style::from(MUTED())));
     }
+
     Line::from(spans)
 }
 

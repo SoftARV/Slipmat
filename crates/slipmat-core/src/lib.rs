@@ -18,6 +18,7 @@ pub mod paths;
 pub mod player;
 pub mod queue;
 pub mod session;
+pub mod sort;
 pub mod unplayable;
 
 /// The application id. It must match the `.desktop` file name, the GResource

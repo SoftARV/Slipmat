@@ -33,7 +33,7 @@ impl super::AppModel {
         let direction = gtk::gio::Menu::new();
         direction.append(Some("_Reverse Order"), Some("sort.reverse"));
         menu.append_section(None, &direction);
-        if super::SortBy::for_view(self.view).len() > 1 {
+        if super::SortBy::for_view(self.view.sortable()).len() > 1 {
             menu.prepend_section(None, &sort_keys_menu(self.view));
         }
         button.set_menu_model(Some(&menu));
@@ -54,7 +54,7 @@ impl super::AppModel {
 pub(super) fn sort_keys_menu(view: super::View) -> gtk::gio::Menu {
     use gtk::prelude::ToVariant;
     let keys = gtk::gio::Menu::new();
-    for option in super::SortBy::for_view(view) {
+    for option in super::SortBy::for_view(view.sortable()) {
         let item = gtk::gio::MenuItem::new(Some(option.label()), None);
         item.set_action_and_target_value(Some("sort.by"), Some(&option.id().to_variant()));
         keys.append_item(&item);
