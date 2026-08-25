@@ -340,16 +340,18 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             used += cost(&pair);
         }
         let (key, what) = pair;
-        // **A cap, not a letter.** Reversed with a cell of padding either side,
-        // the key reads as something to press rather than as the first word of
-        // its own description — which is what `z prev x play` looked like at a
-        // glance. Reverse video rather than an explicit background, so the cap
-        // is the terminal's own colours whatever they are.
+        // **Bracketed, not filled.** The key needs to read as something to
+        // press rather than as the first word of its own label — which is what
+        // `z prev x play` looked like at a glance. A solid reversed block did
+        // that and was too loud for a row that is always on screen; brackets
+        // draw the same outline out of two characters.
+        spans.push(Span::styled("[", Style::from(DIM())));
         spans.push(Span::styled(
-            format!(" {key} "),
-            Style::from(MUTED()).add_modifier(Modifier::REVERSED),
+            key,
+            Style::from(MUTED()).add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled(format!(" {what}  "), Style::from(DIM())));
+        spans.push(Span::styled("]", Style::from(DIM())));
+        spans.push(Span::styled(format!(" {what}   "), Style::from(DIM())));
     }
     Line::from(spans)
 }
