@@ -75,8 +75,8 @@ pub fn draw(frame: &mut Frame, view: View) {
     // browser is what gets squeezed, down to a single visible row on a short
     // window.
     let rows = spectrum_rows(area.height);
-    // title + album + a blank + spectrum + a blank + seek + state + modes.
-    let band = 3 + rows as u16 + 4;
+    // name + title + album + a blank + spectrum + a blank + seek + state + modes.
+    let band = 4 + rows as u16 + 4;
     let [top, note, tabs, list, hints] = Layout::vertical([
         Constraint::Length(band),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
@@ -145,19 +145,28 @@ fn spectrum_rows(height: u16) -> usize {
 }
 
 fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
+    // The program's own name, in the accent, above everything. It is the first
+    // thing on screen in every state — including the ones where there is no
+    // track to describe, which is exactly when it is useful to be told what
+    // you are looking at.
+    let name = Line::from(Span::styled(
+        "climat",
+        Style::from(ACCENT()).add_modifier(Modifier::BOLD),
+    ));
+
     // Anything but Ready has nothing to say about a track, so it says what it
     // is doing instead — a blank player looks broken, a waiting one does not.
     if !matches!(view.stage, Stage::Ready) {
-        return vec![Line::from(vec![Span::styled(
-            stage_text(view.stage),
-            Style::from(MUTED()),
-        )])];
+        return vec![
+            name,
+            Line::from(Span::styled(stage_text(view.stage), Style::from(MUTED()))),
+        ];
     }
     if view.snap.title.is_empty() {
-        return vec![Line::from(Span::styled(
-            "Nothing playing",
-            Style::from(MUTED()),
-        ))];
+        return vec![
+            name,
+            Line::from(Span::styled("Nothing playing", Style::from(MUTED()))),
+        ];
     }
 
     // **Under the title, where Winamp put it**, and two rows tall — one row of
@@ -232,7 +241,7 @@ fn now_playing(view: &View, width: usize, rows: usize) -> Vec<Line<'static>> {
         Span::styled(rest(view.snap.volume, VOL, '░'), Style::from(DIM())),
     ]);
 
-    let mut band = vec![title, album, Line::default()];
+    let mut band = vec![name, title, album, Line::default()];
     band.extend(spectrum.into_iter().map(Line::from));
     // **A blank between the bars and the seek line.** Without it the rule sits
     // flush against the spectrum and reads as part of it.

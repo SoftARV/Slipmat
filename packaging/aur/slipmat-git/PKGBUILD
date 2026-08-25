@@ -18,8 +18,11 @@ pkgrel=1
 arch=('x86_64')          # Widevine on Linux is x86_64 only
 url="https://github.com/SoftARV/Slipmat"
 license=('GPL-3.0-or-later')
+# `libpulse` is needed to *build*, not only to run: both the daemon and climat
+# link against it. A missing runtime dependency fails at launch; a missing build
+# one fails at the link, which is harder to read.
 makedepends=('cargo' 'nodejs' 'npm' 'git' 'pkgconf' 'librsvg'
-             'gtk4' 'libadwaita')
+             'gtk4' 'libadwaita' 'libpulse')
 source=("$_pkgname::git+$url.git")
 sha256sums=('SKIP')
 options=('!debug' '!lto')

@@ -12,6 +12,7 @@ draws what the daemon says and sends what the keyboard asks for, so a terminal
 and a window open at once are two views of one player rather than two players.
 
 ```
+  climat
   I Bet You Look Good on the Dancefloor  —  Arctic Monkeys
   Whatever People Say I Am, That's What I'm Not
               ▅▅▅▅▅▃▃   ▅▅▆▆ ▅▅▂   ▁       ▁▅            ▃▁▃          ▁
