@@ -96,7 +96,8 @@ place and it says so rather than doing nothing.
 
 ## Colours
 
-The accent is Apple Music's red, fixed. **Everything else is mixed from your
+The accent is Apple Music's red, and the spectrum runs green through yellow to
+orange the way Winamp's did. Both are fixed. **Everything else is mixed from your
 terminal's own background**, which climat asks for on startup (`OSC 11`) — so
 the greys lean the way your theme does instead of being a warm grey chosen
 against somebody else's. A terminal that does not answer the query costs a
