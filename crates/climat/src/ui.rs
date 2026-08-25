@@ -312,6 +312,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             ("⇥", "tabs"),
             ("/", "filter"),
             ("oO", "order"),
+            ("t", "types"),
             ("jl", "next/last"),
             ("esc", "back"),
         ]

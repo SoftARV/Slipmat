@@ -289,6 +289,25 @@ pub enum CatalogFilter {
 
 impl CatalogFilter {
     /// The `types=` value Apple wants.
+    /// Every filter, in the order a client should step through them.
+    pub const ALL: [Self; 5] = [
+        Self::All,
+        Self::Songs,
+        Self::Albums,
+        Self::Artists,
+        Self::Playlists,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "everything",
+            Self::Songs => "songs",
+            Self::Albums => "albums",
+            Self::Artists => "artists",
+            Self::Playlists => "playlists",
+        }
+    }
+
     pub fn types(self) -> &'static str {
         match self {
             Self::All => "songs,albums,artists,playlists",

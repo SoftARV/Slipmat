@@ -114,6 +114,7 @@ tenth of a second and gets the original palette.
 | `⇥` | Walk the tabs |
 | `/` | Filter the library, or search Apple Music |
 | `o` | Order by the next thing this section can be sorted by |
+| `t` | On Apple Music: what kinds of thing to search for |
 | `O` | Turn that order round |
 | `esc` | Out of a page, then out of a filter |
 | `↑` `↓` | Move the cursor |
@@ -139,6 +140,12 @@ is measured rather than assumed: 0 of 541 carry one.
 `j` and `l` put a track in the queue without disturbing what is playing —
 straight after the current track, or at the end. They work on songs; an album
 has no playable id of its own, so open it first and queue from inside.
+
+Searching Apple Music asks for everything by default — a few artists, playlists
+and albums, then songs — and `t` narrows it to one kind, shown where a library
+section shows its order. More results arrive as you scroll: a page is asked for
+before the cursor reaches the end, because a round trip to Apple takes long
+enough that asking at the last row means stopping at the last row.
 
 **Who answers decides what a keystroke costs.** Over the library the list
 narrows as you type, which is affordable because it never reaches Apple — the
