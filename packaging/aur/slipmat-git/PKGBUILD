@@ -73,8 +73,10 @@ package_slipmat-daemon-git() {
   # is the surprising one** — the sidecar needs it even though the app is GTK4,
   # and nothing else here pulls it in. It was never declared and worked only
   # because most desktops happen to have it.
+  # `libpulse` is the daemon's own now: volume is the audio server's stream
+  # volume, not a gain inside MusicKit — see crates/slipmatd/src/mixer.rs.
   depends=('gtk3' 'nss' 'alsa-lib' 'libcups' 'libxkbcommon' 'mesa' 'libdrm'
-           'libseccomp')
+           'libseccomp' 'libpulse')
   provides=("slipmat-daemon=$pkgver")
   # **Not `slipmat`, however much it looks like it should be.** The release
   # package does own these same sidecar paths — but `slipmat-git` *provides*

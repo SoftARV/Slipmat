@@ -85,7 +85,7 @@ tenth of a second and gets the original palette.
 | `z` `b` | Previous / next track |
 | `←` `→` | Seek five seconds |
 | `s` `r` | Shuffle / repeat |
-| `-` `=` | Volume |
+| `-` `=` | Volume — the same one your desktop's audio panel shows |
 | `1` – `4` | Songs · albums · artists · playlists |
 | `5` | All of Apple Music |
 | `6` | The queue |
