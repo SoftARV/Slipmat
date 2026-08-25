@@ -24,34 +24,21 @@ The web engine is still there. You just never see it.
 
 ## What it does
 
-**Native, twice.** A GNOME app in GTK4 and libadwaita — real lists, real
-keyboard navigation, a window that tiles to half a screen. And `climat`, a
-player for the terminal, in the shape of Winamp. Both drive the same engine, so
-they show the same queue and the same track at the same moment. There is a web
-layer, because Apple's DRM leaves no choice, but it is one hidden process that
-decodes audio and nothing else. You never see a web page.
+- **Native, twice.** A GNOME app in GTK4 and libadwaita, and `climat` for the
+  terminal. Both drive the same engine, so they agree about what is playing.
+- **Your library.** Songs, albums, artists and playlists, each filtered and
+  ordered its own way. Play anything and that list becomes the queue.
+- **A player worth the name.** Gapless, with a full-size view, the queue beside
+  it and the cover behind it.
+- **Controls where you already look.** The GNOME top bar, the lock screen, your
+  media keys. Close every window and the music keeps going.
+- **All of Apple Music, searchable.** Artists, albums, playlists and songs, more
+  arriving as you scroll, each opening a page you can play from.
+- **Quick, and out of the way.** Opens on your library, not a spinner. Your last
+  queue is waiting — restored, never resumed.
 
-**Your library.** Songs, albums, artists and playlists, each with type-to-find
-filtering and its own sorting. Click anything and the list you are looking at
-becomes the queue.
-
-**A player worth the name.** Gapless, with a full-size view you can pull up, the
-queue beside it, and the cover behind it.
-
-**Controls where you already look.** Play, pause and skip from the GNOME top
-bar, from the lock screen, or with your keyboard's media keys — cover and title
-alongside them, and the position honest while it plays. Close every window and
-the music keeps going — playback lives in a daemon, not in whichever front-end
-you happened to open. It stops when you say so, not when you tidy your desktop.
-
-**All of Apple Music, searchable.** Artists, albums, playlists and songs in one
-list, paginated as you scroll, each opening a page you can play from and drill
-through.
-
-**Quick, and out of the way.** It opens on your library rather than on a
-spinner, a five-hundred-track list scrolls without stuttering, and whatever you
-were playing is waiting next launch — restored, never resumed. An app that
-starts making noise because you opened it is a hostile one.
+There is a web layer, because Apple's DRM leaves no choice. It is one hidden
+process that decodes audio and nothing else; you never see a web page.
 
 <table>
   <tr>
@@ -83,28 +70,6 @@ starts making noise because you opened it is a hostile one.
     <td colspan="3" align="center"><sub>Searching the whole catalogue</sub></td>
   </tr>
 </table>
-
-And the same library, the same queue and the same player, in a terminal:
-
-```
-CLImat
-Broken Arrows  —  Avicii
-Stories
-
-         ▂▂▄▂▄▆▅█▁▂▁ ▁   ▂▂ ▁            ▃▁▃          ▁
-    ▇▇▇▇▇███████▆▆▆████████▆▇▇█▃▄▄█▆█▂██▇█▄▆▅▇▇▆▇▇▅▇███▇▅▅▆▂▁
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━──────────────────────────
-▶  Playing                                                1:38 / 3:53
-shuffle on   repeat off   vol ████████████████░░░░
-
-songs   albums   artists   playlists   apple music   QUEUE ───── [112]
-    12  Aerodynamic                          Daft Punk           3:32
-▸   13  Broken Arrows                        Avicii              3:52
-    14  I Would Like                         Zara Larsson        3:44
-
-[space] play/pause   [↑↓] move   [↵] play   [⇥] tabs   [Ctrl+C] hide
-```
 
 ## Install
 
@@ -246,20 +211,16 @@ So Slipmat splits the problem three ways:
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**The daemon exists because the sidecar cannot be shared any other way.** One
-Widevine CDM, one Chromium profile lock — two apps cannot each run one. So the
-engine owns it and everything else is a client, which is also why closing a
-window does not stop the music and why two of them show the same track.
-
-Nothing enables it and nothing has to: the first client to start finds no daemon
-and starts one. It puts its Chromium down after five idle minutes with nothing
-playing, and picks it back up when asked.
-
-All browsing, search and metadata is native code talking to Apple's REST API and
-drawing native widgets. Only the **audio decode** happens in the sidecar — a
-Chromium window with `show: false`, displayed exactly once for Apple's own
-sign-in and then never again. It is never rendered, it does not appear in the
-dash, and it does not publish an MPRIS player of its own.
+- **The daemon exists because the sidecar cannot be shared.** One Widevine CDM,
+  one Chromium profile lock — two apps cannot each run one. So the engine owns
+  it and everything else is a client, which is why closing a window stops
+  nothing and two of them agree about the track.
+- **Nothing has to enable it.** The first client to start finds no daemon and
+  starts one. It puts Chromium down after five idle minutes and picks it back
+  up when asked.
+- **Only the audio decode is not native.** Browsing, search and metadata are
+  Rust talking to Apple's REST API. The sidecar is a Chromium window with
+  `show: false`, shown exactly once for Apple's sign-in and never again.
 
 Slipmat plays through Apple's own MusicKit player with Google's official CDM. It
 is a native front-end and a remote control for a licensed session. It does not
