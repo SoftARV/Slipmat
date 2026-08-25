@@ -199,7 +199,13 @@ Two Linux facts that follow, and that you must not design around:
 Rust edition 2024, plus `anyhow` 1 (rule 5) and `tracing-subscriber` 0.3 with
 `env-filter` for `RUST_LOG`. Toolchain ≥ 1.93 (relm4 0.11's MSRV); libadwaita
 ≥ 1.8 / GTK ≥ 4.20 (the `gnome_49` floor). Verified on this machine: rustc
-1.97.1, GTK 4.22.4, libadwaita 1.9.2, node v26.4.0, PipeWire 1.6.8.
+1.98.0, GTK 4.22.4, libadwaita 1.9.2, node v26.4.0, PipeWire 1.6.8.
+
+**Keep this machine on the same stable CI is.** Nothing pins a toolchain, so
+both follow stable — and when they drift, `make check` passes here and the
+identical command fails there, on a lint that does not exist locally. It cost a
+red PR when `clippy::chunks_exact_to_as_chunks` arrived in 1.98 while this
+machine was on 1.97.
 
 **relm4 0.11's docs.rs build is broken.** Read the vendored source, which is the
 exact version we compile against:
