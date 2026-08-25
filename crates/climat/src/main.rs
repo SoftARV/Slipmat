@@ -355,7 +355,7 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
         // corner of the screen carries this instead.
         KeyCode::Char('t') if app.browser.showing.is_catalog() => {
             app.browser.cycle_kinds();
-            if !app.browser.filter.trim().is_empty() {
+            if !app.browser.filter().trim().is_empty() {
                 app.search(link);
             }
         }
@@ -409,15 +409,16 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
 /// which one is in force.
 fn typing(code: KeyCode, link: &link::Link, app: &mut App) {
     match code {
-        KeyCode::Char(c) => app.browser.filter.push(c),
+        KeyCode::Char(c) => app.browser.filter_mut().push(c),
         KeyCode::Backspace => {
-            app.browser.filter.pop();
+            app.browser.filter_mut().pop();
         }
         KeyCode::Esc => {
-            app.browser.filter.clear();
+            app.browser.filter_mut().clear();
             app.browser.typing = false;
             if app.browser.showing.is_catalog() {
-                app.browser.rows.clear();
+                // The question is withdrawn, so its answer goes too.
+                app.browser.forget_found();
             } else {
                 app.browser.reset();
                 app.browse(link);
@@ -447,7 +448,7 @@ impl App {
         let (sort, reverse) = self.browser.sort();
         link.send(Request::Browse {
             view: self.browser.view,
-            query: self.browser.filter.clone(),
+            query: self.browser.filter().to_owned(),
             sort,
             reverse,
             offset: 0,
@@ -465,21 +466,28 @@ impl App {
     }
 
     /// Open the catalog pane. Nothing is fetched — it waits to be asked.
+    /// Open the catalog pane. Nothing is fetched — it waits to be asked.
+    ///
+    /// **What was already asked stays.** The catalog's text is not a filter but
+    /// a question Apple has already answered; clearing it on the way past would
+    /// mean paying for the same search again on the way back.
     fn show_catalog(&mut self) {
         self.browser.showing = browser::Showing::Catalog { searching: false };
-        self.browser.rows.clear();
-        self.browser.filter.clear();
+        // **Its own results, not whatever was showing.** Every other tab leaves
+        // `rows` holding a library section or an album's tracks, and without
+        // this those stayed on screen under Apple Music's name.
+        self.browser.restore_found();
         self.browser.reset();
     }
 
     fn search(&mut self, link: &link::Link) {
-        let query = self.browser.filter.trim().to_owned();
+        let query = self.browser.filter().trim().to_owned();
         if query.is_empty() {
-            self.browser.rows.clear();
+            self.browser.forget_found();
             return;
         }
         self.browser.showing = browser::Showing::Catalog { searching: true };
-        self.browser.rows.clear();
+        self.browser.forget_found();
         self.browser.reset();
         self.browser.more = false;
         self.browser.paging = false;
@@ -492,7 +500,7 @@ impl App {
 
     /// Ask Apple for the next page of the search already on screen.
     fn page(&mut self, link: &link::Link) {
-        let query = self.browser.filter.trim().to_owned();
+        let query = self.browser.filter().trim().to_owned();
         if query.is_empty() {
             return;
         }
@@ -630,17 +638,20 @@ impl App {
             // **Back to where the page was opened from.** An album reached from
             // a catalog search belongs to the search, and returning to the
             // library instead loses the results and the question that found it.
-            // The rows were cleared to open the page, so this costs the one
-            // request again.
+            // The catalog keeps its own answers, so this costs nothing — it
+            // used to ask Apple the same question a second time.
             if self.browser.from_catalog {
                 self.browser.from_catalog = false;
-                return self.search(link);
+                self.browser.showing = browser::Showing::Catalog { searching: false };
+                self.browser.restore_found();
+                self.browser.reset();
+                return;
             }
             let view = self.browser.view;
             return self.show_library(view, link);
         }
-        if !self.browser.filter.is_empty() {
-            self.browser.filter.clear();
+        if !self.browser.filter().is_empty() {
+            self.browser.filter_mut().clear();
             self.browser.reset();
             self.browse(link);
         }
@@ -717,21 +728,26 @@ impl App {
                 offset,
                 more,
             } => {
-                // Only if it is still the question being asked — a slow answer
-                // to an abandoned query would otherwise land on screen.
-                if self.browser.showing.is_catalog() && query == self.browser.filter.trim() {
-                    self.browser.showing = browser::Showing::Catalog { searching: false };
-                    self.browser.more = more;
-                    self.browser.paging = false;
-                    if offset == 0 {
-                        let total = entries.len();
-                        self.browser.replace(entries, total);
+                // **Kept whichever tab is showing.** A search is a question
+                // already paid for, and tabbing away while Apple thinks about
+                // it used to throw the answer out — so the results are stored
+                // either way, and only *shown* if the catalog is what is up.
+                if query != self.browser.catalog_query() {
+                    return; // a slow answer to an abandoned query
+                }
+                self.browser.more = more;
+                self.browser.paging = false;
+                let showing = self.browser.showing.is_catalog();
+                if offset == 0 {
+                    self.browser.keep_found(entries, showing);
+                    if showing {
+                        self.browser.showing = browser::Showing::Catalog { searching: false };
                         self.browser.reset();
-                    } else {
-                        // A page, not an answer: it goes under what is already
-                        // there and the cursor stays where somebody left it.
-                        self.browser.extend(entries);
                     }
+                } else {
+                    // A page, not an answer: it goes under what is already
+                    // there and the cursor stays where somebody left it.
+                    self.browser.extend(entries, showing);
                 }
             }
             Event::Page {

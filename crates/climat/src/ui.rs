@@ -81,7 +81,12 @@ pub fn draw(frame: &mut Frame, view: View) {
         Constraint::Length(band),
         Constraint::Length(if view.message.is_some() { 2 } else { 0 }),
         Constraint::Length(2),
-        Constraint::Length(browser::search_height(view.browser)),
+        // **Never on the queue.** There is nothing to filter there, so a field
+        // offering to is a control that cannot work.
+        Constraint::Length(match view.pane {
+            Pane::Browser => browser::search_height(view.browser),
+            Pane::Queue => 0,
+        }),
         Constraint::Fill(1),
         Constraint::Length(1),
     ])
