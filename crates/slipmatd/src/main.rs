@@ -18,6 +18,7 @@ mod heal;
 mod library;
 mod serve;
 mod state;
+mod watchdog;
 
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
