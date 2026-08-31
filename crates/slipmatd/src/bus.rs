@@ -5,13 +5,13 @@
 //! from the bus means here.
 //!
 //! `slipmat_core::mpris` exports the interface and reports what a controller
-//! asked for. This is the part that knows the answer is a sidecar command
-//! rather than a message to a GTK model.
+//! asked for. This routes playback through the same transport path as every
+//! connected client.
 
 use std::rc::Rc;
 
+use slipmat_core::ipc::Transport;
 use slipmat_core::mpris::{Capabilities, Mpris, MprisCommand, MprisState};
-use slipmat_core::player::protocol::Command;
 
 use crate::serve::Daemon;
 
@@ -30,19 +30,11 @@ pub fn start(daemon: &Rc<Daemon>) -> Mpris {
 }
 
 fn on_command(daemon: &Rc<Daemon>, cmd: MprisCommand) {
+    if let Some(transport) = mpris_transport(cmd) {
+        crate::serve::route_transport(daemon, transport);
+        return;
+    }
     match cmd {
-        MprisCommand::Play => daemon.send(Command::Play),
-        MprisCommand::Pause => daemon.send(Command::Pause),
-        MprisCommand::PlayPause => daemon.send(Command::PlayPause),
-        MprisCommand::Next => daemon.send(Command::Next),
-        MprisCommand::Previous => daemon.send(Command::Previous),
-        MprisCommand::Seek(position_ms) => daemon.send(Command::Seek { position_ms }),
-        MprisCommand::SetShuffle(shuffle) => daemon.send(Command::SetShuffle { shuffle }),
-        MprisCommand::SetRepeat(mode) => daemon.send(Command::SetRepeat { mode }),
-        MprisCommand::SetVolume(volume) => {
-            daemon.model.borrow_mut().volume = volume;
-            daemon.send(Command::SetVolume { volume });
-        }
         // **There is no window to raise.** A daemon answering `CanRaise: true`
         // would put a button in every bar that does nothing; the frontends own
         // that, and one of them may not have a window either.
@@ -50,7 +42,23 @@ fn on_command(daemon: &Rc<Daemon>, cmd: MprisCommand) {
         // Quitting the daemon takes playback from every client attached to it,
         // which is not what a media key means.
         MprisCommand::Quit => tracing::info!("MPRIS Quit ignored: clients would lose the player"),
+        _ => {}
     }
+}
+
+fn mpris_transport(cmd: MprisCommand) -> Option<Transport> {
+    Some(match cmd {
+        MprisCommand::Play => Transport::Play,
+        MprisCommand::Pause => Transport::Pause,
+        MprisCommand::PlayPause => Transport::PlayPause,
+        MprisCommand::Next => Transport::Next,
+        MprisCommand::Previous => Transport::Previous,
+        MprisCommand::Seek(position_ms) => Transport::Seek { position_ms },
+        MprisCommand::SetShuffle(shuffle) => Transport::SetShuffle { shuffle },
+        MprisCommand::SetRepeat(mode) => Transport::SetRepeat { mode },
+        MprisCommand::SetVolume(volume) => Transport::SetVolume { volume },
+        MprisCommand::Raise | MprisCommand::Quit => return None,
+    })
 }
 
 /// What the bus should be showing, from the daemon's mirror.
@@ -73,5 +81,18 @@ pub fn state(daemon: &Daemon) -> MprisState {
         volume: model.volume,
         shuffle: model.player.shuffle,
         repeat: model.player.repeat,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mpris_volume_uses_the_shared_stream_transport() {
+        assert_eq!(
+            mpris_transport(MprisCommand::SetVolume(0.5)),
+            Some(Transport::SetVolume { volume: 0.5 })
+        );
     }
 }

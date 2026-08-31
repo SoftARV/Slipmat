@@ -101,8 +101,6 @@ pub enum Command {
 
     #[serde(rename = "seek", rename_all = "camelCase")]
     Seek { position_ms: u64 },
-    #[serde(rename = "setVolume")]
-    SetVolume { volume: f64 },
     #[serde(rename = "setShuffle")]
     SetShuffle { shuffle: bool },
     #[serde(rename = "setRepeat")]
@@ -169,7 +167,6 @@ impl Command {
             Self::RemoveFromQueue { .. } => "removeFromQueue",
             Self::ClearQueue => "clearQueue",
             Self::Seek { .. } => "seek",
-            Self::SetVolume { .. } => "setVolume",
             Self::SetShuffle { .. } => "setShuffle",
             Self::SetRepeat { .. } => "setRepeat",
             Self::RefreshTokens => "refreshTokens",
@@ -249,12 +246,8 @@ pub enum Event {
     #[serde(rename = "hook-warning")]
     HookWarning { detail: String },
 
-    /// What MusicKit's volume actually is — at attach, and on every change.
-    ///
-    /// **Inbound, unlike everything else about volume.** MusicKit keeps its own
-    /// volume and restores it across launches from the session that keeps the
-    /// login, so Rust cannot know it without being told. Adopted, never echoed:
-    /// sending a `SetVolume` back for a value MusicKit just reported is a loop.
+    /// Kept so a daemon can parse events from an older installed sidecar.
+    /// MusicKit's gain is fixed at unity now; the desktop stream owns volume.
     #[serde(rename = "volume")]
     Volume { volume: f64 },
 

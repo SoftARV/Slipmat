@@ -892,16 +892,15 @@ This is Redux with a compiler: actions in, one reducer, view derived from state.
 
   Neither clippy nor the test suite can see this: the cycle only exists once
   GTK, `update_view` and the reducer are wired together. Verify a two-way
-  control by counting what reaches the sidecar —
+  control by counting what reaches the stream mixer —
 
   ```bash
-  RUST_LOG=slipmat=debug cargo run >/tmp/vol.log 2>&1
-  sed 's/\x1b\[[0-9;]*m//g' /tmp/vol.log | grep -c "received command cmd=setVolume"
+  RUST_LOG=slipmatd=debug cargo run -p slipmatd >/tmp/vol.log 2>&1
+  sed 's/\x1b\[[0-9;]*m//g' /tmp/vol.log | grep -c "mixer: set"
   ```
 
-  **Strip the colour first.** `tracing` wraps the `=` in escape codes, so a
-  `grep` for `cmd=setVolume` matches nothing and reports a confident **0** on a
-  log full of them. That reads exactly like a fix that worked.
+  Log to a file rather than the journal: a regression can produce thousands of
+  writes before the app stops responding.
 
   Then hold the key down for several seconds and let go. A healthy run is one
   command per change and a **bounded** total — 207 for a long session — and the

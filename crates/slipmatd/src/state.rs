@@ -13,8 +13,7 @@ use crate::library::Library;
 pub struct Model {
     pub player: PlayerState,
     pub stage: Stage,
-    /// Ours, not the sidecar's: MusicKit is told the volume and does not report
-    /// one back, so this is the only record of it.
+    /// The desktop stream's volume, mirrored for clients while no stream exists.
     pub volume: f64,
     /// Live for the process lifetime, never persisted (rule 7). Unused until
     /// the daemon serves the library, which is what needs them.

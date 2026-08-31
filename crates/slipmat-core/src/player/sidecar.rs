@@ -455,7 +455,7 @@ mod tests {
         // property change, and the desktop stopped responding (#37).
         let (h, mut rx) = handle();
         for _ in 0..5_000 {
-            h.send(Command::SetVolume { volume: 0.5 });
+            h.send(Command::Seek { position_ms: 500 });
         }
         let mut delivered = 0;
         while rx.try_recv().is_ok() {
@@ -469,11 +469,11 @@ mod tests {
 
     #[test]
     fn the_ceiling_is_per_command_kind() {
-        // One runaway command must not silence the rest. A volume loop that
+        // One runaway command must not silence the rest. A seek loop that
         // also blocked `pause` would leave the user unable to stop the noise.
         let (h, mut rx) = handle();
         for _ in 0..5_000 {
-            h.send(Command::SetVolume { volume: 0.5 });
+            h.send(Command::Seek { position_ms: 500 });
         }
         h.send(Command::Pause);
         let mut pauses = 0;
@@ -493,7 +493,7 @@ mod tests {
         let (h, mut rx) = handle();
         // 200 in a second is already beyond a 165Hz pointer dragging flat out.
         for _ in 0..200 {
-            h.send(Command::SetVolume { volume: 0.5 });
+            h.send(Command::Seek { position_ms: 500 });
         }
         let mut delivered = 0;
         while rx.try_recv().is_ok() {
