@@ -27,6 +27,12 @@ impl Link {
         // reports on its own. Nothing useful to do here.
         let _ = self.0.send(request);
     }
+
+    #[cfg(test)]
+    pub(crate) fn channel() -> (Self, mpsc::UnboundedReceiver<Request>) {
+        let (send, receive) = mpsc::unbounded_channel();
+        (Self(send), receive)
+    }
 }
 
 /// What arrives from the daemon.

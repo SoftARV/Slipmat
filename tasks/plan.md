@@ -55,12 +55,12 @@ and the change is too small to gain from parallel work.
 
 ### Phase 1: Behavior
 
-- [ ] Task 1: Make Climat's signed-out prompt actionable.
+- [x] Task 1: Make Climat's signed-out prompt actionable.
 
 ### Checkpoint A: Automated behavior
 
-- [ ] Focused tests prove the signed-out request and preserve normal `Enter`.
-- [ ] Climat builds and passes clippy without warnings.
+- [x] Focused tests prove the signed-out request and preserve normal `Enter`.
+- [x] Climat builds and passes clippy without warnings.
 - [ ] Human review authorizes runtime verification.
 
 ### Phase 2: Runtime and documentation

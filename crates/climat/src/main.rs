@@ -266,6 +266,11 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
     }
     let code = key.code;
 
+    if matches!(app.stage, Stage::SignedOut) && code == KeyCode::Enter {
+        link.send(Request::SignIn);
+        return true;
+    }
+
     // **Typing comes next, and takes everything else.** While the filter is
     // open a letter is a letter: `q` must not quit and `d` must not remove a
     // track.
@@ -791,6 +796,55 @@ async fn wait_for_quit(
                 Some(link::Incoming::Lost(_)) | None => return None,
             },
             _ = &mut deadline => return Some("the daemon did not answer".into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signed_out_enter_requests_sign_in_before_typing_consumes_it() {
+        let (link, mut requests) = link::Link::channel();
+        let mut app = App {
+            stage: Stage::SignedOut,
+            ..Default::default()
+        };
+        app.browser.typing = true;
+
+        assert!(on_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &link,
+            &mut app,
+        ));
+        assert!(matches!(
+            requests.try_recv().expect("sign-in request"),
+            Request::SignIn
+        ));
+    }
+
+    #[test]
+    fn other_stages_do_not_request_sign_in() {
+        for stage in [
+            Stage::Connecting,
+            Stage::Ready,
+            Stage::Broken {
+                detail: "failed".into(),
+            },
+        ] {
+            let (link, mut requests) = link::Link::channel();
+            let mut app = App {
+                stage,
+                ..Default::default()
+            };
+
+            assert!(on_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &link,
+                &mut app,
+            ));
+            assert!(requests.try_recv().is_err());
         }
     }
 }

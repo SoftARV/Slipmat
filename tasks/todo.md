@@ -5,7 +5,7 @@ Specification:
 [`docs/specs/SPEC-climat-sign-in.md`](../docs/specs/SPEC-climat-sign-in.md)
 Issue: [#194](https://github.com/SoftARV/Slipmat/issues/194)
 
-Status: approved. Task 1 is authorized for implementation.
+Status: Task 1 complete. Awaiting human approval for runtime verification.
 
 ## Task 1: Make the signed-out prompt actionable
 
@@ -15,20 +15,20 @@ focused tests.
 
 **Acceptance criteria:**
 
-- [ ] `Stage::SignedOut` displays `[Enter] Sign in to Apple Music`, and pressing
+- [x] `Stage::SignedOut` displays `[Enter] Sign in to Apple Music`, and pressing
   `Enter` sends `Request::SignIn` even if a text field retained typing focus.
-- [ ] Climat waits for daemon stage events; it does not mark authorization as
+- [x] Climat waits for daemon stage events; it does not mark authorization as
   complete or change the daemon and sidecar protocols.
-- [ ] `Enter` keeps its current activation behavior in every other stage, and
+- [x] `Enter` keeps its current activation behavior in every other stage, and
   existing leave and quit keys keep their behavior.
 
 **Verification:**
 
-- [ ] Add a failing `on_key` test through an in-memory `link::Link`, then make
+- [x] Add a failing `on_key` test through an in-memory `link::Link`, then make
   it pass.
-- [ ] Add prompt coverage in `ui.rs`.
-- [ ] Run `cargo test -p climat`.
-- [ ] Run `cargo clippy -p climat --all-targets -- -D warnings`.
+- [x] Add prompt coverage in `ui.rs`.
+- [x] Run `cargo test -p climat`.
+- [x] Run `cargo clippy -p climat --all-targets -- -D warnings`.
 
 **Dependencies:** None.
 
@@ -42,9 +42,9 @@ focused tests.
 
 ## Checkpoint A: Automated behavior
 
-- [ ] Task 1 meets its acceptance criteria.
-- [ ] Focused tests fail without the behavior and pass with it.
-- [ ] Climat builds and passes clippy without warnings.
+- [x] Task 1 meets its acceptance criteria.
+- [x] Focused tests fail without the behavior and pass with it.
+- [x] Climat builds and passes clippy without warnings.
 - [ ] Human review authorizes runtime verification.
 
 ## Task 2: Verify sign-in and document the result
