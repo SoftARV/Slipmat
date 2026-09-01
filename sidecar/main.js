@@ -562,6 +562,10 @@ app.whenReady().then(async () => {
   const { ipcMain } = require('electron')
 
   ipcMain.on('slipmat:event', (_e, ev) => {
+    if (ev && ev.event === 'queue-identity-probe') {
+      log('queue identity probe:', JSON.stringify(ev))
+      return
+    }
     if (ev && ev.event === 'hook-ready') {
       hookReady = true
       drainPending()

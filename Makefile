@@ -117,6 +117,7 @@ install: build install-sidecar dev-install
 install-sidecar: sidecar
 	install -d $(SIDECAR)
 	cp -r sidecar/package.json sidecar/main.js sidecar/preload.js \
+		sidecar/queue-identity.js \
 		sidecar/node_modules $(SIDECAR)/
 
 # Everything except the binaries: the .desktop entry and the icons.

@@ -251,14 +251,22 @@ impl PlayerState {
 /// the reload that recovers a dead playback — each of which would otherwise
 /// name the wrong track after any edit above the one playing.
 ///
-/// **The queue may hold the same track twice**, which is what Play Next and
-/// Add to Queue are for (#88). So a search picks the candidate *nearest* the
-/// reported index rather than the first: an edit shifts indices by a little,
-/// never across the whole queue.
+/// The sidecar's occurrence id distinguishes duplicate tracks exactly. The
+/// nearest catalog-id match remains for queues reported by an older sidecar.
 fn corrected_position(reported: usize, queue: &[Item], playing: Option<&Item>) -> usize {
+    let Some(playing) = playing else {
+        return reported;
+    };
+    if !playing.occurrence_id.is_empty()
+        && let Some(index) = queue
+            .iter()
+            .position(|item| item.occurrence_id == playing.occurrence_id)
+    {
+        return index;
+    }
+
     let id_of = |item: &Item| item.catalog_id.clone().or_else(|| item.id.clone());
-    // Nothing to check against, or the report already agrees.
-    let Some(wanted) = playing.and_then(id_of) else {
+    let Some(wanted) = id_of(playing) else {
         return reported;
     };
     if queue.get(reported).and_then(id_of) == Some(wanted.clone()) {
@@ -564,6 +572,16 @@ mod tests {
         };
         assert_eq!(corrected_position(4, &items, Some(&playing)), 4);
         assert_eq!(corrected_position(2, &items, Some(&playing)), 1);
+    }
+
+    #[test]
+    fn an_occurrence_id_resolves_the_exact_duplicate() {
+        let mut items = q(&["x", "dup", "y", "z", "dup"]);
+        items[1].occurrence_id = "run-a:10".into();
+        items[4].occurrence_id = "run-a:11".into();
+        let playing = items[4].clone();
+
+        assert_eq!(corrected_position(2, &items, Some(&playing)), 4);
     }
 
     #[test]

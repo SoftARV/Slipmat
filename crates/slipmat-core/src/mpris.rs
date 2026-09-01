@@ -21,11 +21,10 @@
 //! model. This is the exception, and it is forced by the types rather than
 //! chosen:
 //!
-//! - `mpris_server::Player` is **`!Send`** — its callbacks are `Fn(&Self)`,
-//!   not `Fn(&Self) + Send`. It cannot be moved to another thread, and it
-//!   cannot be sent through a relm4 `CommandOutput` (those require `Send`).
-//! - Building it is **async** (`build().await`), so it does not exist yet when
-//!   `AppModel::init` returns.
+//! - `mpris_server::LocalServer` is **`!Send`**. It cannot be moved to another
+//!   thread or sent through a relm4 `CommandOutput` (those require `Send`).
+//! - Building it is **async**, so it does not exist when `AppModel::init`
+//!   returns.
 //!
 //! So the handle is created empty, filled in by a task on the GTK main thread,
 //! and every later call goes through the same cell. Everything here runs on the
@@ -34,20 +33,29 @@
 //! ## What it must never do
 //!
 //! Emit `PropertiesChanged` on every position tick. MPRIS `Position` is
-//! deliberately *polled*, not signalled — which is why `Player::set_position`
-//! is the one setter in the crate that is neither `async` nor emits a signal.
-//! Everything else is diffed against the last applied state, so a 500ms tick
-//! costs one cheap property write and no bus traffic.
+//! deliberately *polled*, not signalled. Everything is diffed against the last
+//! applied state, so a 500ms tick only replaces the shared snapshot and sends
+//! no bus traffic.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 
-use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player, Time, TrackId};
+use mpris_server::{
+    LocalPlayerInterface, LocalRootInterface, LocalServer, LocalTrackListInterface, LoopStatus,
+    Metadata, PlaybackRate, PlaybackStatus, Property, Signal, Time, TrackId, TrackListProperty,
+    TrackListSignal, Uri, Volume,
+    zbus::{Result as ZbusResult, fdo},
+};
 
-use crate::player::protocol::RepeatMode;
+use crate::player::protocol::{Item, RepeatMode};
+
+pub(crate) mod track_list;
+
+use track_list::{Change, Projection};
 
 /// What a controller on the bus asked for.
 ///
@@ -67,6 +75,9 @@ pub enum MprisCommand {
     SetShuffle(bool),
     SetRepeat(RepeatMode),
     SetVolume(f64),
+    GoTo {
+        index: usize,
+    },
     /// Ask for the window back — the counterpart to a close that only hid it.
     Raise,
     Quit,
@@ -107,7 +118,7 @@ impl Capabilities {
 
 /// How the frontend spawns a `!Send` future on its own main thread.
 ///
-/// `mpris_server::Player` cannot leave the thread it was built on, and every
+/// `mpris_server::LocalServer` cannot leave the thread it was built on, and every
 /// property write is async, so something has to spawn them. relm4 has
 /// `spawn_local`; a tokio `LocalSet` has its own. Choosing between them is the
 /// one thing this module must not do.
@@ -120,6 +131,9 @@ const BUS_SUFFIX: &str = "Slipmat";
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct MprisState {
     pub track_id: Option<String>,
+    pub current_item: Option<Item>,
+    pub queue: Vec<Item>,
+    pub queue_position: usize,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -161,31 +175,24 @@ impl MprisState {
 
     /// Only the fields that ride in the `Metadata` dict. Used to decide whether
     /// a `PropertiesChanged` is warranted at all.
-    fn metadata_fields(
-        &self,
-    ) -> (
-        &Option<String>,
-        &str,
-        &str,
-        &str,
-        u32,
-        &Option<PathBuf>,
-        u64,
-    ) {
-        (
-            &self.track_id,
-            &self.title,
-            &self.artist,
-            &self.album,
-            self.track_number,
-            &self.art_path,
-            self.length_ms,
-        )
+    fn metadata_changed_from(&self, previous: &Self) -> bool {
+        self.track_id != previous.track_id
+            || self.title != previous.title
+            || self.artist != previous.artist
+            || self.album != previous.album
+            || self.track_number != previous.track_number
+            || self.art_path != previous.art_path
+            || self.length_ms != previous.length_ms
+            || self.current_item.as_ref().map(|item| &item.occurrence_id)
+                != previous
+                    .current_item
+                    .as_ref()
+                    .map(|item| &item.occurrence_id)
     }
 
-    fn metadata(&self) -> Metadata {
+    fn metadata(&self, projected_track_id: Option<TrackId>) -> Metadata {
         let mut m = Metadata::new();
-        m.set_trackid(track_id(self.track_id.as_deref()));
+        m.set_trackid(projected_track_id);
         m.set_title(Some(self.title.clone()));
         if !self.artist.is_empty() {
             m.set_artist(Some([self.artist.clone()]));
@@ -209,29 +216,435 @@ impl MprisState {
     }
 }
 
-/// Build a D-Bus object path for a track.
-///
-/// Track ids are object paths, so only `[A-Za-z0-9_]` and `/` are legal.
-/// Apple's catalog ids are numeric, but library ids are not (`i.AbCd123`), and
-/// an invalid path would make the whole metadata dict fail to serialise —
-/// taking the Shell applet's display down with it. Sanitise, don't trust.
-fn track_id(id: Option<&str>) -> Option<TrackId> {
-    let id = id?;
-    let safe: String = id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    if safe.is_empty() {
-        return None;
+struct SlipmatPlayer {
+    state: RefCell<MprisState>,
+    track_list: RefCell<Projection>,
+    sink: Sink,
+    can: Capabilities,
+}
+
+#[derive(Debug, PartialEq)]
+enum TrackListNotification {
+    Replaced {
+        tracks: Vec<TrackId>,
+        current_track: TrackId,
+    },
+    TracksInvalidated,
+    MetadataChanged {
+        track_id: TrackId,
+        metadata: Metadata,
+    },
+}
+
+struct UpdateBatch {
+    player_properties: Vec<(&'static str, Property)>,
+    track_list_notifications: Vec<TrackListNotification>,
+}
+
+impl SlipmatPlayer {
+    fn new(state: MprisState, sink: Sink, can: Capabilities) -> Self {
+        let mut track_list = Projection::default();
+        track_list.reconcile(
+            &state.queue,
+            state.queue_position,
+            state.current_item.as_ref(),
+        );
+        Self {
+            state: RefCell::new(state),
+            track_list: RefCell::new(track_list),
+            sink,
+            can,
+        }
     }
-    TrackId::try_from(format!("/dev/miguelrincon/Slipmat/track/{safe}")).ok()
+
+    fn update_state(&self, state: MprisState) -> (Option<TrackId>, Vec<TrackListNotification>) {
+        let previous_current = self.track_list.borrow().current();
+        let previous_art = self.state.borrow().art_path.clone();
+        let (current, notifications) = {
+            let mut track_list = self.track_list.borrow_mut();
+            let change = track_list.reconcile(
+                &state.queue,
+                state.queue_position,
+                state.current_item.as_ref(),
+            );
+            let current = track_list.current();
+            let notifications = track_list_notifications(
+                &track_list,
+                &change,
+                previous_current,
+                previous_art.as_ref(),
+                &state,
+            );
+            (current, notifications)
+        };
+        *self.state.borrow_mut() = state;
+        (current, notifications)
+    }
+
+    fn send(&self, command: MprisCommand) {
+        (self.sink)(command);
+    }
+}
+
+fn track_list_notifications(
+    track_list: &Projection,
+    change: &Change,
+    previous_current: Option<TrackId>,
+    previous_art: Option<&PathBuf>,
+    state: &MprisState,
+) -> Vec<TrackListNotification> {
+    let current = track_list.current();
+    if change.window {
+        return vec![
+            TrackListNotification::Replaced {
+                tracks: track_list.tracks(),
+                current_track: current.unwrap_or(TrackId::NO_TRACK),
+            },
+            TrackListNotification::TracksInvalidated,
+        ];
+    }
+
+    let mut metadata_ids = change.metadata.clone();
+    if previous_current != current {
+        if previous_art.is_some()
+            && let Some(track_id) = previous_current
+        {
+            metadata_ids.push(track_id);
+        }
+        if state.art_path.is_some()
+            && let Some(track_id) = current.clone()
+        {
+            metadata_ids.push(track_id);
+        }
+    } else if previous_art != state.art_path.as_ref()
+        && let Some(track_id) = current.clone()
+    {
+        metadata_ids.push(track_id);
+    }
+
+    let mut notifications = Vec::new();
+    for track_id in metadata_ids {
+        if notifications.iter().any(|notification| {
+            matches!(
+                notification,
+                TrackListNotification::MetadataChanged { track_id: seen, .. }
+                    if seen == &track_id
+            )
+        }) {
+            continue;
+        }
+        let Some(item) = track_list.item(&track_id) else {
+            continue;
+        };
+        let art_path = (current.as_ref() == Some(&track_id))
+            .then_some(state.art_path.as_deref())
+            .flatten();
+        notifications.push(TrackListNotification::MetadataChanged {
+            track_id: track_id.clone(),
+            metadata: item_metadata(item, track_id, art_path),
+        });
+    }
+    notifications
+}
+
+impl LocalRootInterface for SlipmatPlayer {
+    async fn raise(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Raise);
+        Ok(())
+    }
+
+    async fn quit(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Quit);
+        Ok(())
+    }
+
+    async fn can_quit(&self) -> fdo::Result<bool> {
+        Ok(self.can.can_quit)
+    }
+
+    async fn fullscreen(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+
+    async fn set_fullscreen(&self, _fullscreen: bool) -> ZbusResult<()> {
+        Ok(())
+    }
+
+    async fn can_set_fullscreen(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+
+    async fn can_raise(&self) -> fdo::Result<bool> {
+        Ok(self.can.can_raise)
+    }
+
+    async fn has_track_list(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+
+    async fn identity(&self) -> fdo::Result<String> {
+        Ok("Slipmat".into())
+    }
+
+    async fn desktop_entry(&self) -> fdo::Result<String> {
+        Ok(crate::APP_ID.into())
+    }
+
+    async fn supported_uri_schemes(&self) -> fdo::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn supported_mime_types(&self) -> fdo::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+}
+
+impl LocalPlayerInterface for SlipmatPlayer {
+    async fn next(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Next);
+        Ok(())
+    }
+
+    async fn previous(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Previous);
+        Ok(())
+    }
+
+    async fn pause(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Pause);
+        Ok(())
+    }
+
+    async fn play_pause(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::PlayPause);
+        Ok(())
+    }
+
+    async fn stop(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Pause);
+        Ok(())
+    }
+
+    async fn play(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Play);
+        Ok(())
+    }
+
+    async fn seek(&self, offset: Time) -> fdo::Result<()> {
+        let position = self.state.borrow().position_ms as i128;
+        let target = (position + i128::from(offset.as_millis())).clamp(0, i128::from(u64::MAX));
+        self.send(MprisCommand::Seek(target as u64));
+        Ok(())
+    }
+
+    async fn set_position(&self, supplied_id: TrackId, position: Time) -> fdo::Result<()> {
+        let current_id = self.track_list.borrow().current();
+        if current_id.as_ref() == Some(&supplied_id) && position.as_millis() >= 0 {
+            self.send(MprisCommand::Seek(position.as_millis() as u64));
+        }
+        Ok(())
+    }
+
+    async fn open_uri(&self, _uri: String) -> fdo::Result<()> {
+        Ok(())
+    }
+
+    async fn playback_status(&self) -> fdo::Result<PlaybackStatus> {
+        Ok(self.state.borrow().status())
+    }
+
+    async fn loop_status(&self) -> fdo::Result<LoopStatus> {
+        Ok(self.state.borrow().loop_status())
+    }
+
+    async fn set_loop_status(&self, status: LoopStatus) -> ZbusResult<()> {
+        self.send(MprisCommand::SetRepeat(match status {
+            LoopStatus::None => RepeatMode::None,
+            LoopStatus::Playlist => RepeatMode::All,
+            LoopStatus::Track => RepeatMode::One,
+        }));
+        Ok(())
+    }
+
+    async fn rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(1.0)
+    }
+
+    async fn set_rate(&self, _rate: PlaybackRate) -> ZbusResult<()> {
+        Ok(())
+    }
+
+    async fn shuffle(&self) -> fdo::Result<bool> {
+        Ok(self.state.borrow().shuffle)
+    }
+
+    async fn set_shuffle(&self, shuffle: bool) -> ZbusResult<()> {
+        self.send(MprisCommand::SetShuffle(shuffle));
+        Ok(())
+    }
+
+    async fn metadata(&self) -> fdo::Result<Metadata> {
+        let track_id = self.track_list.borrow().current();
+        Ok(self.state.borrow().metadata(track_id))
+    }
+
+    async fn volume(&self) -> fdo::Result<Volume> {
+        Ok(self.state.borrow().volume)
+    }
+
+    async fn set_volume(&self, volume: Volume) -> ZbusResult<()> {
+        self.send(MprisCommand::SetVolume(volume.clamp(0.0, 1.0)));
+        Ok(())
+    }
+
+    async fn position(&self) -> fdo::Result<Time> {
+        Ok(Time::from_millis(self.state.borrow().position_ms as i64))
+    }
+
+    async fn minimum_rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(1.0)
+    }
+
+    async fn maximum_rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(1.0)
+    }
+
+    async fn can_go_next(&self) -> fdo::Result<bool> {
+        Ok(self.state.borrow().can_next)
+    }
+
+    async fn can_go_previous(&self) -> fdo::Result<bool> {
+        Ok(self.state.borrow().can_previous)
+    }
+
+    async fn can_play(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+
+    async fn can_pause(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+
+    async fn can_seek(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+
+    async fn can_control(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+}
+
+fn item_metadata(item: &Item, track_id: TrackId, art_path: Option<&Path>) -> Metadata {
+    let mut metadata = Metadata::new();
+    metadata.set_trackid(Some(track_id));
+    metadata.set_title(Some(item.title.clone()));
+    if !item.artist.is_empty() {
+        metadata.set_artist(Some([item.artist.clone()]));
+    }
+    if !item.album.is_empty() {
+        metadata.set_album(Some(item.album.clone()));
+    }
+    if item.duration_ms > 0 {
+        metadata.set_length(Some(Time::from_millis(item.duration_ms as i64)));
+    }
+    if item.track_number > 0 {
+        metadata.set_track_number(Some(item.track_number as i32));
+    }
+    if let Some(path) = art_path {
+        metadata.set_art_url(Some(format!("file://{}", path.display())));
+    }
+    metadata
+}
+
+impl LocalTrackListInterface for SlipmatPlayer {
+    async fn get_tracks_metadata(&self, track_ids: Vec<TrackId>) -> fdo::Result<Vec<Metadata>> {
+        let state = self.state.borrow();
+        let track_list = self.track_list.borrow();
+        let current = track_list.current();
+        Ok(track_list
+            .metadata(&track_ids)
+            .into_iter()
+            .map(|(track_id, item)| {
+                let art_path = (current.as_ref() == Some(&track_id))
+                    .then_some(state.art_path.as_deref())
+                    .flatten();
+                item_metadata(item, track_id, art_path)
+            })
+            .collect())
+    }
+
+    async fn add_track(
+        &self,
+        _uri: Uri,
+        _after_track: TrackId,
+        _set_as_current: bool,
+    ) -> fdo::Result<()> {
+        Err(fdo::Error::NotSupported("TrackList is read-only".into()))
+    }
+
+    async fn remove_track(&self, _track_id: TrackId) -> fdo::Result<()> {
+        Err(fdo::Error::NotSupported("TrackList is read-only".into()))
+    }
+
+    async fn go_to(&self, track_id: TrackId) -> fdo::Result<()> {
+        if let Some(index) = self.track_list.borrow().index(&track_id) {
+            self.send(MprisCommand::GoTo { index });
+        }
+        Ok(())
+    }
+
+    async fn tracks(&self) -> fdo::Result<Vec<TrackId>> {
+        Ok(self.track_list.borrow().tracks())
+    }
+
+    async fn can_edit_tracks(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+}
+
+fn changed_player_properties(
+    previous: Option<&MprisState>,
+    state: &MprisState,
+    current_track: Option<TrackId>,
+) -> Vec<(&'static str, Property)> {
+    let mut changed = Vec::new();
+    if previous.is_none_or(|prev| state.metadata_changed_from(prev)) {
+        changed.push((
+            "metadata",
+            Property::Metadata(state.metadata(current_track)),
+        ));
+    }
+    if previous.is_none_or(|prev| state.status() != prev.status()) {
+        changed.push(("playback status", Property::PlaybackStatus(state.status())));
+    }
+    if previous.is_none_or(|prev| state.can_next != prev.can_next) {
+        changed.push(("can-go-next", Property::CanGoNext(state.can_next)));
+    }
+    if previous.is_none_or(|prev| state.can_previous != prev.can_previous) {
+        changed.push((
+            "can-go-previous",
+            Property::CanGoPrevious(state.can_previous),
+        ));
+    }
+    if previous.is_none_or(|prev| (state.volume - prev.volume).abs() > f64::EPSILON) {
+        changed.push(("volume", Property::Volume(state.volume)));
+    }
+    if previous.is_none_or(|prev| state.shuffle != prev.shuffle) {
+        changed.push(("shuffle", Property::Shuffle(state.shuffle)));
+    }
+    if previous.is_none_or(|prev| state.loop_status() != prev.loop_status()) {
+        changed.push(("loop status", Property::LoopStatus(state.loop_status())));
+    }
+    changed
 }
 
 /// Handle to the exported player. Cheap to clone and hold in the model.
 #[derive(Clone)]
 pub struct Mpris {
-    player: Rc<RefCell<Option<Rc<Player>>>>,
+    player: Rc<RefCell<Option<Rc<LocalServer<SlipmatPlayer>>>>>,
     last: Rc<RefCell<Option<MprisState>>>,
+    pending_updates: Rc<RefCell<VecDeque<UpdateBatch>>>,
+    emitting: Rc<Cell<bool>>,
     spawn: Spawn,
 }
 
@@ -254,29 +667,19 @@ impl Mpris {
         let this = Self {
             player: Rc::new(RefCell::new(None)),
             last: Rc::new(RefCell::new(None)),
+            pending_updates: Rc::new(RefCell::new(VecDeque::new())),
+            emitting: Rc::new(Cell::new(false)),
             spawn: spawn.clone(),
         };
 
         let slot = this.player.clone();
         let inner = spawn.clone();
         spawn(Box::pin(async move {
-            let player = match Player::builder(BUS_SUFFIX)
-                .identity("Slipmat")
-                .desktop_entry(crate::APP_ID)
-                .can_play(true)
-                .can_pause(true)
-                .can_seek(true)
-                .can_control(true)
-                // Both of these describe a player that outlives its window, and
-                // that is exactly what `close_window` leaves behind: a hidden,
-                // still-playing Slipmat holding the sidecar open. Without
-                // `CanRaise` the controller showing that player has no way to
-                // bring it back, and without `CanQuit` no way to end it either —
-                // the Background portal was the only route to both.
-                .can_raise(can.can_raise)
-                .can_quit(can.can_quit)
-                .build()
-                .await
+            let player = match LocalServer::new_with_track_list(
+                BUS_SUFFIX,
+                SlipmatPlayer::new(MprisState::default(), sink, can),
+            )
+            .await
             {
                 Ok(player) => player,
                 Err(err) => {
@@ -284,8 +687,6 @@ impl Mpris {
                     return;
                 }
             };
-
-            wire_controls(&player, sink);
 
             let player = Rc::new(player);
             // The run task owns its state (`LocalServerRunTask` is 'static), so
@@ -307,49 +708,31 @@ impl Mpris {
 
         let previous = self.last.borrow().clone();
         *self.last.borrow_mut() = Some(state.clone());
-
-        // Position is a polled property in MPRIS, so this is a plain setter
-        // with no bus traffic. Doing it unconditionally is what keeps
-        // `playerctl position` honest between events.
-        player.set_position(Time::from_millis(state.position_ms as i64));
-
-        let Some(prev) = previous else {
-            // First push: send everything.
-            (self.spawn)(Box::pin(apply_all(player, state)));
+        let (current_track, track_list_notifications) = player.imp().update_state(state.clone());
+        let player_properties = changed_player_properties(previous.as_ref(), &state, current_track);
+        self.pending_updates.borrow_mut().push_back(UpdateBatch {
+            player_properties,
+            track_list_notifications,
+        });
+        if self.emitting.replace(true) {
             return;
-        };
+        }
 
+        let pending = self.pending_updates.clone();
+        let emitting = self.emitting.clone();
         (self.spawn)(Box::pin(async move {
-            if state.metadata_fields() != prev.metadata_fields() {
-                log_err("metadata", player.set_metadata(state.metadata()).await);
-            }
-            if state.status() != prev.status() {
-                log_err(
-                    "playback status",
-                    player.set_playback_status(state.status()).await,
-                );
-            }
-            if state.can_next != prev.can_next {
-                log_err("can-go-next", player.set_can_go_next(state.can_next).await);
-            }
-            if state.can_previous != prev.can_previous {
-                log_err(
-                    "can-go-previous",
-                    player.set_can_go_previous(state.can_previous).await,
-                );
-            }
-            if (state.volume - prev.volume).abs() > f64::EPSILON {
-                log_err("volume", player.set_volume(state.volume).await);
-            }
-            if state.shuffle != prev.shuffle {
-                log_err("shuffle", player.set_shuffle(state.shuffle).await);
-            }
-            if state.loop_status() != prev.loop_status() {
-                log_err(
-                    "loop status",
-                    player.set_loop_status(state.loop_status()).await,
-                );
-            }
+            drain_updates(pending, emitting, move |batch| {
+                let player = player.clone();
+                async move {
+                    emit_updates(
+                        player,
+                        batch.player_properties,
+                        batch.track_list_notifications,
+                    )
+                    .await;
+                }
+            })
+            .await;
         }));
     }
 
@@ -362,29 +745,76 @@ impl Mpris {
         (self.spawn)(Box::pin(async move {
             log_err(
                 "seeked",
-                player.seeked(Time::from_millis(position_ms as i64)).await,
+                player
+                    .emit(Signal::Seeked {
+                        position: Time::from_millis(position_ms as i64),
+                    })
+                    .await,
             );
         }));
     }
 }
 
-async fn apply_all(player: Rc<Player>, state: MprisState) {
-    log_err("metadata", player.set_metadata(state.metadata()).await);
-    log_err(
-        "playback status",
-        player.set_playback_status(state.status()).await,
-    );
-    log_err("can-go-next", player.set_can_go_next(state.can_next).await);
-    log_err(
-        "can-go-previous",
-        player.set_can_go_previous(state.can_previous).await,
-    );
-    log_err("volume", player.set_volume(state.volume).await);
-    log_err("shuffle", player.set_shuffle(state.shuffle).await);
-    log_err(
-        "loop status",
-        player.set_loop_status(state.loop_status()).await,
-    );
+async fn emit_player_properties(
+    player: Rc<LocalServer<SlipmatPlayer>>,
+    changed: Vec<(&'static str, Property)>,
+) {
+    for (name, property) in changed {
+        log_err(name, player.properties_changed([property]).await);
+    }
+}
+
+async fn drain_updates<F, Fut>(
+    pending: Rc<RefCell<VecDeque<UpdateBatch>>>,
+    emitting: Rc<Cell<bool>>,
+    mut emit: F,
+) where
+    F: FnMut(UpdateBatch) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    loop {
+        let Some(batch) = pending.borrow_mut().pop_front() else {
+            emitting.set(false);
+            return;
+        };
+        emit(batch).await;
+    }
+}
+
+async fn emit_updates(
+    player: Rc<LocalServer<SlipmatPlayer>>,
+    changed: Vec<(&'static str, Property)>,
+    track_list_notifications: Vec<TrackListNotification>,
+) {
+    emit_player_properties(player.clone(), changed).await;
+    for notification in track_list_notifications {
+        match notification {
+            TrackListNotification::Replaced {
+                tracks,
+                current_track,
+            } => log_err(
+                "track list replaced",
+                player
+                    .track_list_emit(TrackListSignal::TrackListReplaced {
+                        tracks,
+                        current_track,
+                    })
+                    .await,
+            ),
+            TrackListNotification::TracksInvalidated => log_err(
+                "tracks invalidation",
+                player
+                    .track_list_properties_changed([TrackListProperty::Tracks])
+                    .await,
+            ),
+            TrackListNotification::MetadataChanged { track_id, metadata } => log_err(
+                "track metadata changed",
+                player
+                    .track_list_emit(TrackListSignal::TrackMetadataChanged { track_id, metadata })
+                    .await,
+            ),
+        }
+    }
 }
 
 /// A failed property update is worth a log line and nothing more — the bus
@@ -395,84 +825,59 @@ fn log_err(what: &str, result: mpris_server::zbus::Result<()>) {
     }
 }
 
-/// Wire the bus's buttons to [`MprisCommand`]. This is the half that makes
-/// MPRIS bidirectional, and the half wrappers usually skip.
-fn wire_controls(player: &Player, sink: Sink) {
-    macro_rules! on {
-        ($connect:ident, $cmd:expr) => {{
-            let sink = sink.clone();
-            player.$connect(move |_| sink($cmd));
-        }};
-    }
-
-    on!(connect_play_pause, MprisCommand::PlayPause);
-    on!(connect_play, MprisCommand::Play);
-    on!(connect_pause, MprisCommand::Pause);
-    on!(connect_stop, MprisCommand::Pause);
-    on!(connect_next, MprisCommand::Next);
-    on!(connect_previous, MprisCommand::Previous);
-    on!(connect_raise, MprisCommand::Raise);
-    on!(connect_quit, MprisCommand::Quit);
-
-    // Relative seek, in microseconds, and it can be negative. Resolved here
-    // against the position the player holds, so the sink only ever sees an
-    // absolute one.
-    let s = sink.clone();
-    player.connect_seek(move |player, offset| {
-        let target = player.position().as_millis() + offset.as_millis();
-        s(MprisCommand::Seek(target.max(0) as u64));
-    });
-
-    // Absolute seek. The track id is ignored on purpose: we export one player
-    // with no TrackList, so there is nothing else it could refer to.
-    let s = sink.clone();
-    player.connect_set_position(move |_, _track, position| {
-        s(MprisCommand::Seek(position.as_millis().max(0) as u64));
-    });
-
-    let s = sink.clone();
-    player.connect_set_shuffle(move |_, shuffle| s(MprisCommand::SetShuffle(shuffle)));
-
-    // Writable properties, so a controller can set one we do not offer — MPRIS
-    // has no way to advertise a partial set. Every `LoopStatus` maps onto a
-    // `RepeatMode`, so there is nothing to reject.
-    let s = sink.clone();
-    player.connect_set_loop_status(move |_, status| {
-        s(MprisCommand::SetRepeat(match status {
-            LoopStatus::None => RepeatMode::None,
-            LoopStatus::Playlist => RepeatMode::All,
-            LoopStatus::Track => RepeatMode::One,
-        }));
-    });
-
-    player.connect_set_volume(move |_, volume| {
-        sink(MprisCommand::SetVolume(volume.clamp(0.0, 1.0)));
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn track_ids_are_valid_object_paths() {
-        let id = track_id(Some("1049009209")).expect("numeric id");
-        assert_eq!(id.as_str(), "/dev/miguelrincon/Slipmat/track/1049009209");
+    fn local_player(state: MprisState) -> (SlipmatPlayer, Rc<RefCell<Vec<MprisCommand>>>) {
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        let captured = commands.clone();
+        let sink = Rc::new(move |command| captured.borrow_mut().push(command));
+        (
+            SlipmatPlayer::new(state, sink, Capabilities::windowed()),
+            commands,
+        )
     }
 
-    #[test]
-    fn library_ids_with_illegal_characters_are_sanitised() {
-        // Library ids look like `i.AbCd123`. A dot is not legal in an object
-        // path, and an invalid one makes the whole metadata dict fail to
-        // serialise — which takes the Shell applet's display down with it.
-        let id = track_id(Some("i.AbCd-123")).expect("sanitised id");
-        assert_eq!(id.as_str(), "/dev/miguelrincon/Slipmat/track/i_AbCd_123");
+    fn queue_item(occurrence_id: &str, title: &str) -> Item {
+        Item {
+            occurrence_id: occurrence_id.into(),
+            id: Some("song-a".into()),
+            title: title.into(),
+            ..Default::default()
+        }
     }
 
-    #[test]
-    fn no_track_means_no_id() {
-        assert!(track_id(None).is_none());
-        assert!(track_id(Some("")).is_none());
+    fn queue_state(queue: Vec<Item>, current: usize) -> MprisState {
+        MprisState {
+            current_item: queue.get(current).cloned(),
+            queue,
+            queue_position: current,
+            ..Default::default()
+        }
+    }
+
+    fn assert_structural_notifications(initial: MprisState, next: MprisState) {
+        let (player, _) = local_player(initial);
+
+        let (_, notifications) = player.update_state(next);
+        let tracks = player.track_list.borrow().tracks();
+        let current_track = player
+            .track_list
+            .borrow()
+            .current()
+            .unwrap_or(TrackId::NO_TRACK);
+
+        assert_eq!(
+            notifications,
+            [
+                TrackListNotification::Replaced {
+                    tracks,
+                    current_track,
+                },
+                TrackListNotification::TracksInvalidated,
+            ]
+        );
     }
 
     #[test]
@@ -508,7 +913,39 @@ mod tests {
             position_ms: 90_000,
             ..a.clone()
         };
-        assert_eq!(a.metadata_fields(), b.metadata_fields());
+        assert!(!b.metadata_changed_from(&a));
+        assert!(changed_player_properties(Some(&a), &b, None).is_empty());
+    }
+
+    #[test]
+    fn player_property_changes_match_the_existing_export() {
+        let previous = MprisState::default();
+        let state = MprisState {
+            title: "Roundabout".into(),
+            playing: true,
+            can_next: true,
+            can_previous: true,
+            volume: 0.4,
+            shuffle: true,
+            repeat: RepeatMode::One,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            changed_player_properties(Some(&previous), &state, None),
+            [
+                ("metadata", Property::Metadata(state.metadata(None))),
+                (
+                    "playback status",
+                    Property::PlaybackStatus(PlaybackStatus::Playing),
+                ),
+                ("can-go-next", Property::CanGoNext(true)),
+                ("can-go-previous", Property::CanGoPrevious(true)),
+                ("volume", Property::Volume(0.4)),
+                ("shuffle", Property::Shuffle(true)),
+                ("loop status", Property::LoopStatus(LoopStatus::Track)),
+            ]
+        );
     }
 
     #[test]
@@ -517,7 +954,7 @@ mod tests {
             art_path: Some(PathBuf::from("/home/x/.cache/slipmat/artwork/ab-512.jpg")),
             ..Default::default()
         };
-        let art = state.metadata().art_url().expect("art url");
+        let art = state.metadata(None).art_url().expect("art url");
         assert!(
             art.starts_with("file:///"),
             "GNOME Shell needs a file:// path, got {art}"
@@ -556,7 +993,7 @@ mod tests {
             repeat: RepeatMode::One,
             ..off.clone()
         };
-        assert_eq!(off.metadata_fields(), on.metadata_fields());
+        assert!(!on.metadata_changed_from(&off));
         assert_ne!(off.loop_status(), on.loop_status());
     }
 
@@ -564,8 +1001,436 @@ mod tests {
     fn an_unknown_length_is_omitted_rather_than_sent_as_zero() {
         let state = MprisState::default();
         assert!(
-            state.metadata().length().is_none(),
+            state.metadata(None).length().is_none(),
             "a zero length would render as a 0:00 track"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_root_matches_the_existing_export() {
+        let (player, commands) = local_player(MprisState::default());
+
+        assert!(player.can_raise().await.expect("can raise"));
+        assert!(player.can_quit().await.expect("can quit"));
+        assert!(!player.fullscreen().await.expect("fullscreen"));
+        assert!(!player.can_set_fullscreen().await.expect("set fullscreen"));
+        assert!(player.has_track_list().await.expect("has track list"));
+        assert_eq!(player.identity().await.expect("identity"), "Slipmat");
+        assert_eq!(
+            player.desktop_entry().await.expect("desktop entry"),
+            crate::APP_ID
+        );
+        assert!(
+            player
+                .supported_uri_schemes()
+                .await
+                .expect("URI schemes")
+                .is_empty()
+        );
+        assert!(
+            player
+                .supported_mime_types()
+                .await
+                .expect("MIME types")
+                .is_empty()
+        );
+
+        player.raise().await.expect("raise");
+        player.quit().await.expect("quit");
+        assert_eq!(
+            *commands.borrow(),
+            [MprisCommand::Raise, MprisCommand::Quit]
+        );
+
+        let headless = SlipmatPlayer::new(
+            MprisState::default(),
+            Rc::new(|_| {}),
+            Capabilities::headless(),
+        );
+        assert!(!headless.can_raise().await.expect("headless can raise"));
+        assert!(!headless.can_quit().await.expect("headless can quit"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_player_reports_the_current_state() {
+        let item = queue_item("run:1", "Roundabout");
+        let state = MprisState {
+            current_item: Some(item.clone()),
+            queue: vec![item],
+            title: "Roundabout".into(),
+            position_ms: 12_345,
+            playing: true,
+            can_next: true,
+            can_previous: true,
+            volume: 0.4,
+            shuffle: true,
+            repeat: RepeatMode::One,
+            ..Default::default()
+        };
+        let (player, _) = local_player(state.clone());
+        let current_track = player.tracks().await.expect("tracks")[0].clone();
+
+        assert_eq!(
+            player.playback_status().await.expect("status"),
+            state.status()
+        );
+        assert_eq!(
+            player.loop_status().await.expect("loop status"),
+            state.loop_status()
+        );
+        assert_eq!(player.rate().await.expect("rate"), 1.0);
+        assert_eq!(player.minimum_rate().await.expect("minimum rate"), 1.0);
+        assert_eq!(player.maximum_rate().await.expect("maximum rate"), 1.0);
+        assert!(player.shuffle().await.expect("shuffle"));
+        assert_eq!(
+            player.metadata().await.expect("metadata"),
+            state.metadata(Some(current_track))
+        );
+        assert_eq!(player.volume().await.expect("volume"), 0.4);
+        assert_eq!(
+            player.position().await.expect("position"),
+            Time::from_millis(12_345)
+        );
+        assert!(player.can_go_next().await.expect("can go next"));
+        assert!(player.can_go_previous().await.expect("can go previous"));
+        assert!(player.can_play().await.expect("can play"));
+        assert!(player.can_pause().await.expect("can pause"));
+        assert!(player.can_seek().await.expect("can seek"));
+        assert!(player.can_control().await.expect("can control"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_controls_map_to_existing_commands() {
+        let item = queue_item("run:1", "Roundabout");
+        let state = MprisState {
+            current_item: Some(item.clone()),
+            queue: vec![item],
+            position_ms: 5_000,
+            ..Default::default()
+        };
+        let (player, commands) = local_player(state);
+        let current_track = player.tracks().await.expect("tracks")[0].clone();
+
+        player.play().await.expect("play");
+        player.pause().await.expect("pause");
+        player.play_pause().await.expect("play pause");
+        player.stop().await.expect("stop");
+        player.next().await.expect("next");
+        player.previous().await.expect("previous");
+        player
+            .seek(Time::from_millis(-2_000))
+            .await
+            .expect("relative seek");
+        player
+            .set_position(current_track, Time::from_millis(4_000))
+            .await
+            .expect("absolute seek");
+        player.set_shuffle(true).await.expect("shuffle");
+        player
+            .set_loop_status(LoopStatus::Playlist)
+            .await
+            .expect("loop status");
+        player.set_volume(2.0).await.expect("volume");
+
+        assert_eq!(
+            *commands.borrow(),
+            [
+                MprisCommand::Play,
+                MprisCommand::Pause,
+                MprisCommand::PlayPause,
+                MprisCommand::Pause,
+                MprisCommand::Next,
+                MprisCommand::Previous,
+                MprisCommand::Seek(3_000),
+                MprisCommand::Seek(4_000),
+                MprisCommand::SetShuffle(true),
+                MprisCommand::SetRepeat(RepeatMode::All),
+                MprisCommand::SetVolume(1.0),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_position_ignores_a_stale_track_id() {
+        let item = queue_item("run:1", "Roundabout");
+        let state = MprisState {
+            current_item: Some(item.clone()),
+            queue: vec![item],
+            ..Default::default()
+        };
+        let (player, commands) = local_player(state);
+
+        player
+            .set_position(
+                TrackId::try_from("/dev/miguelrincon/Slipmat/tracklist/stale".to_owned())
+                    .expect("track id"),
+                Time::from_millis(9_000),
+            )
+            .await
+            .expect("stale seek");
+
+        assert!(commands.borrow().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_track_list_exposes_a_bounded_window_with_the_player_current_id() {
+        let queue: Vec<_> = (0..30)
+            .map(|index| queue_item(&format!("run:{index}"), &format!("Track {index}")))
+            .collect();
+        let state = MprisState {
+            current_item: Some(queue[15].clone()),
+            queue,
+            queue_position: 15,
+            title: "Track 15".into(),
+            ..Default::default()
+        };
+        let (player, _) = local_player(state);
+
+        let tracks = player.tracks().await.expect("tracks");
+        let metadata = player.metadata().await.expect("player metadata");
+
+        assert_eq!(tracks.len(), 21);
+        assert_eq!(metadata.trackid(), Some(tracks[10].clone()));
+        assert!(player.has_track_list().await.expect("has track list"));
+        assert!(!player.can_edit_tracks().await.expect("can edit tracks"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn track_list_metadata_preserves_order_and_limits_artwork_to_the_current_track() {
+        let mut current = queue_item("run:1", "One");
+        current.artist = "Artist".into();
+        current.album = "Album".into();
+        current.duration_ms = 42_000;
+        current.track_number = 3;
+        let other = queue_item("run:2", "");
+        let state = MprisState {
+            current_item: Some(current.clone()),
+            queue: vec![current, other],
+            queue_position: 0,
+            art_path: Some(PathBuf::from("/tmp/current.jpg")),
+            ..Default::default()
+        };
+        let (player, _) = local_player(state);
+        let tracks = player.tracks().await.expect("tracks");
+        let unknown = TrackId::try_from("/dev/miguelrincon/Slipmat/tracklist/unknown".to_owned())
+            .expect("valid track id");
+
+        let metadata = player
+            .get_tracks_metadata(vec![tracks[1].clone(), unknown, tracks[0].clone()])
+            .await
+            .expect("metadata");
+
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(metadata[0].trackid(), Some(tracks[1].clone()));
+        assert_eq!(metadata[0].title(), Some(""));
+        assert!(metadata[0].art_url().is_none());
+        assert_eq!(metadata[1].trackid(), Some(tracks[0].clone()));
+        assert_eq!(metadata[1].title(), Some("One"));
+        assert_eq!(metadata[1].artist(), Some(vec!["Artist".into()]));
+        assert_eq!(metadata[1].album(), Some("Album"));
+        assert_eq!(metadata[1].length(), Some(Time::from_millis(42_000)));
+        assert_eq!(metadata[1].track_number(), Some(3));
+        assert_eq!(
+            metadata[1].art_url(),
+            Some("file:///tmp/current.jpg".into())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn track_list_edits_are_not_supported() {
+        let (player, commands) = local_player(MprisState::default());
+
+        assert!(matches!(
+            player
+                .add_track("file:///tmp/song.mp3".into(), TrackId::NO_TRACK, false)
+                .await,
+            Err(fdo::Error::NotSupported(_))
+        ));
+        assert!(matches!(
+            player.remove_track(TrackId::NO_TRACK).await,
+            Err(fdo::Error::NotSupported(_))
+        ));
+        assert!(commands.borrow().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn go_to_routes_exposed_occurrences_to_their_full_queue_indices() {
+        let queue: Vec<_> = (0..500)
+            .map(|index| queue_item(&format!("run:{index}"), &format!("Track {index}")))
+            .collect();
+        let state = MprisState {
+            current_item: Some(queue[250].clone()),
+            queue,
+            queue_position: 250,
+            ..Default::default()
+        };
+        let (player, commands) = local_player(state);
+        let tracks = player.tracks().await.expect("tracks");
+
+        player.go_to(tracks[0].clone()).await.expect("first");
+        player.go_to(tracks[20].clone()).await.expect("last");
+
+        assert_eq!(
+            *commands.borrow(),
+            [
+                MprisCommand::GoTo { index: 240 },
+                MprisCommand::GoTo { index: 260 },
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn go_to_distinguishes_duplicates_and_ignores_stale_ids() {
+        let queue = vec![queue_item("run:1", "Same"), queue_item("run:2", "Same")];
+        let state = MprisState {
+            current_item: Some(queue[0].clone()),
+            queue: queue.clone(),
+            ..Default::default()
+        };
+        let (player, commands) = local_player(state);
+        let tracks = player.tracks().await.expect("tracks");
+
+        player.go_to(tracks[1].clone()).await.expect("duplicate");
+        player.update_state(MprisState {
+            current_item: Some(queue[1].clone()),
+            queue: vec![queue[1].clone()],
+            ..Default::default()
+        });
+        player.go_to(tracks[0].clone()).await.expect("stale");
+        player.go_to(TrackId::NO_TRACK).await.expect("no track");
+
+        assert_eq!(*commands.borrow(), [MprisCommand::GoTo { index: 1 }]);
+    }
+
+    #[test]
+    fn structural_notification_plan_covers_insert_remove_move_and_window_slide() {
+        let short = vec![
+            queue_item("run:1", "One"),
+            queue_item("run:2", "Two"),
+            queue_item("run:3", "Three"),
+        ];
+
+        let mut inserted = short.clone();
+        inserted.insert(1, queue_item("run:new", "New"));
+        assert_structural_notifications(queue_state(short.clone(), 0), queue_state(inserted, 0));
+
+        assert_structural_notifications(
+            queue_state(short.clone(), 0),
+            queue_state(short[1..].to_vec(), 0),
+        );
+
+        let mut moved = short.clone();
+        moved.swap(0, 2);
+        assert_structural_notifications(queue_state(short, 0), queue_state(moved, 2));
+
+        let long: Vec<_> = (0..40)
+            .map(|index| queue_item(&format!("run:{index}"), &format!("Track {index}")))
+            .collect();
+        assert_structural_notifications(queue_state(long.clone(), 10), queue_state(long, 11));
+    }
+
+    #[test]
+    fn metadata_notification_plan_names_only_the_changed_retained_occurrence() {
+        let queue = vec![queue_item("run:1", "One"), queue_item("run:2", "Two")];
+        let (player, _) = local_player(queue_state(queue.clone(), 0));
+        let changed_id = player.track_list.borrow().tracks()[1].clone();
+        let mut changed = queue;
+        changed[1].title = "Two (Remastered)".into();
+
+        let (_, notifications) = player.update_state(queue_state(changed, 0));
+
+        let [TrackListNotification::MetadataChanged { track_id, metadata }] =
+            notifications.as_slice()
+        else {
+            panic!("expected one metadata notification, got {notifications:?}");
+        };
+        assert_eq!(track_id, &changed_id);
+        assert_eq!(metadata.trackid(), Some(changed_id));
+        assert_eq!(metadata.title(), Some("Two (Remastered)"));
+    }
+
+    #[test]
+    fn cached_artwork_refreshes_only_the_current_occurrence_metadata() {
+        let queue = vec![queue_item("run:1", "One"), queue_item("run:2", "Two")];
+        let (player, _) = local_player(queue_state(queue, 0));
+        let tracks = player.track_list.borrow().tracks();
+        let mut with_art = player.state.borrow().clone();
+        with_art.art_path = Some(PathBuf::from("/tmp/current.jpg"));
+
+        let (_, notifications) = player.update_state(with_art);
+
+        let [TrackListNotification::MetadataChanged { track_id, metadata }] =
+            notifications.as_slice()
+        else {
+            panic!("expected one artwork notification, got {notifications:?}");
+        };
+        assert_eq!(track_id, &tracks[0]);
+        assert_eq!(metadata.art_url(), Some("file:///tmp/current.jpg".into()));
+    }
+
+    #[test]
+    fn an_uncached_non_current_artwork_template_change_emits_no_metadata() {
+        let queue = vec![queue_item("run:1", "One"), queue_item("run:2", "Two")];
+        let (player, _) = local_player(queue_state(queue.clone(), 0));
+        let mut changed = queue;
+        changed[1].artwork_template = Some("https://example.test/{w}x{h}.jpg".into());
+
+        assert!(player.update_state(queue_state(changed, 0)).1.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn complete_emission_batches_are_drained_in_fifo_order() {
+        let pending = Rc::new(RefCell::new(std::collections::VecDeque::from([
+            UpdateBatch {
+                player_properties: vec![("first", Property::Volume(0.1))],
+                track_list_notifications: Vec::new(),
+            },
+        ])));
+        let emitting = Rc::new(std::cell::Cell::new(true));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let recorded = seen.clone();
+        let queue = pending.clone();
+
+        drain_updates(pending, emitting.clone(), move |batch| {
+            let seen = recorded.clone();
+            let queue = queue.clone();
+            async move {
+                let name = batch.player_properties[0].0;
+                seen.borrow_mut().push(format!("{name}:start"));
+                if name == "first" {
+                    queue.borrow_mut().push_back(UpdateBatch {
+                        player_properties: vec![("second", Property::Volume(0.2))],
+                        track_list_notifications: Vec::new(),
+                    });
+                }
+                tokio::task::yield_now().await;
+                seen.borrow_mut().push(format!("{name}:end"));
+            }
+        })
+        .await;
+
+        assert_eq!(
+            *seen.borrow(),
+            ["first:start", "first:end", "second:start", "second:end"]
+        );
+        assert!(!emitting.get());
+    }
+
+    #[test]
+    fn position_current_and_unrelated_player_changes_need_no_track_list_notification() {
+        let queue = vec![queue_item("run:1", "One"), queue_item("run:2", "Two")];
+        let initial = queue_state(queue.clone(), 0);
+        let (player, _) = local_player(initial.clone());
+
+        let mut position = initial.clone();
+        position.position_ms = 42_000;
+        assert!(player.update_state(position).1.is_empty());
+
+        let mut unrelated = initial.clone();
+        unrelated.volume = 0.5;
+        unrelated.shuffle = true;
+        assert!(player.update_state(unrelated).1.is_empty());
+
+        assert!(player.update_state(queue_state(queue, 1)).1.is_empty());
     }
 }

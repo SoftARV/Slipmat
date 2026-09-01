@@ -503,6 +503,7 @@ mod tests {
     /// A MusicKit queue item, as the mirror holds it.
     fn item(catalog: &str) -> Item {
         Item {
+            occurrence_id: String::new(),
             id: None,
             catalog_id: Some(catalog.into()),
             title: catalog.into(),
