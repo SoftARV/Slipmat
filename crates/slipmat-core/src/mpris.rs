@@ -73,6 +73,9 @@ pub enum MprisCommand {
     SetShuffle(bool),
     SetRepeat(RepeatMode),
     SetVolume(f64),
+    GoTo {
+        index: usize,
+    },
     /// Ask for the window back — the counterpart to a close that only hid it.
     Raise,
     Quit,
@@ -170,30 +173,19 @@ impl MprisState {
 
     /// Only the fields that ride in the `Metadata` dict. Used to decide whether
     /// a `PropertiesChanged` is warranted at all.
-    fn metadata_fields(
-        &self,
-    ) -> (
-        &Option<String>,
-        &str,
-        &str,
-        &str,
-        u32,
-        &Option<PathBuf>,
-        u64,
-        Option<&str>,
-    ) {
-        (
-            &self.track_id,
-            &self.title,
-            &self.artist,
-            &self.album,
-            self.track_number,
-            &self.art_path,
-            self.length_ms,
-            self.current_item
-                .as_ref()
-                .map(|item| item.occurrence_id.as_str()),
-        )
+    fn metadata_changed_from(&self, previous: &Self) -> bool {
+        self.track_id != previous.track_id
+            || self.title != previous.title
+            || self.artist != previous.artist
+            || self.album != previous.album
+            || self.track_number != previous.track_number
+            || self.art_path != previous.art_path
+            || self.length_ms != previous.length_ms
+            || self.current_item.as_ref().map(|item| &item.occurrence_id)
+                != previous
+                    .current_item
+                    .as_ref()
+                    .map(|item| &item.occurrence_id)
     }
 
     fn metadata(&self, projected_track_id: Option<TrackId>) -> Metadata {
@@ -503,7 +495,10 @@ impl LocalTrackListInterface for SlipmatPlayer {
         Err(fdo::Error::NotSupported("TrackList is read-only".into()))
     }
 
-    async fn go_to(&self, _track_id: TrackId) -> fdo::Result<()> {
+    async fn go_to(&self, track_id: TrackId) -> fdo::Result<()> {
+        if let Some(index) = self.track_list.borrow().index(&track_id) {
+            self.send(MprisCommand::GoTo { index });
+        }
         Ok(())
     }
 
@@ -522,7 +517,7 @@ fn changed_player_properties(
     current_track: Option<TrackId>,
 ) -> Vec<(&'static str, Property)> {
     let mut changed = Vec::new();
-    if previous.is_none_or(|prev| state.metadata_fields() != prev.metadata_fields()) {
+    if previous.is_none_or(|prev| state.metadata_changed_from(prev)) {
         changed.push((
             "metadata",
             Property::Metadata(state.metadata(current_track)),
@@ -715,7 +710,7 @@ mod tests {
             position_ms: 90_000,
             ..a.clone()
         };
-        assert_eq!(a.metadata_fields(), b.metadata_fields());
+        assert!(!b.metadata_changed_from(&a));
         assert!(changed_player_properties(Some(&a), &b, None).is_empty());
     }
 
@@ -795,7 +790,7 @@ mod tests {
             repeat: RepeatMode::One,
             ..off.clone()
         };
-        assert_eq!(off.metadata_fields(), on.metadata_fields());
+        assert!(!on.metadata_changed_from(&off));
         assert_ne!(off.loop_status(), on.loop_status());
     }
 
@@ -1053,5 +1048,54 @@ mod tests {
             Err(fdo::Error::NotSupported(_))
         ));
         assert!(commands.borrow().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn go_to_routes_exposed_occurrences_to_their_full_queue_indices() {
+        let queue: Vec<_> = (0..500)
+            .map(|index| queue_item(&format!("run:{index}"), &format!("Track {index}")))
+            .collect();
+        let state = MprisState {
+            current_item: Some(queue[250].clone()),
+            queue,
+            queue_position: 250,
+            ..Default::default()
+        };
+        let (player, commands) = local_player(state);
+        let tracks = player.tracks().await.expect("tracks");
+
+        player.go_to(tracks[0].clone()).await.expect("first");
+        player.go_to(tracks[20].clone()).await.expect("last");
+
+        assert_eq!(
+            *commands.borrow(),
+            [
+                MprisCommand::GoTo { index: 240 },
+                MprisCommand::GoTo { index: 260 },
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn go_to_distinguishes_duplicates_and_ignores_stale_ids() {
+        let queue = vec![queue_item("run:1", "Same"), queue_item("run:2", "Same")];
+        let state = MprisState {
+            current_item: Some(queue[0].clone()),
+            queue: queue.clone(),
+            ..Default::default()
+        };
+        let (player, commands) = local_player(state);
+        let tracks = player.tracks().await.expect("tracks");
+
+        player.go_to(tracks[1].clone()).await.expect("duplicate");
+        player.update_state(MprisState {
+            current_item: Some(queue[1].clone()),
+            queue: vec![queue[1].clone()],
+            ..Default::default()
+        });
+        player.go_to(tracks[0].clone()).await.expect("stale");
+        player.go_to(TrackId::NO_TRACK).await.expect("no track");
+
+        assert_eq!(*commands.borrow(), [MprisCommand::GoTo { index: 1 }]);
     }
 }

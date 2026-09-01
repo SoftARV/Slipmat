@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use slipmat_core::ipc::Transport;
 use slipmat_core::mpris::{Capabilities, Mpris, MprisCommand, MprisState};
+use slipmat_core::player::protocol::Command;
 
 use crate::serve::Daemon;
 use crate::state::Model;
@@ -31,6 +32,19 @@ pub fn start(daemon: &Rc<Daemon>) -> Mpris {
 }
 
 fn on_command(daemon: &Rc<Daemon>, cmd: MprisCommand) {
+    if let MprisCommand::GoTo { index } = cmd {
+        let planned = go_to(&daemon.model.borrow(), index);
+        daemon.resume_at.set(None);
+        *daemon.restart_at.borrow_mut() =
+            planned.as_ref().and_then(|(_, target, _)| target.clone());
+        if let Some((command, _, seek_now)) = planned {
+            daemon.send(command);
+            if seek_now {
+                crate::serve::route_transport(daemon, Transport::Seek { position_ms: 0 });
+            }
+        }
+        return;
+    }
     if let Some(transport) = mpris_transport(cmd) {
         crate::serve::route_transport(daemon, transport);
         return;
@@ -58,8 +72,21 @@ fn mpris_transport(cmd: MprisCommand) -> Option<Transport> {
         MprisCommand::SetShuffle(shuffle) => Transport::SetShuffle { shuffle },
         MprisCommand::SetRepeat(mode) => Transport::SetRepeat { mode },
         MprisCommand::SetVolume(volume) => Transport::SetVolume { volume },
-        MprisCommand::Raise | MprisCommand::Quit => return None,
+        MprisCommand::Raise | MprisCommand::Quit | MprisCommand::GoTo { .. } => return None,
     })
+}
+
+fn go_to(model: &Model, index: usize) -> Option<(Command, Option<String>, bool)> {
+    let target = model.player.queue.get(index)?;
+    let is_current = !target.occurrence_id.is_empty()
+        && model
+            .player
+            .now_playing
+            .as_ref()
+            .is_some_and(|current| current.occurrence_id == target.occurrence_id);
+    let restart_at =
+        (!is_current && !target.occurrence_id.is_empty()).then(|| target.occurrence_id.clone());
+    Some((Command::ChangeToIndex { index }, restart_at, is_current))
 }
 
 /// What the bus should be showing, from the daemon's mirror.
@@ -135,5 +162,43 @@ mod tests {
                 .map(|item| item.occurrence_id.as_str()),
             Some("run:2")
         );
+    }
+
+    #[test]
+    fn mpris_go_to_maps_to_change_to_index_and_arms_the_selected_occurrence() {
+        let mut model = Model::new();
+        model.player.queue = vec![
+            Item {
+                occurrence_id: "run:1".into(),
+                ..Default::default()
+            },
+            Item {
+                occurrence_id: "run:2".into(),
+                ..Default::default()
+            },
+        ];
+
+        let (command, restart_at, seek_now) = go_to(&model, 1).expect("valid queue index");
+
+        assert!(matches!(command, Command::ChangeToIndex { index: 1 }));
+        assert_eq!(restart_at.as_deref(), Some("run:2"));
+        assert!(!seek_now);
+    }
+
+    #[test]
+    fn mpris_go_to_restarts_the_already_current_occurrence_without_waiting_for_an_event() {
+        let current = Item {
+            occurrence_id: "run:1".into(),
+            ..Default::default()
+        };
+        let mut model = Model::new();
+        model.player.queue = vec![current.clone()];
+        model.player.now_playing = Some(current);
+
+        let (command, restart_at, seek_now) = go_to(&model, 0).expect("valid queue index");
+
+        assert!(matches!(command, Command::ChangeToIndex { index: 0 }));
+        assert!(restart_at.is_none());
+        assert!(seek_now);
     }
 }

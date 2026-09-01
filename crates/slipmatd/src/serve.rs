@@ -69,6 +69,8 @@ pub struct Daemon {
     pub healed: std::cell::Cell<bool>,
     /// A position to restore once the reloaded track is current.
     pub resume_at: std::cell::Cell<Option<u64>>,
+    /// An occurrence selected through MPRIS, restarted when that exact item arrives.
+    pub restart_at: RefCell<Option<String>>,
     /// A finished command whose ending state is worth judging, once the mirror
     /// has caught up with it.
     pub after_apply: std::cell::Cell<Option<String>>,
@@ -172,6 +174,7 @@ pub async fn run() -> Result<()> {
         pending_start: RefCell::new(None),
         healed: std::cell::Cell::new(false),
         resume_at: std::cell::Cell::new(None),
+        restart_at: RefCell::new(None),
         after_apply: std::cell::Cell::new(None),
         mpris: RefCell::new(None),
         refreshing: std::cell::Cell::new(false),
@@ -342,6 +345,7 @@ pub async fn run() -> Result<()> {
         // seconds, forever. The queue and position are untouched; only the
         // claim to be playing goes.
         daemon.model.borrow_mut().player.state = PlaybackState::None;
+        daemon.restart_at.borrow_mut().take();
         daemon.publish_snapshot();
 
         // Written from the live mirror, not from what was on disk: a crash
@@ -583,6 +587,9 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
     // what `nowPlayingItemDidChange` means.
     if matches!(event, PlayerEvent::NowPlaying { .. }) {
         heal::resume_position(daemon);
+        if let Some(command) = restart_selected_occurrence(daemon) {
+            daemon.send(command);
+        }
         fetch_artwork(daemon);
     }
     if let Some(cmd) = daemon.after_apply.take() {
@@ -675,6 +682,7 @@ fn answer(
         Request::JumpTo { index } => {
             // Nothing pending: there is no new queue to verify against.
             *daemon.pending_start.borrow_mut() = None;
+            daemon.restart_at.borrow_mut().take();
             daemon.send(Command::ChangeToIndex { index });
             // Clicking a row is a request to *play* it, and
             // `changeToMediaAtIndex` only moves the cursor.
@@ -816,6 +824,12 @@ fn answer(
 }
 
 pub(crate) fn route_transport(daemon: &Rc<Daemon>, transport: Transport) {
+    if matches!(
+        transport,
+        Transport::Next | Transport::Previous | Transport::Seek { .. }
+    ) {
+        daemon.restart_at.borrow_mut().take();
+    }
     // A restored queue has no current item, so MusicKit's `play` does nothing
     // until the current queue entry has been opened.
     if matches!(transport, Transport::Play | Transport::PlayPause) && needs_opening(daemon) {
@@ -1219,6 +1233,31 @@ fn event_name(event: &PlayerEvent) -> &'static str {
     }
 }
 
+fn restart_selected_occurrence(daemon: &Daemon) -> Option<Command> {
+    let target = daemon.restart_at.borrow().clone()?;
+    let model = daemon.model.borrow();
+    let arrived = model
+        .player
+        .now_playing
+        .as_ref()
+        .is_some_and(|item| item.occurrence_id == target);
+    let still_queued = model
+        .player
+        .queue
+        .iter()
+        .any(|item| item.occurrence_id == target);
+    drop(model);
+
+    if arrived {
+        daemon.restart_at.borrow_mut().take();
+        return Some(Command::Seek { position_ms: 0 });
+    }
+    if !still_queued {
+        daemon.restart_at.borrow_mut().take();
+    }
+    None
+}
+
 /// What the sidecar is told, if anything.
 ///
 /// **Volume is `None` on purpose.** It is applied to the audio stream instead
@@ -1255,6 +1294,7 @@ mod tests {
             pending_start: RefCell::new(None),
             healed: std::cell::Cell::new(false),
             resume_at: std::cell::Cell::new(None),
+            restart_at: RefCell::new(None),
             after_apply: std::cell::Cell::new(None),
             mpris: RefCell::new(None),
             refreshing: std::cell::Cell::new(false),
@@ -1307,5 +1347,31 @@ mod tests {
                 "{verb:?} mapped to {sent:?}"
             );
         }
+    }
+
+    #[test]
+    fn selected_occurrence_is_restarted_only_after_it_arrives() {
+        let daemon = daemon();
+        let first = slipmat_core::player::protocol::Item {
+            occurrence_id: "run:1".into(),
+            ..Default::default()
+        };
+        let second = slipmat_core::player::protocol::Item {
+            occurrence_id: "run:2".into(),
+            ..Default::default()
+        };
+        daemon.model.borrow_mut().player.queue = vec![first.clone(), second.clone()];
+        daemon.restart_at.replace(Some("run:2".into()));
+        daemon.model.borrow_mut().player.now_playing = Some(first);
+
+        assert!(restart_selected_occurrence(&daemon).is_none());
+        assert_eq!(daemon.restart_at.borrow().as_deref(), Some("run:2"));
+
+        daemon.model.borrow_mut().player.now_playing = Some(second);
+        assert!(matches!(
+            restart_selected_occurrence(&daemon),
+            Some(Command::Seek { position_ms: 0 })
+        ));
+        assert!(daemon.restart_at.borrow().is_none());
     }
 }
