@@ -174,7 +174,6 @@ fn same_metadata(a: &Item, b: &Item) -> bool {
         && a.album == b.album
         && a.duration_ms == b.duration_ms
         && a.track_number == b.track_number
-        && a.artwork_template == b.artwork_template
 }
 
 fn context_window(queue_len: usize, anchor: usize) -> Range<usize> {

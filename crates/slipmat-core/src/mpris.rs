@@ -37,7 +37,8 @@
 //! applied state, so a 500ms tick only replaces the shared snapshot and sends
 //! no bus traffic.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -45,7 +46,8 @@ use std::rc::Rc;
 
 use mpris_server::{
     LocalPlayerInterface, LocalRootInterface, LocalServer, LocalTrackListInterface, LoopStatus,
-    Metadata, PlaybackRate, PlaybackStatus, Property, Signal, Time, TrackId, Uri, Volume,
+    Metadata, PlaybackRate, PlaybackStatus, Property, Signal, Time, TrackId, TrackListProperty,
+    TrackListSignal, Uri, Volume,
     zbus::{Result as ZbusResult, fdo},
 };
 
@@ -53,7 +55,7 @@ use crate::player::protocol::{Item, RepeatMode};
 
 pub(crate) mod track_list;
 
-use track_list::Projection;
+use track_list::{Change, Projection};
 
 /// What a controller on the bus asked for.
 ///
@@ -221,6 +223,24 @@ struct SlipmatPlayer {
     can: Capabilities,
 }
 
+#[derive(Debug, PartialEq)]
+enum TrackListNotification {
+    Replaced {
+        tracks: Vec<TrackId>,
+        current_track: TrackId,
+    },
+    TracksInvalidated,
+    MetadataChanged {
+        track_id: TrackId,
+        metadata: Metadata,
+    },
+}
+
+struct UpdateBatch {
+    player_properties: Vec<(&'static str, Property)>,
+    track_list_notifications: Vec<TrackListNotification>,
+}
+
 impl SlipmatPlayer {
     fn new(state: MprisState, sink: Sink, can: Capabilities) -> Self {
         let mut track_list = Projection::default();
@@ -237,23 +257,94 @@ impl SlipmatPlayer {
         }
     }
 
-    fn update_state(&self, state: MprisState) -> Option<TrackId> {
-        let current = {
+    fn update_state(&self, state: MprisState) -> (Option<TrackId>, Vec<TrackListNotification>) {
+        let previous_current = self.track_list.borrow().current();
+        let previous_art = self.state.borrow().art_path.clone();
+        let (current, notifications) = {
             let mut track_list = self.track_list.borrow_mut();
-            track_list.reconcile(
+            let change = track_list.reconcile(
                 &state.queue,
                 state.queue_position,
                 state.current_item.as_ref(),
             );
-            track_list.current()
+            let current = track_list.current();
+            let notifications = track_list_notifications(
+                &track_list,
+                &change,
+                previous_current,
+                previous_art.as_ref(),
+                &state,
+            );
+            (current, notifications)
         };
         *self.state.borrow_mut() = state;
-        current
+        (current, notifications)
     }
 
     fn send(&self, command: MprisCommand) {
         (self.sink)(command);
     }
+}
+
+fn track_list_notifications(
+    track_list: &Projection,
+    change: &Change,
+    previous_current: Option<TrackId>,
+    previous_art: Option<&PathBuf>,
+    state: &MprisState,
+) -> Vec<TrackListNotification> {
+    let current = track_list.current();
+    if change.window {
+        return vec![
+            TrackListNotification::Replaced {
+                tracks: track_list.tracks(),
+                current_track: current.unwrap_or(TrackId::NO_TRACK),
+            },
+            TrackListNotification::TracksInvalidated,
+        ];
+    }
+
+    let mut metadata_ids = change.metadata.clone();
+    if previous_current != current {
+        if previous_art.is_some()
+            && let Some(track_id) = previous_current
+        {
+            metadata_ids.push(track_id);
+        }
+        if state.art_path.is_some()
+            && let Some(track_id) = current.clone()
+        {
+            metadata_ids.push(track_id);
+        }
+    } else if previous_art != state.art_path.as_ref()
+        && let Some(track_id) = current.clone()
+    {
+        metadata_ids.push(track_id);
+    }
+
+    let mut notifications = Vec::new();
+    for track_id in metadata_ids {
+        if notifications.iter().any(|notification| {
+            matches!(
+                notification,
+                TrackListNotification::MetadataChanged { track_id: seen, .. }
+                    if seen == &track_id
+            )
+        }) {
+            continue;
+        }
+        let Some(item) = track_list.item(&track_id) else {
+            continue;
+        };
+        let art_path = (current.as_ref() == Some(&track_id))
+            .then_some(state.art_path.as_deref())
+            .flatten();
+        notifications.push(TrackListNotification::MetadataChanged {
+            track_id: track_id.clone(),
+            metadata: item_metadata(item, track_id, art_path),
+        });
+    }
+    notifications
 }
 
 impl LocalRootInterface for SlipmatPlayer {
@@ -552,6 +643,8 @@ fn changed_player_properties(
 pub struct Mpris {
     player: Rc<RefCell<Option<Rc<LocalServer<SlipmatPlayer>>>>>,
     last: Rc<RefCell<Option<MprisState>>>,
+    pending_updates: Rc<RefCell<VecDeque<UpdateBatch>>>,
+    emitting: Rc<Cell<bool>>,
     spawn: Spawn,
 }
 
@@ -574,6 +667,8 @@ impl Mpris {
         let this = Self {
             player: Rc::new(RefCell::new(None)),
             last: Rc::new(RefCell::new(None)),
+            pending_updates: Rc::new(RefCell::new(VecDeque::new())),
+            emitting: Rc::new(Cell::new(false)),
             spawn: spawn.clone(),
         };
 
@@ -613,9 +708,32 @@ impl Mpris {
 
         let previous = self.last.borrow().clone();
         *self.last.borrow_mut() = Some(state.clone());
-        let current_track = player.imp().update_state(state.clone());
-        let changed = changed_player_properties(previous.as_ref(), &state, current_track);
-        (self.spawn)(Box::pin(emit_player_properties(player, changed)));
+        let (current_track, track_list_notifications) = player.imp().update_state(state.clone());
+        let player_properties = changed_player_properties(previous.as_ref(), &state, current_track);
+        self.pending_updates.borrow_mut().push_back(UpdateBatch {
+            player_properties,
+            track_list_notifications,
+        });
+        if self.emitting.replace(true) {
+            return;
+        }
+
+        let pending = self.pending_updates.clone();
+        let emitting = self.emitting.clone();
+        (self.spawn)(Box::pin(async move {
+            drain_updates(pending, emitting, move |batch| {
+                let player = player.clone();
+                async move {
+                    emit_updates(
+                        player,
+                        batch.player_properties,
+                        batch.track_list_notifications,
+                    )
+                    .await;
+                }
+            })
+            .await;
+        }));
     }
 
     /// Announce a discontinuous jump. Required by the spec — without it,
@@ -643,6 +761,59 @@ async fn emit_player_properties(
 ) {
     for (name, property) in changed {
         log_err(name, player.properties_changed([property]).await);
+    }
+}
+
+async fn drain_updates<F, Fut>(
+    pending: Rc<RefCell<VecDeque<UpdateBatch>>>,
+    emitting: Rc<Cell<bool>>,
+    mut emit: F,
+) where
+    F: FnMut(UpdateBatch) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    loop {
+        let Some(batch) = pending.borrow_mut().pop_front() else {
+            emitting.set(false);
+            return;
+        };
+        emit(batch).await;
+    }
+}
+
+async fn emit_updates(
+    player: Rc<LocalServer<SlipmatPlayer>>,
+    changed: Vec<(&'static str, Property)>,
+    track_list_notifications: Vec<TrackListNotification>,
+) {
+    emit_player_properties(player.clone(), changed).await;
+    for notification in track_list_notifications {
+        match notification {
+            TrackListNotification::Replaced {
+                tracks,
+                current_track,
+            } => log_err(
+                "track list replaced",
+                player
+                    .track_list_emit(TrackListSignal::TrackListReplaced {
+                        tracks,
+                        current_track,
+                    })
+                    .await,
+            ),
+            TrackListNotification::TracksInvalidated => log_err(
+                "tracks invalidation",
+                player
+                    .track_list_properties_changed([TrackListProperty::Tracks])
+                    .await,
+            ),
+            TrackListNotification::MetadataChanged { track_id, metadata } => log_err(
+                "track metadata changed",
+                player
+                    .track_list_emit(TrackListSignal::TrackMetadataChanged { track_id, metadata })
+                    .await,
+            ),
+        }
     }
 }
 
@@ -675,6 +846,38 @@ mod tests {
             title: title.into(),
             ..Default::default()
         }
+    }
+
+    fn queue_state(queue: Vec<Item>, current: usize) -> MprisState {
+        MprisState {
+            current_item: queue.get(current).cloned(),
+            queue,
+            queue_position: current,
+            ..Default::default()
+        }
+    }
+
+    fn assert_structural_notifications(initial: MprisState, next: MprisState) {
+        let (player, _) = local_player(initial);
+
+        let (_, notifications) = player.update_state(next);
+        let tracks = player.track_list.borrow().tracks();
+        let current_track = player
+            .track_list
+            .borrow()
+            .current()
+            .unwrap_or(TrackId::NO_TRACK);
+
+        assert_eq!(
+            notifications,
+            [
+                TrackListNotification::Replaced {
+                    tracks,
+                    current_track,
+                },
+                TrackListNotification::TracksInvalidated,
+            ]
+        );
     }
 
     #[test]
@@ -1097,5 +1300,137 @@ mod tests {
         player.go_to(TrackId::NO_TRACK).await.expect("no track");
 
         assert_eq!(*commands.borrow(), [MprisCommand::GoTo { index: 1 }]);
+    }
+
+    #[test]
+    fn structural_notification_plan_covers_insert_remove_move_and_window_slide() {
+        let short = vec![
+            queue_item("run:1", "One"),
+            queue_item("run:2", "Two"),
+            queue_item("run:3", "Three"),
+        ];
+
+        let mut inserted = short.clone();
+        inserted.insert(1, queue_item("run:new", "New"));
+        assert_structural_notifications(queue_state(short.clone(), 0), queue_state(inserted, 0));
+
+        assert_structural_notifications(
+            queue_state(short.clone(), 0),
+            queue_state(short[1..].to_vec(), 0),
+        );
+
+        let mut moved = short.clone();
+        moved.swap(0, 2);
+        assert_structural_notifications(queue_state(short, 0), queue_state(moved, 2));
+
+        let long: Vec<_> = (0..40)
+            .map(|index| queue_item(&format!("run:{index}"), &format!("Track {index}")))
+            .collect();
+        assert_structural_notifications(queue_state(long.clone(), 10), queue_state(long, 11));
+    }
+
+    #[test]
+    fn metadata_notification_plan_names_only_the_changed_retained_occurrence() {
+        let queue = vec![queue_item("run:1", "One"), queue_item("run:2", "Two")];
+        let (player, _) = local_player(queue_state(queue.clone(), 0));
+        let changed_id = player.track_list.borrow().tracks()[1].clone();
+        let mut changed = queue;
+        changed[1].title = "Two (Remastered)".into();
+
+        let (_, notifications) = player.update_state(queue_state(changed, 0));
+
+        let [TrackListNotification::MetadataChanged { track_id, metadata }] =
+            notifications.as_slice()
+        else {
+            panic!("expected one metadata notification, got {notifications:?}");
+        };
+        assert_eq!(track_id, &changed_id);
+        assert_eq!(metadata.trackid(), Some(changed_id));
+        assert_eq!(metadata.title(), Some("Two (Remastered)"));
+    }
+
+    #[test]
+    fn cached_artwork_refreshes_only_the_current_occurrence_metadata() {
+        let queue = vec![queue_item("run:1", "One"), queue_item("run:2", "Two")];
+        let (player, _) = local_player(queue_state(queue, 0));
+        let tracks = player.track_list.borrow().tracks();
+        let mut with_art = player.state.borrow().clone();
+        with_art.art_path = Some(PathBuf::from("/tmp/current.jpg"));
+
+        let (_, notifications) = player.update_state(with_art);
+
+        let [TrackListNotification::MetadataChanged { track_id, metadata }] =
+            notifications.as_slice()
+        else {
+            panic!("expected one artwork notification, got {notifications:?}");
+        };
+        assert_eq!(track_id, &tracks[0]);
+        assert_eq!(metadata.art_url(), Some("file:///tmp/current.jpg".into()));
+    }
+
+    #[test]
+    fn an_uncached_non_current_artwork_template_change_emits_no_metadata() {
+        let queue = vec![queue_item("run:1", "One"), queue_item("run:2", "Two")];
+        let (player, _) = local_player(queue_state(queue.clone(), 0));
+        let mut changed = queue;
+        changed[1].artwork_template = Some("https://example.test/{w}x{h}.jpg".into());
+
+        assert!(player.update_state(queue_state(changed, 0)).1.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn complete_emission_batches_are_drained_in_fifo_order() {
+        let pending = Rc::new(RefCell::new(std::collections::VecDeque::from([
+            UpdateBatch {
+                player_properties: vec![("first", Property::Volume(0.1))],
+                track_list_notifications: Vec::new(),
+            },
+        ])));
+        let emitting = Rc::new(std::cell::Cell::new(true));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let recorded = seen.clone();
+        let queue = pending.clone();
+
+        drain_updates(pending, emitting.clone(), move |batch| {
+            let seen = recorded.clone();
+            let queue = queue.clone();
+            async move {
+                let name = batch.player_properties[0].0;
+                seen.borrow_mut().push(format!("{name}:start"));
+                if name == "first" {
+                    queue.borrow_mut().push_back(UpdateBatch {
+                        player_properties: vec![("second", Property::Volume(0.2))],
+                        track_list_notifications: Vec::new(),
+                    });
+                }
+                tokio::task::yield_now().await;
+                seen.borrow_mut().push(format!("{name}:end"));
+            }
+        })
+        .await;
+
+        assert_eq!(
+            *seen.borrow(),
+            ["first:start", "first:end", "second:start", "second:end"]
+        );
+        assert!(!emitting.get());
+    }
+
+    #[test]
+    fn position_current_and_unrelated_player_changes_need_no_track_list_notification() {
+        let queue = vec![queue_item("run:1", "One"), queue_item("run:2", "Two")];
+        let initial = queue_state(queue.clone(), 0);
+        let (player, _) = local_player(initial.clone());
+
+        let mut position = initial.clone();
+        position.position_ms = 42_000;
+        assert!(player.update_state(position).1.is_empty());
+
+        let mut unrelated = initial.clone();
+        unrelated.volume = 0.5;
+        unrelated.shuffle = true;
+        assert!(player.update_state(unrelated).1.is_empty());
+
+        assert!(player.update_state(queue_state(queue, 1)).1.is_empty());
     }
 }
