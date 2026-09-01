@@ -58,13 +58,13 @@ The plan and the sidecar occurrence identity amendment are approved.
 
 - [x] Tasks 1 and 2 meet their acceptance criteria.
 - [x] Focused tests and `cargo check -p slipmat-core` pass.
-- [ ] The diff introduces no dependency, IPC, sidecar, GTK, or Climat change.
+- [x] The diff introduces no dependency, IPC, sidecar, GTK, or Climat change.
 - [x] Existing MPRIS behavior has a clear parity test or explicit runtime-verification item.
-- [ ] Human review authorizes TrackList exposure.
+- [x] Human review authorizes TrackList exposure.
 
 ## Task 3 — Expose the read-only TrackList surface
 
-- [ ] Status: pending
+- [x] Status: complete
 - Description: Supply queue facts from the daemon and implement the local TrackList properties and read-only methods.
 - Scope: Medium. Core interface wiring and daemon snapshot mapping.
 - Dependencies: Tasks 1 and 2; Checkpoint A.
@@ -73,19 +73,19 @@ The plan and the sidecar occurrence identity amendment are approved.
   - `crates/slipmat-core/src/mpris/track_list.rs`
   - `crates/slipmatd/src/bus.rs`
 - Acceptance criteria:
-  - [ ] `HasTrackList` is true and the TrackList interface is present on the existing MPRIS object.
-  - [ ] `Tracks` returns the projection's ordered context window.
-  - [ ] `GetTracksMetadata` preserves request order and returns metadata only for known IDs.
-  - [ ] Each returned metadata map includes `mpris:trackid` and the available title, artist, album, length, and track-number fields required by the specification.
-  - [ ] `mpris:artUrl` is included only when the current artwork is already cached locally; no TrackList call triggers an artwork or network fetch.
-  - [ ] Player metadata uses the current occurrence ID from the same projection.
-  - [ ] `CanEditTracks` is false; `AddTrack` and `RemoveTrack` return `NotSupported` without changing the queue.
-  - [ ] No GTK, Climat, daemon IPC, or sidecar protocol changes beyond the approved `occurrenceId` field are introduced.
+  - [x] `HasTrackList` is true and the TrackList interface is present on the existing MPRIS object.
+  - [x] `Tracks` returns the projection's ordered context window.
+  - [x] `GetTracksMetadata` preserves request order and returns metadata only for known IDs.
+  - [x] Each returned metadata map includes `mpris:trackid` and the available title, artist, album, length, and track-number fields required by the specification.
+  - [x] `mpris:artUrl` is included only when the current artwork is already cached locally; no TrackList call triggers an artwork or network fetch.
+  - [x] Player metadata uses the current occurrence ID from the same projection.
+  - [x] `CanEditTracks` is false; `AddTrack` and `RemoveTrack` return `NotSupported` without changing the queue.
+  - [x] No GTK, Climat, daemon IPC, or sidecar protocol changes beyond the approved `occurrenceId` field are introduced.
 - Verification:
-  - [ ] Add tests for properties, metadata ordering, unknown IDs, partial metadata, local artwork, and unsupported edits.
-  - [ ] Run `cargo test -p slipmat-core mpris`.
-  - [ ] Run `cargo test -p slipmatd`.
-  - [ ] Run `cargo check -p slipmat-core -p slipmatd`.
+  - [x] Add tests for properties, metadata ordering, unknown IDs, partial metadata, local artwork, and unsupported edits.
+  - [x] Run `cargo test -p slipmat-core mpris`.
+  - [x] Run `cargo test -p slipmatd`.
+  - [x] Run `cargo check -p slipmat-core -p slipmatd`.
 
 ## Task 4 — Route GoTo through ChangeToIndex
 
