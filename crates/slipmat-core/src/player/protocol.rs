@@ -492,6 +492,10 @@ impl Queue {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
+    /// Process-local identity for this queue occurrence. Equal catalog items
+    /// still have different values; empty means an older sidecar omitted it.
+    #[serde(default)]
+    pub occurrence_id: String,
     pub id: Option<String>,
     pub catalog_id: Option<String>,
     #[serde(default)]
@@ -543,6 +547,36 @@ mod tests {
         // The position rides in the descriptor. A seek afterwards cannot work:
         // there is no current item to seek within until something plays.
         assert!(json.contains(r#""startTimeMs":42000"#), "{json}");
+    }
+
+    #[test]
+    fn occurrence_ids_distinguish_duplicates_and_link_the_current_item() {
+        let line = r#"{
+            "event":"nowPlaying",
+            "item":{"occurrenceId":"run-a:7","id":"song-a"},
+            "queue":{"reason":"position","position":0,"items":[
+                {"occurrenceId":"run-a:7","id":"song-a"},
+                {"occurrenceId":"run-a:8","id":"song-a"}
+            ]}
+        }"#;
+
+        match serde_json::from_str::<Event>(line).expect("must parse") {
+            Event::NowPlaying {
+                item: Some(item),
+                queue,
+            } => {
+                assert_eq!(item.occurrence_id, "run-a:7");
+                assert_eq!(
+                    queue.items[0].occurrence_id.as_str(),
+                    item.occurrence_id.as_str()
+                );
+                assert_ne!(
+                    queue.items[1].occurrence_id.as_str(),
+                    item.occurrence_id.as_str()
+                );
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

@@ -12,12 +12,18 @@
 //   - Keep it small. Every line here is a line that isn't native.
 
 const { ipcRenderer } = require('electron')
+const { createOccurrenceId, createQueueIdentityProbe } = require('./queue-identity')
 
 const READY_TIMEOUT_MS = 60_000
 const READY_POLL_MS = 250
+const QUEUE_IDENTITY_PROBE = process.env.SLIPMAT_QUEUE_IDENTITY_PROBE === '1'
 
 let music = null
 let tokenTimer = null
+const occurrenceId = createOccurrenceId()
+const probeQueueIdentity = QUEUE_IDENTITY_PROBE
+  ? createQueueIdentityProbe(occurrenceId)
+  : null
 
 const emit = (event, payload) => ipcRenderer.send('slipmat:event', { event, ...payload })
 
@@ -127,6 +133,7 @@ const stateName = (n) => STATES[n] || 'unknown'
 function serializeItem(item) {
   if (!item) return null
   return {
+    occurrenceId: occurrenceId(item),
     id: pick(() => item.id, () => item.playbackId) || null,
     catalogId: pick(() => item.catalogId, () => item.container && item.container.id) || null,
     title: pick(() => item.title, () => item.attributes && item.attributes.name) || '',
@@ -160,11 +167,21 @@ function serializeItem(item) {
 // question this argument exists to answer.
 function currentQueue(reason) {
   const items = pick(() => music.queue && music.queue.items) || []
-  return {
+  const queue = {
     reason,
     position: pick(() => music.queue && music.queue.position) ?? 0,
     items: items.map(serializeItem),
   }
+  if (probeQueueIdentity) {
+    const current = pick(() => music.nowPlayingItem)
+    emit('queue-identity-probe', {
+      reason,
+      position: queue.position,
+      entries: probeQueueIdentity(items),
+      current: current ? probeQueueIdentity([current])[0] : null,
+    })
+  }
+  return queue
 }
 
 // ---------------------------------------------------------------------------
