@@ -1,178 +1,252 @@
-# MPRIS TrackList task checklist
+# MPRIS TrackList review remediation checklist
 
 Plan: [`tasks/plan.md`](plan.md)
-Specification: [`docs/specs/SPEC-mpris-tracklist.md`](../docs/specs/SPEC-mpris-tracklist.md)
+Archived feature checklist:
+[`tasks/archive/mpris-tracklist-todo.md`](archive/mpris-tracklist-todo.md)
 
-The plan and the sidecar occurrence identity amendment are approved.
+Status: awaiting human approval. Do not implement these tasks before approval.
 
-## Task 1 — Build the occurrence projection
+## Task 1: Install the complete sidecar artifact
 
-- [x] Status: complete
-- Description: Add a private, pure TrackList model that reconciles full queue snapshots into stable occurrence records and publishes a bounded context window.
-- Scope: Small-to-medium. Model and unit tests only; no D-Bus interface changes.
-- Dependencies: None.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-  - `crates/slipmat-core/src/mpris/track_list.rs` (new)
-- Acceptance criteria:
-  - [x] Every live queue occurrence has a valid opaque MPRIS object path.
-  - [x] Simultaneous duplicate items have distinct IDs.
-  - [x] Retained occurrences preserve IDs across insertion, removal, a single move, metadata refresh, and context-window slides.
-  - [x] Sidecar occurrence IDs distinguish identical duplicates without positional matching.
-  - [x] The current `nowPlayingItem` occurrence ID resolves its exact queue entry even while MusicKit's queue position is pre-advanced.
-  - [x] The published window contains at most 21 entries, prefers 10 before and 10 after, and shifts at queue edges.
-  - [x] Empty queues and missing or out-of-range current positions produce an empty or safe projection without panicking.
-  - [x] Metadata lookup and full-queue-index lookup reject unknown or stale IDs.
-  - [x] A 500-entry queue reconciles correctly while exposing no more than 21 entries.
-  - [x] Structural, window, and metadata-only changes are classified separately for later signal emission.
-- Verification:
-  - [x] Write focused tests before each behavior change.
-  - [x] Run `cargo test -p slipmat-core mpris::track_list`.
-  - [x] Run `cargo check -p slipmat-core`.
-  - [x] Review for index-derived IDs, duplicate collisions, `.unwrap()`/`.expect()`, and unnecessary public API.
+**Description:** Add `queue-identity.js` to every supported installation path
+and add an artifact check that catches missing local preload modules.
 
-## Task 2 — Migrate existing MPRIS behavior to LocalServer
+**Acceptance criteria:**
+- [ ] Makefile, Flatpak, stable AUR, and AUR-git installs contain every local module required by `preload.js`.
+- [ ] An assembled-sidecar check fails when `queue-identity.js` or another local preload dependency is absent.
+- [ ] The change does not copy tests or development-only files into release artifacts.
 
-- [x] Status: complete
-- Description: Replace the ready-made `mpris_server::Player` with a local root and Player implementation while preserving current behavior. TrackList remains disabled in this task.
-- Scope: Medium. One core boundary plus focused parity tests.
-- Dependencies: None. Schedule after Task 1 because both tasks touch `mpris.rs`.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-- Acceptance criteria:
-  - [x] Root identity, desktop entry, URI and MIME support, raise, and quit behavior match the current implementation.
-  - [x] Play, pause, play/pause, next, previous, seek, shuffle, repeat, and volume still map to the existing `MprisCommand` variants.
-  - [x] Playback status, loop status, rate bounds, shuffle, metadata, volume, position, and capability properties retain their current values.
-  - [x] `Seeked` and Player property changes are emitted with the same semantics as before.
-  - [x] Routine position updates change the returned property without emitting property-change traffic on every tick.
-  - [x] `SetPosition` validates the supplied current track ID and ignores stale IDs.
-  - [x] D-Bus startup or emission failures are logged and do not panic the process.
-  - [x] `HasTrackList` remains false until Task 3.
-- Verification:
-  - [x] Adapt or add parity tests before replacing the ready-made player.
-  - [x] Run `cargo test -p slipmat-core mpris`.
-  - [x] Run `cargo check -p slipmat-core`.
-  - [x] Review async methods for `RefCell` borrows held across awaits.
+**Verification:**
+- [ ] Run the assembled-sidecar check against each recipe's installed file list.
+- [ ] Run `python3 packaging/flatpak/check-sources.py`.
+- [ ] Run `make check`.
 
-## Checkpoint A — Projection and Player parity
+**Dependencies:** None.
 
-- [x] Tasks 1 and 2 meet their acceptance criteria.
-- [x] Focused tests and `cargo check -p slipmat-core` pass.
-- [x] The diff introduces no dependency, IPC, sidecar, GTK, or Climat change.
-- [x] Existing MPRIS behavior has a clear parity test or explicit runtime-verification item.
-- [x] Human review authorizes TrackList exposure.
+**Files likely touched:**
+- `Makefile`
+- `packaging/flatpak/dev.miguelrincon.Slipmat.yml`
+- `packaging/aur/slipmat/PKGBUILD`
+- `packaging/aur/slipmat-git/PKGBUILD`
 
-## Task 3 — Expose the read-only TrackList surface
+**Estimated scope:** Medium, 4 files.
 
-- [x] Status: complete
-- Description: Supply queue facts from the daemon and implement the local TrackList properties and read-only methods.
-- Scope: Medium. Core interface wiring and daemon snapshot mapping.
-- Dependencies: Tasks 1 and 2; Checkpoint A.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-  - `crates/slipmat-core/src/mpris/track_list.rs`
-  - `crates/slipmatd/src/bus.rs`
-- Acceptance criteria:
-  - [x] `HasTrackList` is true and the TrackList interface is present on the existing MPRIS object.
-  - [x] `Tracks` returns the projection's ordered context window.
-  - [x] `GetTracksMetadata` preserves request order and returns metadata only for known IDs.
-  - [x] Each returned metadata map includes `mpris:trackid` and the available title, artist, album, length, and track-number fields required by the specification.
-  - [x] `mpris:artUrl` is included only when the current artwork is already cached locally; no TrackList call triggers an artwork or network fetch.
-  - [x] Player metadata uses the current occurrence ID from the same projection.
-  - [x] `CanEditTracks` is false; `AddTrack` and `RemoveTrack` return `NotSupported` without changing the queue.
-  - [x] No GTK, Climat, daemon IPC, or sidecar protocol changes beyond the approved `occurrenceId` field are introduced.
-- Verification:
-  - [x] Add tests for properties, metadata ordering, unknown IDs, partial metadata, local artwork, and unsupported edits.
-  - [x] Run `cargo test -p slipmat-core mpris`.
-  - [x] Run `cargo test -p slipmatd`.
-  - [x] Run `cargo check -p slipmat-core -p slipmatd`.
+## Task 2: Run sidecar contract tests in the quality gate
 
-## Task 4 — Route GoTo through ChangeToIndex
+**Description:** Make the dependency-free queue identity tests part of the
+repository command used locally and in CI.
 
-- [x] Status: complete
-- Description: Resolve an exposed occurrence ID to its full queue index and pass that index through the existing daemon command path.
-- Scope: Small. One new internal command variant and daemon mapping.
-- Dependencies: Task 3.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-  - `crates/slipmat-core/src/mpris/track_list.rs`
-  - `crates/slipmatd/src/bus.rs`
-- Acceptance criteria:
-  - [x] `GoTo` on a known exposed occurrence emits its full queue index.
-  - [x] The daemon maps that command to `Command::ChangeToIndex { index }`.
-  - [x] Duplicate occurrences route to their individual queue positions.
-  - [x] Navigating between identical duplicates starts the selected occurrence at zero rather than retaining the previous occurrence's playback time.
-  - [x] Unknown, stale, and no-longer-exposed IDs are harmless and do not change playback.
-  - [x] The MPRIS path never sends `Command::SetQueue`.
-- Verification:
-  - [x] Add failing-first tests for valid, duplicate, duplicate-position reset, stale, and unknown IDs.
-  - [x] Run `cargo test -p slipmat-core mpris`.
-  - [x] Run `cargo test -p slipmatd`.
-  - [x] Search the changed MPRIS path for `SetQueue` and confirm no call was added.
+**Acceptance criteria:**
+- [ ] `make check` runs `node --test sidecar/queue-identity.test.js`.
+- [ ] A broken occurrence allocator fails the same CI job as Rust tests.
+- [ ] The check requires no Electron download or `npm install`.
 
-## Task 5 — Emit precise TrackList notifications
+**Verification:**
+- [ ] Run `node --test sidecar/queue-identity.test.js`.
+- [ ] Run `make check`.
+- [ ] Confirm the PR workflow invokes `make check`.
 
-- [x] Status: complete
-- Description: Translate projection changes into the minimum required TrackList signals and property invalidations.
-- Scope: Small-to-medium. Change planning and D-Bus emission tests.
-- Dependencies: Tasks 3 and 4.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-  - `crates/slipmat-core/src/mpris/track_list.rs`
-- Acceptance criteria:
-  - [x] A published sequence, ordering, or context-window change emits `TrackListReplaced` with the new list and current occurrence ID.
-  - [x] The same structural update invalidates `Tracks` without embedding a replacement value.
-  - [x] A metadata-only change for a retained exposed occurrence emits `TrackMetadataChanged` for that occurrence.
-  - [x] Position ticks and unrelated Player changes emit no TrackList notification.
-  - [x] Structural updates do not also emit redundant granular add/remove signals in version 1.
-  - [x] Bus errors are logged without panicking or stopping subsequent updates.
-- Verification:
-  - [x] Unit-test the exact notification plan for insert, remove, move, window slide, metadata refresh, position tick, and unrelated changes.
-  - [x] Run `cargo test -p slipmat-core mpris`.
-  - [x] Run `cargo check -p slipmat-core -p slipmatd`.
+**Dependencies:** None.
 
-## Checkpoint B — Automated feature behavior
+**Files likely touched:**
+- `Makefile`
+- `sidecar/queue-identity.test.js`
 
-- [x] Tasks 3–5 meet their acceptance criteria.
-- [x] All focused `slipmat-core` and `slipmatd` tests pass.
-- [x] Crate checks pass without new warnings.
-- [x] Player and TrackList metadata share one current occurrence ID.
-- [x] Notification tests cover both required events and prohibited extra traffic.
-- [x] Human review authorizes runtime verification.
+**Estimated scope:** Small, 1-2 files.
 
-## Task 6 — Runtime and repository verification
+## Checkpoint A: Shippable sidecar
 
-- [x] Status: complete
-- Description: Verify the built feature on the session bus, run the project quality gate, and record the resulting evidence.
-- Scope: Medium verification task. Documentation updates only unless a failure is captured by a regression test first.
-- Dependencies: Tasks 1–5; Checkpoint B.
-- Files likely touched:
-  - `docs/specs/SPEC-mpris-tracklist.md`
-  - `tasks/todo.md`
-- Acceptance criteria:
-  - [x] The daemon starts and owns its expected MPRIS bus name.
-  - [x] Introspection shows root, Player, and TrackList on the existing object path.
-  - [x] Runtime properties report `HasTrackList=true`, `CanEditTracks=false`, and no more than 21 ordered track IDs.
-  - [x] Runtime metadata lookup returns matching IDs and available fields for the context window.
-  - [x] Runtime `GoTo` selects the requested occurrence, including a duplicate-item case when practical.
-  - [x] Add and remove calls return `NotSupported` and leave the queue unchanged.
-  - [x] Observed structural and metadata changes emit the required signals without tick noise.
-  - [x] Gapless playback verification still passes after MPRIS navigation.
-  - [x] The full repository quality gate passes.
-  - [x] Documentation records final verified behavior and any justified deviations.
-- Verification:
-  - [x] Run `cargo build -p slipmatd` and start the daemon in a session-bus environment.
-  - [x] Use `busctl --user introspect`, `get-property`, and `call` for the TrackList contract.
-  - [x] Use `busctl --user monitor` or equivalent to inspect TrackList signals and property invalidations.
-  - [x] Exercise current, first, last, short, long, and duplicate queue scenarios where available.
-  - [x] Repeat the project's gapless playback verification.
-  - [x] Run `make check`.
-  - [x] Review the final diff for unrelated changes, panic helpers, debug output, and documentation drift.
+- [ ] Tasks 1 and 2 meet their acceptance criteria.
+- [ ] Packaging checks and sidecar tests fail for the defects they protect against.
+- [ ] `make check` passes.
+- [ ] Human review authorizes MPRIS behavior fixes.
 
-## Checkpoint C — Merge-readiness approval
+## Task 3: Gate TrackList on valid occurrence identities
 
-- [x] Runtime evidence is recorded and all Task 6 criteria pass.
-- [x] `make check` passes on the final tree.
-- [x] The specification reflects the implemented contract.
-- [x] The draft pull request summarizes the implementation and verification accurately.
-- [ ] The human has reviewed and approved the feature before merge.
+**Description:** Validate non-empty, unique occurrence IDs and an exact current
+match before exposing TrackList state. Invalid or legacy snapshots retain Player
+behavior but expose no approximate TrackList.
+
+**Acceptance criteria:**
+- [ ] Missing, duplicate, or unmatched occurrence IDs cannot produce unstable TrackList paths or an incorrect current occurrence.
+- [ ] Invalid identity snapshots do not emit repeated replacement traffic on position ticks.
+- [ ] Valid queues, including duplicate songs with distinct occurrence IDs, retain current behavior.
+
+**Verification:**
+- [ ] Add failing-first tests for missing, duplicate, unmatched, empty, and valid identity snapshots.
+- [ ] Run `cargo test -p slipmat-core mpris` and `cargo test -p slipmatd`.
+- [ ] Run a mixed-version session-bus check with an old sidecar fixture or captured event stream.
+
+**Dependencies:** Checkpoint A and approval of the capability-gate policy.
+
+**Files likely touched:**
+- `crates/slipmat-core/src/mpris.rs`
+- `crates/slipmat-core/src/mpris/track_list.rs`
+- `crates/slipmat-core/src/player/protocol.rs`
+
+**Estimated scope:** Medium, 3 files.
+
+## Task 4: Make GoTo restart ordered and observable
+
+**Description:** Use a seek-only path for the current occurrence, retain
+event-gated zero seek for a different occurrence, and emit the MPRIS `Seeked`
+signal for discontinuous position changes.
+
+**Acceptance criteria:**
+- [ ] Current-occurrence `GoTo` sends no redundant `ChangeToIndex` and restarts at zero.
+- [ ] Different-occurrence `GoTo` seeks only after the exact selected item arrives.
+- [ ] Each confirmed restart emits exactly one matching `Seeked` signal.
+
+**Verification:**
+- [ ] Add failing-first ordering tests for current, different, duplicate, cancelled, and stale targets.
+- [ ] Run focused core and daemon MPRIS tests.
+- [ ] Monitor commands and `Seeked` on the session bus during both `GoTo` paths.
+
+**Dependencies:** Task 3.
+
+**Files likely touched:**
+- `crates/slipmat-core/src/mpris.rs`
+- `crates/slipmatd/src/bus.rs`
+- `crates/slipmatd/src/serve.rs`
+
+**Estimated scope:** Medium, 3 files.
+
+## Task 5: Separate position updates from queue reconciliation
+
+**Description:** Introduce distinct hot Player updates and cold queue updates so
+the 500 ms position path performs no full-queue clone, identity reconciliation,
+or TrackList allocation.
+
+**Acceptance criteria:**
+- [ ] Position-only snapshots update the polled MPRIS position in work independent of queue length.
+- [ ] Queue, current-item, metadata, and artwork events still update the correct Player and TrackList state.
+- [ ] Reconciliation uses an O(n) occurrence lookup rather than repeated vector removal.
+
+**Verification:**
+- [ ] Add an instrumented 500-item test proving a position tick performs zero reconciliations.
+- [ ] Add unchanged and edited 500-item reconciliation tests that catch quadratic matching.
+- [ ] Run focused tests and compare runtime tick cost before and after.
+
+**Dependencies:** Tasks 3 and 4.
+
+**Files likely touched:**
+- `crates/slipmat-core/src/mpris.rs`
+- `crates/slipmat-core/src/mpris/track_list.rs`
+- `crates/slipmatd/src/bus.rs`
+- `crates/slipmatd/src/serve.rs`
+
+**Estimated scope:** Medium, 4 files.
+
+## Task 6: Coalesce MPRIS update delivery
+
+**Description:** Replace the unbounded batch queue with a single-flight emitter
+that keeps at most the newest pending state and does not enqueue empty updates.
+
+**Acceptance criteria:**
+- [ ] Empty position updates allocate no pending D-Bus batch.
+- [ ] Slow emission leaves at most one newer pending state.
+- [ ] Replacement payloads, TrackList properties, and metadata describe the same committed state.
+
+**Verification:**
+- [ ] Add deterministic stalled-emitter and rapid-update tests.
+- [ ] Assert bounded pending state and final signal/property agreement.
+- [ ] Run `cargo test -p slipmat-core mpris` and `cargo check -p slipmat-core -p slipmatd`.
+
+**Dependencies:** Task 5.
+
+**Files likely touched:**
+- `crates/slipmat-core/src/mpris.rs`
+- `crates/slipmat-core/src/mpris/track_list.rs`
+
+**Estimated scope:** Small-to-medium, 2 files.
+
+## Checkpoint B: Correct and bounded runtime
+
+- [ ] Tasks 3-6 meet their acceptance criteria.
+- [ ] Focused tests cover identity failures, `GoTo`, `Seeked`, hot ticks, and stalled emission.
+- [ ] A 500-item position tick performs no queue reconciliation.
+- [ ] `make check` passes without TrackList tick traffic.
+- [ ] Human review authorizes structural cleanup.
+
+## Task 7: Split the MPRIS module and remove dead change state
+
+**Description:** Separate public MPRIS types, interface implementations, update
+delivery, and tests. Remove `Change::queue` if no production behavior needs it.
+
+**Acceptance criteria:**
+- [ ] The facade, LocalServer adapter, update pump, projection, and tests live in focused modules.
+- [ ] The MPRIS facade stays below 500 lines, and each production submodule stays below 800 lines with one clear responsibility.
+- [ ] Removing `Change::queue` changes no notification or public behavior.
+
+**Verification:**
+- [ ] Move code without changing behavior tests in the same commit.
+- [ ] Run focused MPRIS tests and `make check`.
+- [ ] Review graph callers and dead-code warnings after the split.
+
+**Dependencies:** Checkpoint B.
+
+**Files likely touched:**
+- `crates/slipmat-core/src/mpris.rs`
+- `crates/slipmat-core/src/mpris/interface.rs` (new)
+- `crates/slipmat-core/src/mpris/updates.rs` (new)
+- `crates/slipmat-core/src/mpris/tests.rs` (new)
+- `crates/slipmat-core/src/mpris/track_list.rs`
+
+**Estimated scope:** Medium, 5 files.
+
+## Task 8: Remove the raw queue-identity diagnostic
+
+**Description:** Remove production probing that reads and logs broad MusicKit
+identity-like properties. Retain only the occurrence allocator required by the
+feature.
+
+**Acceptance criteria:**
+- [ ] Production code no longer logs raw queue, account, device, or playback identity values.
+- [ ] `createOccurrenceId` retains stable per-object and per-context behavior.
+- [ ] No unused probe exports, handlers, environment flags, or tests remain.
+
+**Verification:**
+- [ ] Run sidecar tests.
+- [ ] Search production sidecar code for `queue-identity-probe` and `SLIPMAT_QUEUE_IDENTITY_PROBE`.
+- [ ] Run `make check`.
+
+**Dependencies:** Checkpoint B and approval to remove the probe. Safe to run in parallel with Task 7.
+
+**Files likely touched:**
+- `sidecar/main.js`
+- `sidecar/preload.js`
+- `sidecar/queue-identity.js`
+- `sidecar/queue-identity.test.js`
+
+**Estimated scope:** Medium, 4 files.
+
+## Task 9: Repeat packaged and session-bus verification
+
+**Description:** Verify the remediated feature from an assembled sidecar and on
+the live session bus, then update review evidence without changing production
+code.
+
+**Acceptance criteria:**
+- [ ] Packaged-like startup loads every sidecar module and exports the expected MPRIS interfaces.
+- [ ] Valid and legacy sidecars show bounded, stable behavior with no tick noise; `GoTo` and `Seeked` pass.
+- [ ] Long-queue navigation preserves decoder continuity and all repository checks pass.
+
+**Verification:**
+- [ ] Run `make check` and the packaged-sidecar smoke check.
+- [ ] Use `busctl` or equivalent to inspect properties, methods, signals, and legacy gating.
+- [ ] Repeat the stream continuity check and record justified runtime limits.
+
+**Dependencies:** Tasks 7 and 8.
+
+**Files likely touched:**
+- `docs/specs/SPEC-mpris-tracklist.md`
+- `tasks/todo.md`
+
+**Estimated scope:** Small, documentation and verification only.
+
+## Checkpoint C: Merge decision
+
+- [ ] Every required review finding has a regression test and verified remedy.
+- [ ] Optional privacy and dead-code findings are resolved or explicitly retained with justification.
+- [ ] PR #192 accurately describes final behavior and verification.
+- [ ] Human review approves the remediation commits before they reach the feature branch.
