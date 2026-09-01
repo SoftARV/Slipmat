@@ -488,24 +488,10 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
     // is ready by the same pass that makes it so.
     match &event {
         PlayerEvent::HookReady { authorized, .. } => {
-            let stage = if *authorized {
-                Stage::Ready
-            } else {
-                Stage::SignedOut
-            };
             daemon.restarts.set(0);
-            let restore = *authorized && !daemon.restored.replace(true);
-            daemon.model.borrow_mut().stage = stage.clone();
-            daemon.publish(Event::Stage(stage));
-            // Once per run: the hook re-attaches on every navigation, and a
-            // second restore would throw away whatever is playing by then.
-            if restore {
-                restore_session(daemon);
-            }
-            if *authorized {
-                refresh_library(daemon);
-            }
+            set_authorization(daemon, *authorized);
         }
+        PlayerEvent::Authorization { authorized } => set_authorization(daemon, *authorized),
         PlayerEvent::HookFailed { detail } => {
             let stage = Stage::Broken {
                 detail: detail.clone(),
@@ -600,6 +586,27 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
     heal::verify_start(daemon);
 
     daemon.publish_snapshot();
+}
+
+fn set_authorization(daemon: &Rc<Daemon>, authorized: bool) {
+    let stage = if authorized {
+        Stage::Ready
+    } else {
+        Stage::SignedOut
+    };
+    let restore = authorized && !daemon.restored.replace(true);
+    daemon.model.borrow_mut().stage = stage.clone();
+    daemon.publish(Event::Stage(stage));
+
+    if authorized {
+        daemon.send(Command::Hide);
+        // Once per run: the hook re-attaches on every navigation, and a second
+        // restore would throw away whatever is playing by then.
+        if restore {
+            restore_session(daemon);
+        }
+        refresh_library(daemon);
+    }
 }
 
 /// Is there a queue with nothing open in it?
@@ -1315,6 +1322,16 @@ mod tests {
         on_event(&daemon, PlayerEvent::Volume { volume: 0.0 });
 
         assert_eq!(daemon.model.borrow().volume, 0.75);
+    }
+
+    #[test]
+    fn authorization_completion_makes_the_daemon_ready() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().stage = Stage::SignedOut;
+
+        on_event(&daemon, PlayerEvent::Authorization { authorized: true });
+
+        assert_eq!(daemon.model.borrow().stage, Stage::Ready);
     }
 
     #[test]

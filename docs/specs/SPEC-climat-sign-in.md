@@ -25,6 +25,8 @@ Chromium for Widevine playback and for Apple's sign-in window.
 - Send `Request::SignIn` when `Enter` is pressed during `Stage::SignedOut`.
 - Preserve the current `Enter` activation behavior outside the signed-out
   stage.
+- Handle the sidecar's authorization result in `slipmatd`, including the ready
+  stage, login-window hide, session restore, and library refresh.
 - Cover the key-to-request behavior with a focused test.
 - Document first-run sign-in in Climat's README and key reference.
 
@@ -62,6 +64,9 @@ Chromium for Widevine playback and for Apple's sign-in window.
 
 - Climat relies on the existing daemon path:
   `Request::SignIn` to `Command::ShowLogin` to the sidecar login window.
+- `slipmatd` maps the sidecar's existing `Authorization` event to
+  `Stage::Ready` or `Stage::SignedOut`. On success it sends the existing
+  `Command::Hide`, restores once, and refreshes the library.
 - Climat redraws from the next daemon `Event::Stage` message.
 - `Stage::Ready` restores the normal player view and key behavior.
 - `Stage::SignedOut` keeps the actionable prompt visible.
@@ -113,9 +118,12 @@ crates/climat/README.md
     First-run sign-in instructions and key reference.
 
 crates/slipmat-core/src/ipc.rs
-crates/slipmatd/src/serve.rs
 sidecar/main.js
-    Existing sign-in path. These files keep their current behavior.
+    Existing sign-in protocol. These files keep their current behavior.
+
+crates/slipmatd/src/serve.rs
+    Authorization-stage transition, window hide, restore, refresh, and its
+    focused regression test.
 ```
 
 ## Code style
@@ -148,6 +156,8 @@ Follow existing conventions:
   does not send `Request::SignIn`.
 - The signed-out status text names `Enter` and Apple Music sign-in.
 - Other stage text remains unchanged.
+- A sidecar `Authorization { authorized: true }` event changes the daemon stage
+  from signed out to ready.
 
 The request test should exercise `on_key` rather than duplicate its condition
 in a helper test. A test-only in-memory link is enough; this feature does not
@@ -163,6 +173,20 @@ need a frontend command abstraction.
   playback.
 - Restart Climat and confirm that the persisted sidecar session reaches
   `Stage::Ready` without another sign-in prompt.
+
+### Runtime result
+
+Verified under Wayland on 2026-09-01 with the repository sidecar. A signed-out
+Climat showed the `Enter` prompt and opened Apple's window without launching
+the GTK client. The first pass exposed a daemon bug: the sidecar emitted its
+authorization result, but `slipmatd` ignored that event and left the window
+open. A focused regression test now covers the missing stage transition, and
+the daemon handles that result through the existing protocol.
+
+After rebuilding, the authenticated profile reached `Stage::Ready`, the
+sidecar window was hidden, and the daemon loaded 535 library songs. Playback
+started for “505” by Arctic Monkeys. Restarting Climat reused the persisted
+Apple session and returned directly to `Stage::Ready` without another prompt.
 
 ## Boundaries
 

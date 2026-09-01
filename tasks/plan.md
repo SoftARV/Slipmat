@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved. This plan contains no implementation changes.
+Implementation complete. Awaiting merge approval.
 
 ## Source of truth
 
@@ -14,10 +14,10 @@ Approved. This plan contains no implementation changes.
 
 ## Overview
 
-Climat will let a signed-out user open Apple's sign-in window by pressing
-`Enter`. The client will send the existing `Request::SignIn` request and wait
-for daemon stage events. The work stays inside Climat, apart from recording
-runtime evidence in the approved specification.
+Climat lets a signed-out user open Apple's sign-in window by pressing `Enter`.
+The client sends the existing `Request::SignIn` request and waits for daemon
+stage events. Runtime verification found that the daemon ignored the
+sidecar's authorization event, so Task 2 also fixes that existing event path.
 
 ## Architecture decisions
 
@@ -32,6 +32,8 @@ runtime evidence in the approved specification.
    abstraction.
 5. Wait for `Event::Stage` before changing the displayed state. Climat does not
    predict authorization success.
+6. Map the sidecar's existing authorization event to the daemon stage and hide
+   the login window after success. No protocol change is needed.
 
 ## Dependency graph
 
@@ -61,17 +63,17 @@ and the change is too small to gain from parallel work.
 
 - [x] Focused tests prove the signed-out request and preserve normal `Enter`.
 - [x] Climat builds and passes clippy without warnings.
-- [ ] Human review authorizes runtime verification.
+- [x] Human review authorizes runtime verification.
 
 ### Phase 2: Runtime and documentation
 
-- [ ] Task 2: Verify sign-in from Climat and document the result.
+- [x] Task 2: Verify sign-in from Climat and document the result.
 
 ### Checkpoint B: Complete
 
-- [ ] The signed-out flow works from Climat without launching Slipmat.
-- [ ] `make check` passes.
-- [ ] The specification and README describe the verified behavior.
+- [x] The signed-out flow works from Climat without launching Slipmat.
+- [x] `make check` passes.
+- [x] The specification and README describe the verified behavior.
 - [ ] Human review approves the feature for merge.
 
 Detailed acceptance criteria and commands live in
@@ -93,8 +95,8 @@ Detailed acceptance criteria and commands live in
 - Runtime verification covers the Apple sign-in window and the resulting ready
   state.
 - `make check` passes with no new warning.
-- The diff contains no dependency, protocol, daemon, sidecar, or unrelated
-  refactor.
+- The diff contains no dependency, protocol, sidecar, or unrelated refactor.
+- The daemon change stays limited to handling the existing authorization event.
 - User-facing documentation matches the verified behavior.
 - The human approves the result before merge.
 

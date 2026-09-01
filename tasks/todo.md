@@ -5,7 +5,7 @@ Specification:
 [`docs/specs/SPEC-climat-sign-in.md`](../docs/specs/SPEC-climat-sign-in.md)
 Issue: [#194](https://github.com/SoftARV/Slipmat/issues/194)
 
-Status: Task 1 complete. Awaiting human approval for runtime verification.
+Status: Tasks 1 and 2 complete. Awaiting merge approval.
 
 ## Task 1: Make the signed-out prompt actionable
 
@@ -45,7 +45,7 @@ focused tests.
 - [x] Task 1 meets its acceptance criteria.
 - [x] Focused tests fail without the behavior and pass with it.
 - [x] Climat builds and passes clippy without warnings.
-- [ ] Human review authorizes runtime verification.
+- [x] Human review authorizes runtime verification.
 
 ## Task 2: Verify sign-in and document the result
 
@@ -55,21 +55,21 @@ user-facing documentation with the observed behavior.
 
 **Acceptance criteria:**
 
-- [ ] `Enter` reveals Apple's sign-in window without launching Slipmat; the
+- [x] `Enter` reveals Apple's sign-in window without launching Slipmat; the
   sidecar hides the window after authorization.
-- [ ] Climat receives `Stage::Ready`, loads the library, starts playback, and a
+- [x] Climat receives `Stage::Ready`, loads the library, starts playback, and a
   restart reuses the persisted Apple session.
-- [ ] The README and specification describe the verified sign-in action and
+- [x] The README and specification describe the verified sign-in action and
   retain the graphical-session requirement.
 
 **Verification:**
 
-- [ ] Run `SLIPMAT_SIDECAR="$PWD/sidecar" cargo run -p climat` with a signed-out
+- [x] Run `SLIPMAT_SIDECAR="$PWD/sidecar" cargo run -p climat` with a signed-out
   test profile under Wayland or X11.
-- [ ] Complete sign-in, play a track, restart Climat, and record the result in
+- [x] Complete sign-in, play a track, restart Climat, and record the result in
   the specification.
-- [ ] Run `make check`.
-- [ ] Review the final diff for unrelated code, dependency changes, protocol
+- [x] Run `make check`.
+- [x] Review the final diff for unrelated code, dependency changes, protocol
   changes, debug output, and documentation drift.
 
 **Dependencies:** Task 1 and Checkpoint A.
@@ -77,15 +77,17 @@ user-facing documentation with the observed behavior.
 **Files likely touched:**
 
 - `crates/climat/README.md`
+- `crates/slipmatd/src/serve.rs`
 - `docs/specs/SPEC-climat-sign-in.md`
 - `tasks/todo.md`
 
-**Estimated scope:** Small, 3 documentation files.
+**Actual scope:** Medium, 1 daemon file and 3 documentation files. Runtime
+verification exposed the missing daemon authorization transition.
 
 ## Checkpoint B: Merge approval
 
-- [ ] Tasks 1 and 2 meet their acceptance criteria.
-- [ ] Focused tests and `make check` pass.
-- [ ] Runtime evidence covers sign-in, ready state, playback, and restart.
-- [ ] The implementation adds no dependency or protocol change.
+- [x] Tasks 1 and 2 meet their acceptance criteria.
+- [x] Focused tests and `make check` pass.
+- [x] Runtime evidence covers sign-in, ready state, playback, and restart.
+- [x] The implementation adds no dependency or protocol change.
 - [ ] The human has reviewed and approved the feature before merge.
