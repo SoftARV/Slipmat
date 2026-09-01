@@ -1,6 +1,6 @@
 # Spec: MPRIS TrackList context
 
-- Status: Draft for review
+- Status: Approved
 - Issue: <https://github.com/SoftARV/Slipmat/issues/191>
 - Branch: `feat/mpris-tracklist`
 
@@ -35,7 +35,7 @@ without the GTK client or any other visible frontend.
 - Adding, removing, or reordering tracks through MPRIS.
 - The MPRIS Playlists interface.
 - New artwork downloads for non-current tracks.
-- GTK, Climat, or IPC protocol changes.
+- GTK, Climat, or daemon IPC protocol changes.
 
 ## Behavior contract
 
@@ -55,6 +55,8 @@ without the GTK client or any other visible frontend.
 
 - Every exposed occurrence receives an opaque, valid D-Bus object path.
 - Two occurrences of the same Apple track receive different object paths.
+- The sidecar assigns a process-local `occurrenceId` to each MusicKit queue
+  object and reports the same value for `nowPlayingItem` when it is current.
 - Removing or inserting another occurrence does not change the identifiers of
   retained occurrences.
 - Sliding the context window preserves identifiers for occurrences that remain
@@ -65,6 +67,8 @@ without the GTK client or any other visible frontend.
   Player identifier; TrackList reports `NoTrack` as its current occurrence.
 - Clients must treat identifiers as opaque and must not infer an Apple id or a
   queue position from them.
+- Reconstructing the MusicKit queue, including after a sidecar restart, creates
+  new occurrences and may replace every TrackList identifier.
 
 ### Metadata
 
@@ -91,6 +95,9 @@ Lengths use signed microseconds as required by MPRIS.
 - `AddTrack` and `RemoveTrack` return `NotSupported` and do not change playback.
 - `GoTo` resolves an exposed occurrence identifier to its current MusicKit
   queue index and sends `Command::ChangeToIndex`.
+- `GoTo` starts the selected occurrence at its beginning. MusicKit preserves
+  playback time when moving between identical songs, so the daemon sends a
+  zero seek after the selected `nowPlayingItem` arrives in that case.
 - `GoTo` with `NoTrack`, an unknown identifier, or an identifier that left the
   window has no effect.
 - `GoTo` must not rebuild the queue with `SetQueue`.
@@ -115,6 +122,7 @@ Lengths use signed microseconds as required by MPRIS.
 - Tokio current-thread runtime with a `LocalSet`
 - `mpris_server::LocalServer` and the local root, Player, and TrackList traits
 - Existing `PlayerState` queue projection and sidecar `Command::ChangeToIndex`
+- Sidecar-provided process-local queue occurrence identifiers
 
 No new dependency is required. The current ready-made `mpris_server::Player`
 supports only the root and Player interfaces, so the implementation must move
@@ -163,7 +171,7 @@ crates/slipmat-core/src/mpris.rs
     occurrence identity, metadata conversion, signals, and focused tests.
 
 crates/slipmat-core/src/player/protocol.rs
-    Existing Item metadata and Command::ChangeToIndex contract. No wire change.
+    Item occurrenceId and existing Command::ChangeToIndex contract.
 
 crates/slipmat-core/src/player/state.rs
     Existing MusicKit-owned queue projection. No new source of truth.
@@ -218,6 +226,8 @@ Follow existing conventions:
 - A queue position beyond the current queue length.
 - A 500-entry queue still exposes exactly 21 occurrences.
 - Duplicate Apple tracks receive distinct identifiers.
+- Sidecar occurrence identifiers distinguish duplicates and match the current
+  `nowPlayingItem` to its exact queue occurrence.
 - Insertions, removals, moves, and window slides preserve retained identifiers.
 - Removing one duplicate does not rename the retained duplicate.
 - Track identifiers form valid D-Bus object paths.
@@ -225,6 +235,7 @@ Follow existing conventions:
   microseconds.
 - Metadata omits unknown duration, blank optional text, and uncached artwork.
 - `GoTo` resolves a visible occurrence to the correct full-queue index.
+- `GoTo` between identical duplicates starts the selected occurrence at zero.
 - Stale and `NoTrack` identifiers produce no command.
 - Structural changes, metadata changes, and position-only changes select the
   correct notification behavior.
@@ -262,7 +273,8 @@ Follow existing conventions:
 - Change the 21-occurrence limit.
 - Expose the complete queue.
 - Add granular `TrackAdded` or `TrackRemoved` reconciliation.
-- Change the daemon IPC or sidecar NDJSON protocols.
+- Change the daemon IPC protocol or the sidecar NDJSON protocol beyond the
+  approved `occurrenceId` field.
 - Fetch artwork for non-current TrackList entries.
 
 ### Never
@@ -288,7 +300,7 @@ Follow existing conventions:
 6. `GetTracksMetadata` returns standards-compliant metadata for every current
    TrackList identifier.
 7. `CanEditTracks` returns `false`; Add and Remove cannot change the queue.
-8. `GoTo` starts the selected visible occurrence through
+8. `GoTo` starts the selected visible occurrence at its beginning through
    `Command::ChangeToIndex` and never calls `SetQueue`.
 9. Unknown or stale `GoTo` identifiers leave playback unchanged.
 10. Clients receive `TrackListReplaced` and invalidated `Tracks` notifications
