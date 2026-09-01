@@ -559,7 +559,7 @@ pub fn clock(ms: u64) -> String {
 fn stage_text(stage: &Stage) -> String {
     match stage {
         Stage::Connecting => "Starting the playback engine…".into(),
-        Stage::SignedOut => "Not signed in — open Slipmat to sign in".into(),
+        Stage::SignedOut => "[Enter] Sign in to Apple Music".into(),
         Stage::Broken { detail } => format!("Playback unavailable: {detail}"),
         Stage::Ready => String::new(),
     }
@@ -568,6 +568,29 @@ fn stage_text(stage: &Stage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_out_status_names_the_sign_in_key() {
+        assert_eq!(
+            stage_text(&Stage::SignedOut),
+            "[Enter] Sign in to Apple Music"
+        );
+    }
+
+    #[test]
+    fn other_stage_statuses_stay_the_same() {
+        assert_eq!(
+            stage_text(&Stage::Connecting),
+            "Starting the playback engine…"
+        );
+        assert_eq!(stage_text(&Stage::Ready), "");
+        assert_eq!(
+            stage_text(&Stage::Broken {
+                detail: "failed".into()
+            }),
+            "Playback unavailable: failed"
+        );
+    }
 
     #[test]
     fn every_volume_step_moves_the_meter_by_exactly_one_cell() {

@@ -49,6 +49,13 @@ with a desktop session — a terminal emulator under Wayland or X11, or `tmux`
 inside one. It will not work over a plain SSH connection to a headless box.
 That is a limit imposed by the DRM, not a shortcut taken here.
 
+## First run
+
+When climat shows `[Enter] Sign in to Apple Music`, press `Enter`. Apple's
+sign-in window opens over the terminal. Complete the sign-in there; the window
+hides, climat loads your library, and the Apple session remains available on
+later starts.
+
 ## The bars
 
 climat never touches the audio — the sidecar owns the stream — so the
@@ -127,7 +134,7 @@ tenth of a second and gets the original palette.
 | `esc` | Out of a page, then out of a filter |
 | `↑` `↓` | Move the cursor |
 | `Home` | Put the cursor back on the playing track |
-| `↵` | Play the selected track, or open the album it leads to |
+| `↵` | Sign in when prompted; otherwise play the selected track or open its album |
 | `j` | Queue it to play next |
 | `l` | Queue it at the end |
 | `d` | Remove it from the queue |

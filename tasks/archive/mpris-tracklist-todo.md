@@ -1,9 +1,9 @@
 # MPRIS TrackList task checklist
 
-Plan: [`tasks/plan.md`](plan.md)
-Specification: [`docs/specs/SPEC-mpris-tracklist.md`](../docs/specs/SPEC-mpris-tracklist.md)
+Plan: [`mpris-tracklist-plan.md`](mpris-tracklist-plan.md)
+Specification: [`docs/specs/SPEC-mpris-tracklist.md`](../../docs/specs/SPEC-mpris-tracklist.md)
 
-The plan and the sidecar occurrence identity amendment are approved.
+Complete and archived. PR #192 merged on 2026-09-01.
 
 ## Task 1 — Build the occurrence projection
 
@@ -175,4 +175,4 @@ The plan and the sidecar occurrence identity amendment are approved.
 - [x] `make check` passes on the final tree.
 - [x] The specification reflects the implemented contract.
 - [x] The draft pull request summarizes the implementation and verification accurately.
-- [ ] The human has reviewed and approved the feature before merge.
+- [x] The human has reviewed and approved the feature before merge.

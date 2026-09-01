@@ -2,12 +2,11 @@
 
 ## Status
 
-Approved. The occurrence identity amendment was approved after live MusicKit
-probing on 2026-08-31.
+Complete and archived. PR #192 merged on 2026-09-01.
 
 ## Source of truth
 
-- Feature specification: [`docs/specs/SPEC-mpris-tracklist.md`](../docs/specs/SPEC-mpris-tracklist.md)
+- Feature specification: [`docs/specs/SPEC-mpris-tracklist.md`](../../docs/specs/SPEC-mpris-tracklist.md)
 - GitHub issue: [#191](https://github.com/SoftARV/Slipmat/issues/191)
 - MPRIS TrackList contract: [freedesktop.org TrackList interface](https://specifications.freedesktop.org/mpris/latest/Track_List_Interface.html)
 - Rust API: `mpris-server` 0.10.0, as locked by the workspace
@@ -56,7 +55,10 @@ Add a private pure model for sidecar occurrence reconciliation, opaque MPRIS ID 
 
 Likely files: `crates/slipmat-core/src/mpris.rs`, `crates/slipmat-core/src/mpris/track_list.rs`.
 
-Acceptance and verification are detailed in [`tasks/todo.md`](todo.md). This task is complete only when duplicate, edit, move, edge-window, empty-queue, stale-ID, and 500-item cases pass focused unit tests.
+Acceptance and verification are detailed in
+[`mpris-tracklist-todo.md`](mpris-tracklist-todo.md). This task is complete only
+when duplicate, edit, move, edge-window, empty-queue, stale-ID, and 500-item
+cases pass focused unit tests.
 
 ### Task 2 — Migrate existing MPRIS behavior to LocalServer
 
