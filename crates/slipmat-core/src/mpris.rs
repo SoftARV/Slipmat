@@ -39,19 +39,21 @@
 
 use std::cell::RefCell;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 
 use mpris_server::{
-    LocalPlayerInterface, LocalRootInterface, LocalServer, LoopStatus, Metadata, PlaybackRate,
-    PlaybackStatus, Property, Signal, Time, TrackId, Volume,
+    LocalPlayerInterface, LocalRootInterface, LocalServer, LocalTrackListInterface, LoopStatus,
+    Metadata, PlaybackRate, PlaybackStatus, Property, Signal, Time, TrackId, Uri, Volume,
     zbus::{Result as ZbusResult, fdo},
 };
 
-use crate::player::protocol::RepeatMode;
+use crate::player::protocol::{Item, RepeatMode};
 
 pub(crate) mod track_list;
+
+use track_list::Projection;
 
 /// What a controller on the bus asked for.
 ///
@@ -124,6 +126,9 @@ const BUS_SUFFIX: &str = "Slipmat";
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct MprisState {
     pub track_id: Option<String>,
+    pub current_item: Option<Item>,
+    pub queue: Vec<Item>,
+    pub queue_position: usize,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -175,6 +180,7 @@ impl MprisState {
         u32,
         &Option<PathBuf>,
         u64,
+        Option<&str>,
     ) {
         (
             &self.track_id,
@@ -184,12 +190,15 @@ impl MprisState {
             self.track_number,
             &self.art_path,
             self.length_ms,
+            self.current_item
+                .as_ref()
+                .map(|item| item.occurrence_id.as_str()),
         )
     }
 
-    fn metadata(&self) -> Metadata {
+    fn metadata(&self, projected_track_id: Option<TrackId>) -> Metadata {
         let mut m = Metadata::new();
-        m.set_trackid(track_id(self.track_id.as_deref()));
+        m.set_trackid(projected_track_id);
         m.set_title(Some(self.title.clone()));
         if !self.artist.is_empty() {
             m.set_artist(Some([self.artist.clone()]));
@@ -213,37 +222,41 @@ impl MprisState {
     }
 }
 
-/// Build a D-Bus object path for a track.
-///
-/// Track ids are object paths, so only `[A-Za-z0-9_]` and `/` are legal.
-/// Apple's catalog ids are numeric, but library ids are not (`i.AbCd123`), and
-/// an invalid path would make the whole metadata dict fail to serialise —
-/// taking the Shell applet's display down with it. Sanitise, don't trust.
-fn track_id(id: Option<&str>) -> Option<TrackId> {
-    let id = id?;
-    let safe: String = id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    if safe.is_empty() {
-        return None;
-    }
-    TrackId::try_from(format!("/dev/miguelrincon/Slipmat/track/{safe}")).ok()
-}
-
 struct SlipmatPlayer {
     state: RefCell<MprisState>,
+    track_list: RefCell<Projection>,
     sink: Sink,
     can: Capabilities,
 }
 
 impl SlipmatPlayer {
     fn new(state: MprisState, sink: Sink, can: Capabilities) -> Self {
+        let mut track_list = Projection::default();
+        track_list.reconcile(
+            &state.queue,
+            state.queue_position,
+            state.current_item.as_ref(),
+        );
         Self {
             state: RefCell::new(state),
+            track_list: RefCell::new(track_list),
             sink,
             can,
         }
+    }
+
+    fn update_state(&self, state: MprisState) -> Option<TrackId> {
+        let current = {
+            let mut track_list = self.track_list.borrow_mut();
+            track_list.reconcile(
+                &state.queue,
+                state.queue_position,
+                state.current_item.as_ref(),
+            );
+            track_list.current()
+        };
+        *self.state.borrow_mut() = state;
+        current
     }
 
     fn send(&self, command: MprisCommand) {
@@ -283,7 +296,7 @@ impl LocalRootInterface for SlipmatPlayer {
     }
 
     async fn has_track_list(&self) -> fdo::Result<bool> {
-        Ok(false)
+        Ok(true)
     }
 
     async fn identity(&self) -> fdo::Result<String> {
@@ -342,7 +355,7 @@ impl LocalPlayerInterface for SlipmatPlayer {
     }
 
     async fn set_position(&self, supplied_id: TrackId, position: Time) -> fdo::Result<()> {
-        let current_id = track_id(self.state.borrow().track_id.as_deref());
+        let current_id = self.track_list.borrow().current();
         if current_id.as_ref() == Some(&supplied_id) && position.as_millis() >= 0 {
             self.send(MprisCommand::Seek(position.as_millis() as u64));
         }
@@ -388,7 +401,8 @@ impl LocalPlayerInterface for SlipmatPlayer {
     }
 
     async fn metadata(&self) -> fdo::Result<Metadata> {
-        Ok(self.state.borrow().metadata())
+        let track_id = self.track_list.borrow().current();
+        Ok(self.state.borrow().metadata(track_id))
     }
 
     async fn volume(&self) -> fdo::Result<Volume> {
@@ -437,13 +451,82 @@ impl LocalPlayerInterface for SlipmatPlayer {
     }
 }
 
+fn item_metadata(item: &Item, track_id: TrackId, art_path: Option<&Path>) -> Metadata {
+    let mut metadata = Metadata::new();
+    metadata.set_trackid(Some(track_id));
+    metadata.set_title(Some(item.title.clone()));
+    if !item.artist.is_empty() {
+        metadata.set_artist(Some([item.artist.clone()]));
+    }
+    if !item.album.is_empty() {
+        metadata.set_album(Some(item.album.clone()));
+    }
+    if item.duration_ms > 0 {
+        metadata.set_length(Some(Time::from_millis(item.duration_ms as i64)));
+    }
+    if item.track_number > 0 {
+        metadata.set_track_number(Some(item.track_number as i32));
+    }
+    if let Some(path) = art_path {
+        metadata.set_art_url(Some(format!("file://{}", path.display())));
+    }
+    metadata
+}
+
+impl LocalTrackListInterface for SlipmatPlayer {
+    async fn get_tracks_metadata(&self, track_ids: Vec<TrackId>) -> fdo::Result<Vec<Metadata>> {
+        let state = self.state.borrow();
+        let track_list = self.track_list.borrow();
+        let current = track_list.current();
+        Ok(track_list
+            .metadata(&track_ids)
+            .into_iter()
+            .map(|(track_id, item)| {
+                let art_path = (current.as_ref() == Some(&track_id))
+                    .then_some(state.art_path.as_deref())
+                    .flatten();
+                item_metadata(item, track_id, art_path)
+            })
+            .collect())
+    }
+
+    async fn add_track(
+        &self,
+        _uri: Uri,
+        _after_track: TrackId,
+        _set_as_current: bool,
+    ) -> fdo::Result<()> {
+        Err(fdo::Error::NotSupported("TrackList is read-only".into()))
+    }
+
+    async fn remove_track(&self, _track_id: TrackId) -> fdo::Result<()> {
+        Err(fdo::Error::NotSupported("TrackList is read-only".into()))
+    }
+
+    async fn go_to(&self, _track_id: TrackId) -> fdo::Result<()> {
+        Ok(())
+    }
+
+    async fn tracks(&self) -> fdo::Result<Vec<TrackId>> {
+        Ok(self.track_list.borrow().tracks())
+    }
+
+    async fn can_edit_tracks(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+}
+
 fn changed_player_properties(
     previous: Option<&MprisState>,
     state: &MprisState,
+    current_track: Option<TrackId>,
 ) -> Vec<(&'static str, Property)> {
     let mut changed = Vec::new();
     if previous.is_none_or(|prev| state.metadata_fields() != prev.metadata_fields()) {
-        changed.push(("metadata", Property::Metadata(state.metadata())));
+        changed.push((
+            "metadata",
+            Property::Metadata(state.metadata(current_track)),
+        ));
     }
     if previous.is_none_or(|prev| state.status() != prev.status()) {
         changed.push(("playback status", Property::PlaybackStatus(state.status())));
@@ -502,7 +585,7 @@ impl Mpris {
         let slot = this.player.clone();
         let inner = spawn.clone();
         spawn(Box::pin(async move {
-            let player = match LocalServer::new(
+            let player = match LocalServer::new_with_track_list(
                 BUS_SUFFIX,
                 SlipmatPlayer::new(MprisState::default(), sink, can),
             )
@@ -535,8 +618,8 @@ impl Mpris {
 
         let previous = self.last.borrow().clone();
         *self.last.borrow_mut() = Some(state.clone());
-        *player.imp().state.borrow_mut() = state.clone();
-        let changed = changed_player_properties(previous.as_ref(), &state);
+        let current_track = player.imp().update_state(state.clone());
+        let changed = changed_player_properties(previous.as_ref(), &state, current_track);
         (self.spawn)(Box::pin(emit_player_properties(player, changed)));
     }
 
@@ -590,25 +673,13 @@ mod tests {
         )
     }
 
-    #[test]
-    fn track_ids_are_valid_object_paths() {
-        let id = track_id(Some("1049009209")).expect("numeric id");
-        assert_eq!(id.as_str(), "/dev/miguelrincon/Slipmat/track/1049009209");
-    }
-
-    #[test]
-    fn library_ids_with_illegal_characters_are_sanitised() {
-        // Library ids look like `i.AbCd123`. A dot is not legal in an object
-        // path, and an invalid one makes the whole metadata dict fail to
-        // serialise — which takes the Shell applet's display down with it.
-        let id = track_id(Some("i.AbCd-123")).expect("sanitised id");
-        assert_eq!(id.as_str(), "/dev/miguelrincon/Slipmat/track/i_AbCd_123");
-    }
-
-    #[test]
-    fn no_track_means_no_id() {
-        assert!(track_id(None).is_none());
-        assert!(track_id(Some("")).is_none());
+    fn queue_item(occurrence_id: &str, title: &str) -> Item {
+        Item {
+            occurrence_id: occurrence_id.into(),
+            id: Some("song-a".into()),
+            title: title.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -645,7 +716,7 @@ mod tests {
             ..a.clone()
         };
         assert_eq!(a.metadata_fields(), b.metadata_fields());
-        assert!(changed_player_properties(Some(&a), &b).is_empty());
+        assert!(changed_player_properties(Some(&a), &b, None).is_empty());
     }
 
     #[test]
@@ -663,9 +734,9 @@ mod tests {
         };
 
         assert_eq!(
-            changed_player_properties(Some(&previous), &state),
+            changed_player_properties(Some(&previous), &state, None),
             [
-                ("metadata", Property::Metadata(state.metadata())),
+                ("metadata", Property::Metadata(state.metadata(None))),
                 (
                     "playback status",
                     Property::PlaybackStatus(PlaybackStatus::Playing),
@@ -685,7 +756,7 @@ mod tests {
             art_path: Some(PathBuf::from("/home/x/.cache/slipmat/artwork/ab-512.jpg")),
             ..Default::default()
         };
-        let art = state.metadata().art_url().expect("art url");
+        let art = state.metadata(None).art_url().expect("art url");
         assert!(
             art.starts_with("file:///"),
             "GNOME Shell needs a file:// path, got {art}"
@@ -732,7 +803,7 @@ mod tests {
     fn an_unknown_length_is_omitted_rather_than_sent_as_zero() {
         let state = MprisState::default();
         assert!(
-            state.metadata().length().is_none(),
+            state.metadata(None).length().is_none(),
             "a zero length would render as a 0:00 track"
         );
     }
@@ -745,7 +816,7 @@ mod tests {
         assert!(player.can_quit().await.expect("can quit"));
         assert!(!player.fullscreen().await.expect("fullscreen"));
         assert!(!player.can_set_fullscreen().await.expect("set fullscreen"));
-        assert!(!player.has_track_list().await.expect("has track list"));
+        assert!(player.has_track_list().await.expect("has track list"));
         assert_eq!(player.identity().await.expect("identity"), "Slipmat");
         assert_eq!(
             player.desktop_entry().await.expect("desktop entry"),
@@ -784,8 +855,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn local_player_reports_the_current_state() {
+        let item = queue_item("run:1", "Roundabout");
         let state = MprisState {
-            track_id: Some("1049009209".into()),
+            current_item: Some(item.clone()),
+            queue: vec![item],
             title: "Roundabout".into(),
             position_ms: 12_345,
             playing: true,
@@ -797,6 +870,7 @@ mod tests {
             ..Default::default()
         };
         let (player, _) = local_player(state.clone());
+        let current_track = player.tracks().await.expect("tracks")[0].clone();
 
         assert_eq!(
             player.playback_status().await.expect("status"),
@@ -810,7 +884,10 @@ mod tests {
         assert_eq!(player.minimum_rate().await.expect("minimum rate"), 1.0);
         assert_eq!(player.maximum_rate().await.expect("maximum rate"), 1.0);
         assert!(player.shuffle().await.expect("shuffle"));
-        assert_eq!(player.metadata().await.expect("metadata"), state.metadata());
+        assert_eq!(
+            player.metadata().await.expect("metadata"),
+            state.metadata(Some(current_track))
+        );
         assert_eq!(player.volume().await.expect("volume"), 0.4);
         assert_eq!(
             player.position().await.expect("position"),
@@ -826,12 +903,15 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn local_controls_map_to_existing_commands() {
+        let item = queue_item("run:1", "Roundabout");
         let state = MprisState {
-            track_id: Some("1049009209".into()),
+            current_item: Some(item.clone()),
+            queue: vec![item],
             position_ms: 5_000,
             ..Default::default()
         };
         let (player, commands) = local_player(state);
+        let current_track = player.tracks().await.expect("tracks")[0].clone();
 
         player.play().await.expect("play");
         player.pause().await.expect("pause");
@@ -844,10 +924,7 @@ mod tests {
             .await
             .expect("relative seek");
         player
-            .set_position(
-                track_id(Some("1049009209")).expect("track id"),
-                Time::from_millis(4_000),
-            )
+            .set_position(current_track, Time::from_millis(4_000))
             .await
             .expect("absolute seek");
         player.set_shuffle(true).await.expect("shuffle");
@@ -877,20 +954,104 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn set_position_ignores_a_stale_track_id() {
+        let item = queue_item("run:1", "Roundabout");
         let state = MprisState {
-            track_id: Some("current".into()),
+            current_item: Some(item.clone()),
+            queue: vec![item],
             ..Default::default()
         };
         let (player, commands) = local_player(state);
 
         player
             .set_position(
-                track_id(Some("stale")).expect("track id"),
+                TrackId::try_from("/dev/miguelrincon/Slipmat/tracklist/stale".to_owned())
+                    .expect("track id"),
                 Time::from_millis(9_000),
             )
             .await
             .expect("stale seek");
 
+        assert!(commands.borrow().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_track_list_exposes_a_bounded_window_with_the_player_current_id() {
+        let queue: Vec<_> = (0..30)
+            .map(|index| queue_item(&format!("run:{index}"), &format!("Track {index}")))
+            .collect();
+        let state = MprisState {
+            current_item: Some(queue[15].clone()),
+            queue,
+            queue_position: 15,
+            title: "Track 15".into(),
+            ..Default::default()
+        };
+        let (player, _) = local_player(state);
+
+        let tracks = player.tracks().await.expect("tracks");
+        let metadata = player.metadata().await.expect("player metadata");
+
+        assert_eq!(tracks.len(), 21);
+        assert_eq!(metadata.trackid(), Some(tracks[10].clone()));
+        assert!(player.has_track_list().await.expect("has track list"));
+        assert!(!player.can_edit_tracks().await.expect("can edit tracks"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn track_list_metadata_preserves_order_and_limits_artwork_to_the_current_track() {
+        let mut current = queue_item("run:1", "One");
+        current.artist = "Artist".into();
+        current.album = "Album".into();
+        current.duration_ms = 42_000;
+        current.track_number = 3;
+        let other = queue_item("run:2", "");
+        let state = MprisState {
+            current_item: Some(current.clone()),
+            queue: vec![current, other],
+            queue_position: 0,
+            art_path: Some(PathBuf::from("/tmp/current.jpg")),
+            ..Default::default()
+        };
+        let (player, _) = local_player(state);
+        let tracks = player.tracks().await.expect("tracks");
+        let unknown = TrackId::try_from("/dev/miguelrincon/Slipmat/tracklist/unknown".to_owned())
+            .expect("valid track id");
+
+        let metadata = player
+            .get_tracks_metadata(vec![tracks[1].clone(), unknown, tracks[0].clone()])
+            .await
+            .expect("metadata");
+
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(metadata[0].trackid(), Some(tracks[1].clone()));
+        assert_eq!(metadata[0].title(), Some(""));
+        assert!(metadata[0].art_url().is_none());
+        assert_eq!(metadata[1].trackid(), Some(tracks[0].clone()));
+        assert_eq!(metadata[1].title(), Some("One"));
+        assert_eq!(metadata[1].artist(), Some(vec!["Artist".into()]));
+        assert_eq!(metadata[1].album(), Some("Album"));
+        assert_eq!(metadata[1].length(), Some(Time::from_millis(42_000)));
+        assert_eq!(metadata[1].track_number(), Some(3));
+        assert_eq!(
+            metadata[1].art_url(),
+            Some("file:///tmp/current.jpg".into())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn track_list_edits_are_not_supported() {
+        let (player, commands) = local_player(MprisState::default());
+
+        assert!(matches!(
+            player
+                .add_track("file:///tmp/song.mp3".into(), TrackId::NO_TRACK, false)
+                .await,
+            Err(fdo::Error::NotSupported(_))
+        ));
+        assert!(matches!(
+            player.remove_track(TrackId::NO_TRACK).await,
+            Err(fdo::Error::NotSupported(_))
+        ));
         assert!(commands.borrow().is_empty());
     }
 }

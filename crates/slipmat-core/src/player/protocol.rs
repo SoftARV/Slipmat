@@ -489,7 +489,7 @@ impl Queue {
 
 /// One track as MusicKit sees it. Mapped into `music::types::Track` at the
 /// boundary — this shape stays inside `player/`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
     /// Process-local identity for this queue occurrence. Equal catalog items
