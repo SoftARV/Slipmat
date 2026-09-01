@@ -174,5 +174,5 @@ The plan and the sidecar occurrence identity amendment are approved.
 - [x] Runtime evidence is recorded and all Task 6 criteria pass.
 - [x] `make check` passes on the final tree.
 - [x] The specification reflects the implemented contract.
-- [ ] The draft pull request summarizes the implementation and verification accurately.
+- [x] The draft pull request summarizes the implementation and verification accurately.
 - [ ] The human has reviewed and approved the feature before merge.
