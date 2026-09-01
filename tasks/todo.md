@@ -89,7 +89,7 @@ The plan and the sidecar occurrence identity amendment are approved.
 
 ## Task 4 — Route GoTo through ChangeToIndex
 
-- [ ] Status: pending
+- [x] Status: complete
 - Description: Resolve an exposed occurrence ID to its full queue index and pass that index through the existing daemon command path.
 - Scope: Small. One new internal command variant and daemon mapping.
 - Dependencies: Task 3.
@@ -98,17 +98,17 @@ The plan and the sidecar occurrence identity amendment are approved.
   - `crates/slipmat-core/src/mpris/track_list.rs`
   - `crates/slipmatd/src/bus.rs`
 - Acceptance criteria:
-  - [ ] `GoTo` on a known exposed occurrence emits its full queue index.
-  - [ ] The daemon maps that command to `Command::ChangeToIndex { index }`.
-  - [ ] Duplicate occurrences route to their individual queue positions.
-  - [ ] Navigating between identical duplicates starts the selected occurrence at zero rather than retaining the previous occurrence's playback time.
-  - [ ] Unknown, stale, and no-longer-exposed IDs are harmless and do not change playback.
-  - [ ] The MPRIS path never sends `Command::SetQueue`.
+  - [x] `GoTo` on a known exposed occurrence emits its full queue index.
+  - [x] The daemon maps that command to `Command::ChangeToIndex { index }`.
+  - [x] Duplicate occurrences route to their individual queue positions.
+  - [x] Navigating between identical duplicates starts the selected occurrence at zero rather than retaining the previous occurrence's playback time.
+  - [x] Unknown, stale, and no-longer-exposed IDs are harmless and do not change playback.
+  - [x] The MPRIS path never sends `Command::SetQueue`.
 - Verification:
-  - [ ] Add failing-first tests for valid, duplicate, duplicate-position reset, stale, and unknown IDs.
-  - [ ] Run `cargo test -p slipmat-core mpris`.
-  - [ ] Run `cargo test -p slipmatd`.
-  - [ ] Search the changed MPRIS path for `SetQueue` and confirm no call was added.
+  - [x] Add failing-first tests for valid, duplicate, duplicate-position reset, stale, and unknown IDs.
+  - [x] Run `cargo test -p slipmat-core mpris`.
+  - [x] Run `cargo test -p slipmatd`.
+  - [x] Search the changed MPRIS path for `SetQueue` and confirm no call was added.
 
 ## Task 5 — Emit precise TrackList notifications
 
