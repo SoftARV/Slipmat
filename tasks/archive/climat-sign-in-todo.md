@@ -1,11 +1,12 @@
 # Climat Apple Music sign-in task checklist
 
-Plan: [`tasks/plan.md`](plan.md)
+Plan: [`tasks/archive/climat-sign-in-plan.md`](climat-sign-in-plan.md)
 Specification:
-[`docs/specs/SPEC-climat-sign-in.md`](../docs/specs/SPEC-climat-sign-in.md)
+[`docs/specs/SPEC-climat-sign-in.md`](../../docs/specs/SPEC-climat-sign-in.md)
 Issue: [#194](https://github.com/SoftARV/Slipmat/issues/194)
 
-Status: Tasks 1 and 2 complete. Awaiting merge approval.
+Status: Completed and approved on 2026-09-02. Archived after manual
+verification.
 
 ## Task 1: Make the signed-out prompt actionable
 
@@ -90,4 +91,4 @@ verification exposed the missing daemon authorization transition.
 - [x] Focused tests and `make check` pass.
 - [x] Runtime evidence covers sign-in, ready state, playback, and restart.
 - [x] The implementation adds no dependency or protocol change.
-- [ ] The human has reviewed and approved the feature before merge.
+- [x] The human has reviewed and approved the feature before merge.

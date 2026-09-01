@@ -2,15 +2,15 @@
 
 ## Status
 
-Implementation complete. Awaiting merge approval.
+Completed and approved on 2026-09-02. Archived after manual verification.
 
 ## Source of truth
 
 - Specification:
-  [`docs/specs/SPEC-climat-sign-in.md`](../docs/specs/SPEC-climat-sign-in.md)
+  [`docs/specs/SPEC-climat-sign-in.md`](../../docs/specs/SPEC-climat-sign-in.md)
 - GitHub issue: [#194](https://github.com/SoftARV/Slipmat/issues/194)
 - Archived MPRIS plan:
-  [`tasks/archive/mpris-tracklist-plan.md`](archive/mpris-tracklist-plan.md)
+  [`tasks/archive/mpris-tracklist-plan.md`](mpris-tracklist-plan.md)
 
 ## Overview
 
@@ -74,10 +74,10 @@ and the change is too small to gain from parallel work.
 - [x] The signed-out flow works from Climat without launching Slipmat.
 - [x] `make check` passes.
 - [x] The specification and README describe the verified behavior.
-- [ ] Human review approves the feature for merge.
+- [x] Human review approves the feature for merge.
 
 Detailed acceptance criteria and commands live in
-[`tasks/todo.md`](todo.md).
+[`tasks/archive/climat-sign-in-todo.md`](climat-sign-in-todo.md).
 
 ## Risks and controls
 
