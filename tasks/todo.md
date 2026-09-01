@@ -138,11 +138,11 @@ The plan and the sidecar occurrence identity amendment are approved.
 - [x] Crate checks pass without new warnings.
 - [x] Player and TrackList metadata share one current occurrence ID.
 - [x] Notification tests cover both required events and prohibited extra traffic.
-- [ ] Human review authorizes runtime verification.
+- [x] Human review authorizes runtime verification.
 
 ## Task 6 — Runtime and repository verification
 
-- [ ] Status: pending
+- [x] Status: complete
 - Description: Verify the built feature on the session bus, run the project quality gate, and record the resulting evidence.
 - Scope: Medium verification task. Documentation updates only unless a failure is captured by a regression test first.
 - Dependencies: Tasks 1–5; Checkpoint B.
@@ -150,29 +150,29 @@ The plan and the sidecar occurrence identity amendment are approved.
   - `docs/specs/SPEC-mpris-tracklist.md`
   - `tasks/todo.md`
 - Acceptance criteria:
-  - [ ] The daemon starts and owns its expected MPRIS bus name.
-  - [ ] Introspection shows root, Player, and TrackList on the existing object path.
-  - [ ] Runtime properties report `HasTrackList=true`, `CanEditTracks=false`, and no more than 21 ordered track IDs.
-  - [ ] Runtime metadata lookup returns matching IDs and available fields for the context window.
-  - [ ] Runtime `GoTo` selects the requested occurrence, including a duplicate-item case when practical.
-  - [ ] Add and remove calls return `NotSupported` and leave the queue unchanged.
-  - [ ] Observed structural and metadata changes emit the required signals without tick noise.
-  - [ ] Gapless playback verification still passes after MPRIS navigation.
-  - [ ] The full repository quality gate passes.
-  - [ ] Documentation records final verified behavior and any justified deviations.
+  - [x] The daemon starts and owns its expected MPRIS bus name.
+  - [x] Introspection shows root, Player, and TrackList on the existing object path.
+  - [x] Runtime properties report `HasTrackList=true`, `CanEditTracks=false`, and no more than 21 ordered track IDs.
+  - [x] Runtime metadata lookup returns matching IDs and available fields for the context window.
+  - [x] Runtime `GoTo` selects the requested occurrence, including a duplicate-item case when practical.
+  - [x] Add and remove calls return `NotSupported` and leave the queue unchanged.
+  - [x] Observed structural and metadata changes emit the required signals without tick noise.
+  - [x] Gapless playback verification still passes after MPRIS navigation.
+  - [x] The full repository quality gate passes.
+  - [x] Documentation records final verified behavior and any justified deviations.
 - Verification:
-  - [ ] Run `cargo build -p slipmatd` and start the daemon in a session-bus environment.
-  - [ ] Use `busctl --user introspect`, `get-property`, and `call` for the TrackList contract.
-  - [ ] Use `busctl --user monitor` or equivalent to inspect TrackList signals and property invalidations.
-  - [ ] Exercise current, first, last, short, long, and duplicate queue scenarios where available.
-  - [ ] Repeat the project's gapless playback verification.
-  - [ ] Run `make check`.
-  - [ ] Review the final diff for unrelated changes, panic helpers, debug output, and documentation drift.
+  - [x] Run `cargo build -p slipmatd` and start the daemon in a session-bus environment.
+  - [x] Use `busctl --user introspect`, `get-property`, and `call` for the TrackList contract.
+  - [x] Use `busctl --user monitor` or equivalent to inspect TrackList signals and property invalidations.
+  - [x] Exercise current, first, last, short, long, and duplicate queue scenarios where available.
+  - [x] Repeat the project's gapless playback verification.
+  - [x] Run `make check`.
+  - [x] Review the final diff for unrelated changes, panic helpers, debug output, and documentation drift.
 
 ## Checkpoint C — Merge-readiness approval
 
-- [ ] Runtime evidence is recorded and all Task 6 criteria pass.
-- [ ] `make check` passes on the final tree.
-- [ ] The specification reflects the implemented contract.
+- [x] Runtime evidence is recorded and all Task 6 criteria pass.
+- [x] `make check` passes on the final tree.
+- [x] The specification reflects the implemented contract.
 - [ ] The draft pull request summarizes the implementation and verification accurately.
 - [ ] The human has reviewed and approved the feature before merge.

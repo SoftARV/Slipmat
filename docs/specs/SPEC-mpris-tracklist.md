@@ -256,6 +256,39 @@ Follow existing conventions:
 - Existing shell Play, Pause, Next, Previous, Seek, volume, shuffle, repeat,
   Raise, and Quit behavior remains unchanged.
 
+#### Verified 2026-09-01
+
+The branch build was run with `SLIPMAT_SIDECAR=$PWD/sidecar` so the installed
+sidecar could not shadow the occurrence-identity changes under test.
+
+- The daemon owned `org.mpris.MediaPlayer2.Slipmat`, and introspection showed
+  the root, Player, and TrackList interfaces on `/org/mpris/MediaPlayer2`.
+- A restored 515-item queue reported `HasTrackList=true`,
+  `CanEditTracks=false`, and a 21-item ordered context window.
+- `GetTracksMetadata` returned matching `mpris:trackid`, title, artist, album,
+  track number, and duration values for the first, current, and last requested
+  window entries.
+- `GoTo` selected returned occurrence paths without replacing the queue. Player
+  metadata kept the selected TrackList path, and the retained paths remained
+  stable when the window moved.
+- `AddTrack` and `RemoveTrack` returned
+  `org.freedesktop.DBus.Error.NotSupported`; `Tracks` was unchanged.
+- A window slide emitted `TrackListReplaced` followed by a `Tracks`
+  invalidation. Artwork completion emitted `TrackMetadataChanged`. Position
+  updates produced no TrackList signal traffic.
+- Seeking the selected occurrence near its end produced a natural advance from
+  occurrence 21 to 22. The window moved from occurrences 11–31 to 12–32, the
+  replacement named occurrence 22 as current, and PipeWire sink input 6939
+  remained present across the boundary.
+- `make check` passed after the runtime exercise.
+
+The restored queue supplied the long-queue and natural-advance cases. It was
+not replaced merely to manufacture short, empty, or known-duplicate runtime
+queues; those cases remain covered by the focused projection, duplicate
+identity, and `GoTo` tests. The stream check proves that the decoder stayed
+alive, but this run did not include an auditory check with a deliberately
+gapless album.
+
 ## Boundaries
 
 ### Always
