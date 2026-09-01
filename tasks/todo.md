@@ -112,7 +112,7 @@ The plan and the sidecar occurrence identity amendment are approved.
 
 ## Task 5 — Emit precise TrackList notifications
 
-- [ ] Status: pending
+- [x] Status: complete
 - Description: Translate projection changes into the minimum required TrackList signals and property invalidations.
 - Scope: Small-to-medium. Change planning and D-Bus emission tests.
 - Dependencies: Tasks 3 and 4.
@@ -120,24 +120,24 @@ The plan and the sidecar occurrence identity amendment are approved.
   - `crates/slipmat-core/src/mpris.rs`
   - `crates/slipmat-core/src/mpris/track_list.rs`
 - Acceptance criteria:
-  - [ ] A published sequence, ordering, or context-window change emits `TrackListReplaced` with the new list and current occurrence ID.
-  - [ ] The same structural update invalidates `Tracks` without embedding a replacement value.
-  - [ ] A metadata-only change for a retained exposed occurrence emits `TrackMetadataChanged` for that occurrence.
-  - [ ] Position ticks and unrelated Player changes emit no TrackList notification.
-  - [ ] Structural updates do not also emit redundant granular add/remove signals in version 1.
-  - [ ] Bus errors are logged without panicking or stopping subsequent updates.
+  - [x] A published sequence, ordering, or context-window change emits `TrackListReplaced` with the new list and current occurrence ID.
+  - [x] The same structural update invalidates `Tracks` without embedding a replacement value.
+  - [x] A metadata-only change for a retained exposed occurrence emits `TrackMetadataChanged` for that occurrence.
+  - [x] Position ticks and unrelated Player changes emit no TrackList notification.
+  - [x] Structural updates do not also emit redundant granular add/remove signals in version 1.
+  - [x] Bus errors are logged without panicking or stopping subsequent updates.
 - Verification:
-  - [ ] Unit-test the exact notification plan for insert, remove, move, window slide, metadata refresh, position tick, and unrelated changes.
-  - [ ] Run `cargo test -p slipmat-core mpris`.
-  - [ ] Run `cargo check -p slipmat-core -p slipmatd`.
+  - [x] Unit-test the exact notification plan for insert, remove, move, window slide, metadata refresh, position tick, and unrelated changes.
+  - [x] Run `cargo test -p slipmat-core mpris`.
+  - [x] Run `cargo check -p slipmat-core -p slipmatd`.
 
 ## Checkpoint B — Automated feature behavior
 
-- [ ] Tasks 3–5 meet their acceptance criteria.
-- [ ] All focused `slipmat-core` and `slipmatd` tests pass.
-- [ ] Crate checks pass without new warnings.
-- [ ] Player and TrackList metadata share one current occurrence ID.
-- [ ] Notification tests cover both required events and prohibited extra traffic.
+- [x] Tasks 3–5 meet their acceptance criteria.
+- [x] All focused `slipmat-core` and `slipmatd` tests pass.
+- [x] Crate checks pass without new warnings.
+- [x] Player and TrackList metadata share one current occurrence ID.
+- [x] Notification tests cover both required events and prohibited extra traffic.
 - [ ] Human review authorizes runtime verification.
 
 ## Task 6 — Runtime and repository verification
