@@ -1,178 +1,91 @@
-# MPRIS TrackList task checklist
+# Climat Apple Music sign-in task checklist
 
 Plan: [`tasks/plan.md`](plan.md)
-Specification: [`docs/specs/SPEC-mpris-tracklist.md`](../docs/specs/SPEC-mpris-tracklist.md)
+Specification:
+[`docs/specs/SPEC-climat-sign-in.md`](../docs/specs/SPEC-climat-sign-in.md)
+Issue: [#194](https://github.com/SoftARV/Slipmat/issues/194)
 
-The plan and the sidecar occurrence identity amendment are approved.
+Status: approved. Task 1 is authorized for implementation.
 
-## Task 1 — Build the occurrence projection
+## Task 1: Make the signed-out prompt actionable
 
-- [x] Status: complete
-- Description: Add a private, pure TrackList model that reconciles full queue snapshots into stable occurrence records and publishes a bounded context window.
-- Scope: Small-to-medium. Model and unit tests only; no D-Bus interface changes.
-- Dependencies: None.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-  - `crates/slipmat-core/src/mpris/track_list.rs` (new)
-- Acceptance criteria:
-  - [x] Every live queue occurrence has a valid opaque MPRIS object path.
-  - [x] Simultaneous duplicate items have distinct IDs.
-  - [x] Retained occurrences preserve IDs across insertion, removal, a single move, metadata refresh, and context-window slides.
-  - [x] Sidecar occurrence IDs distinguish identical duplicates without positional matching.
-  - [x] The current `nowPlayingItem` occurrence ID resolves its exact queue entry even while MusicKit's queue position is pre-advanced.
-  - [x] The published window contains at most 21 entries, prefers 10 before and 10 after, and shifts at queue edges.
-  - [x] Empty queues and missing or out-of-range current positions produce an empty or safe projection without panicking.
-  - [x] Metadata lookup and full-queue-index lookup reject unknown or stale IDs.
-  - [x] A 500-entry queue reconciles correctly while exposing no more than 21 entries.
-  - [x] Structural, window, and metadata-only changes are classified separately for later signal emission.
-- Verification:
-  - [x] Write focused tests before each behavior change.
-  - [x] Run `cargo test -p slipmat-core mpris::track_list`.
-  - [x] Run `cargo check -p slipmat-core`.
-  - [x] Review for index-derived IDs, duplicate collisions, `.unwrap()`/`.expect()`, and unnecessary public API.
+**Description:** Route `Enter` from Climat's signed-out state to the existing
+daemon sign-in request, update the visible prompt, and cover the behavior with
+focused tests.
 
-## Task 2 — Migrate existing MPRIS behavior to LocalServer
+**Acceptance criteria:**
 
-- [x] Status: complete
-- Description: Replace the ready-made `mpris_server::Player` with a local root and Player implementation while preserving current behavior. TrackList remains disabled in this task.
-- Scope: Medium. One core boundary plus focused parity tests.
-- Dependencies: None. Schedule after Task 1 because both tasks touch `mpris.rs`.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-- Acceptance criteria:
-  - [x] Root identity, desktop entry, URI and MIME support, raise, and quit behavior match the current implementation.
-  - [x] Play, pause, play/pause, next, previous, seek, shuffle, repeat, and volume still map to the existing `MprisCommand` variants.
-  - [x] Playback status, loop status, rate bounds, shuffle, metadata, volume, position, and capability properties retain their current values.
-  - [x] `Seeked` and Player property changes are emitted with the same semantics as before.
-  - [x] Routine position updates change the returned property without emitting property-change traffic on every tick.
-  - [x] `SetPosition` validates the supplied current track ID and ignores stale IDs.
-  - [x] D-Bus startup or emission failures are logged and do not panic the process.
-  - [x] `HasTrackList` remains false until Task 3.
-- Verification:
-  - [x] Adapt or add parity tests before replacing the ready-made player.
-  - [x] Run `cargo test -p slipmat-core mpris`.
-  - [x] Run `cargo check -p slipmat-core`.
-  - [x] Review async methods for `RefCell` borrows held across awaits.
+- [ ] `Stage::SignedOut` displays `[Enter] Sign in to Apple Music`, and pressing
+  `Enter` sends `Request::SignIn` even if a text field retained typing focus.
+- [ ] Climat waits for daemon stage events; it does not mark authorization as
+  complete or change the daemon and sidecar protocols.
+- [ ] `Enter` keeps its current activation behavior in every other stage, and
+  existing leave and quit keys keep their behavior.
 
-## Checkpoint A — Projection and Player parity
+**Verification:**
 
-- [x] Tasks 1 and 2 meet their acceptance criteria.
-- [x] Focused tests and `cargo check -p slipmat-core` pass.
-- [x] The diff introduces no dependency, IPC, sidecar, GTK, or Climat change.
-- [x] Existing MPRIS behavior has a clear parity test or explicit runtime-verification item.
-- [x] Human review authorizes TrackList exposure.
+- [ ] Add a failing `on_key` test through an in-memory `link::Link`, then make
+  it pass.
+- [ ] Add prompt coverage in `ui.rs`.
+- [ ] Run `cargo test -p climat`.
+- [ ] Run `cargo clippy -p climat --all-targets -- -D warnings`.
 
-## Task 3 — Expose the read-only TrackList surface
+**Dependencies:** None.
 
-- [x] Status: complete
-- Description: Supply queue facts from the daemon and implement the local TrackList properties and read-only methods.
-- Scope: Medium. Core interface wiring and daemon snapshot mapping.
-- Dependencies: Tasks 1 and 2; Checkpoint A.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-  - `crates/slipmat-core/src/mpris/track_list.rs`
-  - `crates/slipmatd/src/bus.rs`
-- Acceptance criteria:
-  - [x] `HasTrackList` is true and the TrackList interface is present on the existing MPRIS object.
-  - [x] `Tracks` returns the projection's ordered context window.
-  - [x] `GetTracksMetadata` preserves request order and returns metadata only for known IDs.
-  - [x] Each returned metadata map includes `mpris:trackid` and the available title, artist, album, length, and track-number fields required by the specification.
-  - [x] `mpris:artUrl` is included only when the current artwork is already cached locally; no TrackList call triggers an artwork or network fetch.
-  - [x] Player metadata uses the current occurrence ID from the same projection.
-  - [x] `CanEditTracks` is false; `AddTrack` and `RemoveTrack` return `NotSupported` without changing the queue.
-  - [x] No GTK, Climat, daemon IPC, or sidecar protocol changes beyond the approved `occurrenceId` field are introduced.
-- Verification:
-  - [x] Add tests for properties, metadata ordering, unknown IDs, partial metadata, local artwork, and unsupported edits.
-  - [x] Run `cargo test -p slipmat-core mpris`.
-  - [x] Run `cargo test -p slipmatd`.
-  - [x] Run `cargo check -p slipmat-core -p slipmatd`.
+**Files likely touched:**
 
-## Task 4 — Route GoTo through ChangeToIndex
+- `crates/climat/src/main.rs`
+- `crates/climat/src/link.rs`
+- `crates/climat/src/ui.rs`
 
-- [x] Status: complete
-- Description: Resolve an exposed occurrence ID to its full queue index and pass that index through the existing daemon command path.
-- Scope: Small. One new internal command variant and daemon mapping.
-- Dependencies: Task 3.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-  - `crates/slipmat-core/src/mpris/track_list.rs`
-  - `crates/slipmatd/src/bus.rs`
-- Acceptance criteria:
-  - [x] `GoTo` on a known exposed occurrence emits its full queue index.
-  - [x] The daemon maps that command to `Command::ChangeToIndex { index }`.
-  - [x] Duplicate occurrences route to their individual queue positions.
-  - [x] Navigating between identical duplicates starts the selected occurrence at zero rather than retaining the previous occurrence's playback time.
-  - [x] Unknown, stale, and no-longer-exposed IDs are harmless and do not change playback.
-  - [x] The MPRIS path never sends `Command::SetQueue`.
-- Verification:
-  - [x] Add failing-first tests for valid, duplicate, duplicate-position reset, stale, and unknown IDs.
-  - [x] Run `cargo test -p slipmat-core mpris`.
-  - [x] Run `cargo test -p slipmatd`.
-  - [x] Search the changed MPRIS path for `SetQueue` and confirm no call was added.
+**Estimated scope:** Medium, 3 files.
 
-## Task 5 — Emit precise TrackList notifications
+## Checkpoint A: Automated behavior
 
-- [x] Status: complete
-- Description: Translate projection changes into the minimum required TrackList signals and property invalidations.
-- Scope: Small-to-medium. Change planning and D-Bus emission tests.
-- Dependencies: Tasks 3 and 4.
-- Files likely touched:
-  - `crates/slipmat-core/src/mpris.rs`
-  - `crates/slipmat-core/src/mpris/track_list.rs`
-- Acceptance criteria:
-  - [x] A published sequence, ordering, or context-window change emits `TrackListReplaced` with the new list and current occurrence ID.
-  - [x] The same structural update invalidates `Tracks` without embedding a replacement value.
-  - [x] A metadata-only change for a retained exposed occurrence emits `TrackMetadataChanged` for that occurrence.
-  - [x] Position ticks and unrelated Player changes emit no TrackList notification.
-  - [x] Structural updates do not also emit redundant granular add/remove signals in version 1.
-  - [x] Bus errors are logged without panicking or stopping subsequent updates.
-- Verification:
-  - [x] Unit-test the exact notification plan for insert, remove, move, window slide, metadata refresh, position tick, and unrelated changes.
-  - [x] Run `cargo test -p slipmat-core mpris`.
-  - [x] Run `cargo check -p slipmat-core -p slipmatd`.
+- [ ] Task 1 meets its acceptance criteria.
+- [ ] Focused tests fail without the behavior and pass with it.
+- [ ] Climat builds and passes clippy without warnings.
+- [ ] Human review authorizes runtime verification.
 
-## Checkpoint B — Automated feature behavior
+## Task 2: Verify sign-in and document the result
 
-- [x] Tasks 3–5 meet their acceptance criteria.
-- [x] All focused `slipmat-core` and `slipmatd` tests pass.
-- [x] Crate checks pass without new warnings.
-- [x] Player and TrackList metadata share one current occurrence ID.
-- [x] Notification tests cover both required events and prohibited extra traffic.
-- [x] Human review authorizes runtime verification.
+**Description:** Exercise Climat against a signed-out sidecar profile in a
+graphical session, verify the complete authorization transition, and update the
+user-facing documentation with the observed behavior.
 
-## Task 6 — Runtime and repository verification
+**Acceptance criteria:**
 
-- [x] Status: complete
-- Description: Verify the built feature on the session bus, run the project quality gate, and record the resulting evidence.
-- Scope: Medium verification task. Documentation updates only unless a failure is captured by a regression test first.
-- Dependencies: Tasks 1–5; Checkpoint B.
-- Files likely touched:
-  - `docs/specs/SPEC-mpris-tracklist.md`
-  - `tasks/todo.md`
-- Acceptance criteria:
-  - [x] The daemon starts and owns its expected MPRIS bus name.
-  - [x] Introspection shows root, Player, and TrackList on the existing object path.
-  - [x] Runtime properties report `HasTrackList=true`, `CanEditTracks=false`, and no more than 21 ordered track IDs.
-  - [x] Runtime metadata lookup returns matching IDs and available fields for the context window.
-  - [x] Runtime `GoTo` selects the requested occurrence, including a duplicate-item case when practical.
-  - [x] Add and remove calls return `NotSupported` and leave the queue unchanged.
-  - [x] Observed structural and metadata changes emit the required signals without tick noise.
-  - [x] Gapless playback verification still passes after MPRIS navigation.
-  - [x] The full repository quality gate passes.
-  - [x] Documentation records final verified behavior and any justified deviations.
-- Verification:
-  - [x] Run `cargo build -p slipmatd` and start the daemon in a session-bus environment.
-  - [x] Use `busctl --user introspect`, `get-property`, and `call` for the TrackList contract.
-  - [x] Use `busctl --user monitor` or equivalent to inspect TrackList signals and property invalidations.
-  - [x] Exercise current, first, last, short, long, and duplicate queue scenarios where available.
-  - [x] Repeat the project's gapless playback verification.
-  - [x] Run `make check`.
-  - [x] Review the final diff for unrelated changes, panic helpers, debug output, and documentation drift.
+- [ ] `Enter` reveals Apple's sign-in window without launching Slipmat; the
+  sidecar hides the window after authorization.
+- [ ] Climat receives `Stage::Ready`, loads the library, starts playback, and a
+  restart reuses the persisted Apple session.
+- [ ] The README and specification describe the verified sign-in action and
+  retain the graphical-session requirement.
 
-## Checkpoint C — Merge-readiness approval
+**Verification:**
 
-- [x] Runtime evidence is recorded and all Task 6 criteria pass.
-- [x] `make check` passes on the final tree.
-- [x] The specification reflects the implemented contract.
-- [x] The draft pull request summarizes the implementation and verification accurately.
+- [ ] Run `SLIPMAT_SIDECAR="$PWD/sidecar" cargo run -p climat` with a signed-out
+  test profile under Wayland or X11.
+- [ ] Complete sign-in, play a track, restart Climat, and record the result in
+  the specification.
+- [ ] Run `make check`.
+- [ ] Review the final diff for unrelated code, dependency changes, protocol
+  changes, debug output, and documentation drift.
+
+**Dependencies:** Task 1 and Checkpoint A.
+
+**Files likely touched:**
+
+- `crates/climat/README.md`
+- `docs/specs/SPEC-climat-sign-in.md`
+- `tasks/todo.md`
+
+**Estimated scope:** Small, 3 documentation files.
+
+## Checkpoint B: Merge approval
+
+- [ ] Tasks 1 and 2 meet their acceptance criteria.
+- [ ] Focused tests and `make check` pass.
+- [ ] Runtime evidence covers sign-in, ready state, playback, and restart.
+- [ ] The implementation adds no dependency or protocol change.
 - [ ] The human has reviewed and approved the feature before merge.
