@@ -21,11 +21,10 @@
 //! model. This is the exception, and it is forced by the types rather than
 //! chosen:
 //!
-//! - `mpris_server::Player` is **`!Send`** — its callbacks are `Fn(&Self)`,
-//!   not `Fn(&Self) + Send`. It cannot be moved to another thread, and it
-//!   cannot be sent through a relm4 `CommandOutput` (those require `Send`).
-//! - Building it is **async** (`build().await`), so it does not exist yet when
-//!   `AppModel::init` returns.
+//! - `mpris_server::LocalServer` is **`!Send`**. It cannot be moved to another
+//!   thread or sent through a relm4 `CommandOutput` (those require `Send`).
+//! - Building it is **async**, so it does not exist when `AppModel::init`
+//!   returns.
 //!
 //! So the handle is created empty, filled in by a task on the GTK main thread,
 //! and every later call goes through the same cell. Everything here runs on the
@@ -34,10 +33,9 @@
 //! ## What it must never do
 //!
 //! Emit `PropertiesChanged` on every position tick. MPRIS `Position` is
-//! deliberately *polled*, not signalled — which is why `Player::set_position`
-//! is the one setter in the crate that is neither `async` nor emits a signal.
-//! Everything else is diffed against the last applied state, so a 500ms tick
-//! costs one cheap property write and no bus traffic.
+//! deliberately *polled*, not signalled. Everything is diffed against the last
+//! applied state, so a 500ms tick only replaces the shared snapshot and sends
+//! no bus traffic.
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -45,9 +43,15 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player, Time, TrackId};
+use mpris_server::{
+    LocalPlayerInterface, LocalRootInterface, LocalServer, LoopStatus, Metadata, PlaybackRate,
+    PlaybackStatus, Property, Signal, Time, TrackId, Volume,
+    zbus::{Result as ZbusResult, fdo},
+};
 
 use crate::player::protocol::RepeatMode;
+
+pub(crate) mod track_list;
 
 /// What a controller on the bus asked for.
 ///
@@ -107,7 +111,7 @@ impl Capabilities {
 
 /// How the frontend spawns a `!Send` future on its own main thread.
 ///
-/// `mpris_server::Player` cannot leave the thread it was built on, and every
+/// `mpris_server::LocalServer` cannot leave the thread it was built on, and every
 /// property write is async, so something has to spawn them. relm4 has
 /// `spawn_local`; a tokio `LocalSet` has its own. Choosing between them is the
 /// one thing this module must not do.
@@ -227,10 +231,248 @@ fn track_id(id: Option<&str>) -> Option<TrackId> {
     TrackId::try_from(format!("/dev/miguelrincon/Slipmat/track/{safe}")).ok()
 }
 
+struct SlipmatPlayer {
+    state: RefCell<MprisState>,
+    sink: Sink,
+    can: Capabilities,
+}
+
+impl SlipmatPlayer {
+    fn new(state: MprisState, sink: Sink, can: Capabilities) -> Self {
+        Self {
+            state: RefCell::new(state),
+            sink,
+            can,
+        }
+    }
+
+    fn send(&self, command: MprisCommand) {
+        (self.sink)(command);
+    }
+}
+
+impl LocalRootInterface for SlipmatPlayer {
+    async fn raise(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Raise);
+        Ok(())
+    }
+
+    async fn quit(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Quit);
+        Ok(())
+    }
+
+    async fn can_quit(&self) -> fdo::Result<bool> {
+        Ok(self.can.can_quit)
+    }
+
+    async fn fullscreen(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+
+    async fn set_fullscreen(&self, _fullscreen: bool) -> ZbusResult<()> {
+        Ok(())
+    }
+
+    async fn can_set_fullscreen(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+
+    async fn can_raise(&self) -> fdo::Result<bool> {
+        Ok(self.can.can_raise)
+    }
+
+    async fn has_track_list(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+
+    async fn identity(&self) -> fdo::Result<String> {
+        Ok("Slipmat".into())
+    }
+
+    async fn desktop_entry(&self) -> fdo::Result<String> {
+        Ok(crate::APP_ID.into())
+    }
+
+    async fn supported_uri_schemes(&self) -> fdo::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn supported_mime_types(&self) -> fdo::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+}
+
+impl LocalPlayerInterface for SlipmatPlayer {
+    async fn next(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Next);
+        Ok(())
+    }
+
+    async fn previous(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Previous);
+        Ok(())
+    }
+
+    async fn pause(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Pause);
+        Ok(())
+    }
+
+    async fn play_pause(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::PlayPause);
+        Ok(())
+    }
+
+    async fn stop(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Pause);
+        Ok(())
+    }
+
+    async fn play(&self) -> fdo::Result<()> {
+        self.send(MprisCommand::Play);
+        Ok(())
+    }
+
+    async fn seek(&self, offset: Time) -> fdo::Result<()> {
+        let position = self.state.borrow().position_ms as i128;
+        let target = (position + i128::from(offset.as_millis())).clamp(0, i128::from(u64::MAX));
+        self.send(MprisCommand::Seek(target as u64));
+        Ok(())
+    }
+
+    async fn set_position(&self, supplied_id: TrackId, position: Time) -> fdo::Result<()> {
+        let current_id = track_id(self.state.borrow().track_id.as_deref());
+        if current_id.as_ref() == Some(&supplied_id) && position.as_millis() >= 0 {
+            self.send(MprisCommand::Seek(position.as_millis() as u64));
+        }
+        Ok(())
+    }
+
+    async fn open_uri(&self, _uri: String) -> fdo::Result<()> {
+        Ok(())
+    }
+
+    async fn playback_status(&self) -> fdo::Result<PlaybackStatus> {
+        Ok(self.state.borrow().status())
+    }
+
+    async fn loop_status(&self) -> fdo::Result<LoopStatus> {
+        Ok(self.state.borrow().loop_status())
+    }
+
+    async fn set_loop_status(&self, status: LoopStatus) -> ZbusResult<()> {
+        self.send(MprisCommand::SetRepeat(match status {
+            LoopStatus::None => RepeatMode::None,
+            LoopStatus::Playlist => RepeatMode::All,
+            LoopStatus::Track => RepeatMode::One,
+        }));
+        Ok(())
+    }
+
+    async fn rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(1.0)
+    }
+
+    async fn set_rate(&self, _rate: PlaybackRate) -> ZbusResult<()> {
+        Ok(())
+    }
+
+    async fn shuffle(&self) -> fdo::Result<bool> {
+        Ok(self.state.borrow().shuffle)
+    }
+
+    async fn set_shuffle(&self, shuffle: bool) -> ZbusResult<()> {
+        self.send(MprisCommand::SetShuffle(shuffle));
+        Ok(())
+    }
+
+    async fn metadata(&self) -> fdo::Result<Metadata> {
+        Ok(self.state.borrow().metadata())
+    }
+
+    async fn volume(&self) -> fdo::Result<Volume> {
+        Ok(self.state.borrow().volume)
+    }
+
+    async fn set_volume(&self, volume: Volume) -> ZbusResult<()> {
+        self.send(MprisCommand::SetVolume(volume.clamp(0.0, 1.0)));
+        Ok(())
+    }
+
+    async fn position(&self) -> fdo::Result<Time> {
+        Ok(Time::from_millis(self.state.borrow().position_ms as i64))
+    }
+
+    async fn minimum_rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(1.0)
+    }
+
+    async fn maximum_rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(1.0)
+    }
+
+    async fn can_go_next(&self) -> fdo::Result<bool> {
+        Ok(self.state.borrow().can_next)
+    }
+
+    async fn can_go_previous(&self) -> fdo::Result<bool> {
+        Ok(self.state.borrow().can_previous)
+    }
+
+    async fn can_play(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+
+    async fn can_pause(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+
+    async fn can_seek(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+
+    async fn can_control(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+}
+
+fn changed_player_properties(
+    previous: Option<&MprisState>,
+    state: &MprisState,
+) -> Vec<(&'static str, Property)> {
+    let mut changed = Vec::new();
+    if previous.is_none_or(|prev| state.metadata_fields() != prev.metadata_fields()) {
+        changed.push(("metadata", Property::Metadata(state.metadata())));
+    }
+    if previous.is_none_or(|prev| state.status() != prev.status()) {
+        changed.push(("playback status", Property::PlaybackStatus(state.status())));
+    }
+    if previous.is_none_or(|prev| state.can_next != prev.can_next) {
+        changed.push(("can-go-next", Property::CanGoNext(state.can_next)));
+    }
+    if previous.is_none_or(|prev| state.can_previous != prev.can_previous) {
+        changed.push((
+            "can-go-previous",
+            Property::CanGoPrevious(state.can_previous),
+        ));
+    }
+    if previous.is_none_or(|prev| (state.volume - prev.volume).abs() > f64::EPSILON) {
+        changed.push(("volume", Property::Volume(state.volume)));
+    }
+    if previous.is_none_or(|prev| state.shuffle != prev.shuffle) {
+        changed.push(("shuffle", Property::Shuffle(state.shuffle)));
+    }
+    if previous.is_none_or(|prev| state.loop_status() != prev.loop_status()) {
+        changed.push(("loop status", Property::LoopStatus(state.loop_status())));
+    }
+    changed
+}
+
 /// Handle to the exported player. Cheap to clone and hold in the model.
 #[derive(Clone)]
 pub struct Mpris {
-    player: Rc<RefCell<Option<Rc<Player>>>>,
+    player: Rc<RefCell<Option<Rc<LocalServer<SlipmatPlayer>>>>>,
     last: Rc<RefCell<Option<MprisState>>>,
     spawn: Spawn,
 }
@@ -260,23 +502,11 @@ impl Mpris {
         let slot = this.player.clone();
         let inner = spawn.clone();
         spawn(Box::pin(async move {
-            let player = match Player::builder(BUS_SUFFIX)
-                .identity("Slipmat")
-                .desktop_entry(crate::APP_ID)
-                .can_play(true)
-                .can_pause(true)
-                .can_seek(true)
-                .can_control(true)
-                // Both of these describe a player that outlives its window, and
-                // that is exactly what `close_window` leaves behind: a hidden,
-                // still-playing Slipmat holding the sidecar open. Without
-                // `CanRaise` the controller showing that player has no way to
-                // bring it back, and without `CanQuit` no way to end it either —
-                // the Background portal was the only route to both.
-                .can_raise(can.can_raise)
-                .can_quit(can.can_quit)
-                .build()
-                .await
+            let player = match LocalServer::new(
+                BUS_SUFFIX,
+                SlipmatPlayer::new(MprisState::default(), sink, can),
+            )
+            .await
             {
                 Ok(player) => player,
                 Err(err) => {
@@ -284,8 +514,6 @@ impl Mpris {
                     return;
                 }
             };
-
-            wire_controls(&player, sink);
 
             let player = Rc::new(player);
             // The run task owns its state (`LocalServerRunTask` is 'static), so
@@ -307,50 +535,9 @@ impl Mpris {
 
         let previous = self.last.borrow().clone();
         *self.last.borrow_mut() = Some(state.clone());
-
-        // Position is a polled property in MPRIS, so this is a plain setter
-        // with no bus traffic. Doing it unconditionally is what keeps
-        // `playerctl position` honest between events.
-        player.set_position(Time::from_millis(state.position_ms as i64));
-
-        let Some(prev) = previous else {
-            // First push: send everything.
-            (self.spawn)(Box::pin(apply_all(player, state)));
-            return;
-        };
-
-        (self.spawn)(Box::pin(async move {
-            if state.metadata_fields() != prev.metadata_fields() {
-                log_err("metadata", player.set_metadata(state.metadata()).await);
-            }
-            if state.status() != prev.status() {
-                log_err(
-                    "playback status",
-                    player.set_playback_status(state.status()).await,
-                );
-            }
-            if state.can_next != prev.can_next {
-                log_err("can-go-next", player.set_can_go_next(state.can_next).await);
-            }
-            if state.can_previous != prev.can_previous {
-                log_err(
-                    "can-go-previous",
-                    player.set_can_go_previous(state.can_previous).await,
-                );
-            }
-            if (state.volume - prev.volume).abs() > f64::EPSILON {
-                log_err("volume", player.set_volume(state.volume).await);
-            }
-            if state.shuffle != prev.shuffle {
-                log_err("shuffle", player.set_shuffle(state.shuffle).await);
-            }
-            if state.loop_status() != prev.loop_status() {
-                log_err(
-                    "loop status",
-                    player.set_loop_status(state.loop_status()).await,
-                );
-            }
-        }));
+        *player.imp().state.borrow_mut() = state.clone();
+        let changed = changed_player_properties(previous.as_ref(), &state);
+        (self.spawn)(Box::pin(emit_player_properties(player, changed)));
     }
 
     /// Announce a discontinuous jump. Required by the spec — without it,
@@ -362,29 +549,23 @@ impl Mpris {
         (self.spawn)(Box::pin(async move {
             log_err(
                 "seeked",
-                player.seeked(Time::from_millis(position_ms as i64)).await,
+                player
+                    .emit(Signal::Seeked {
+                        position: Time::from_millis(position_ms as i64),
+                    })
+                    .await,
             );
         }));
     }
 }
 
-async fn apply_all(player: Rc<Player>, state: MprisState) {
-    log_err("metadata", player.set_metadata(state.metadata()).await);
-    log_err(
-        "playback status",
-        player.set_playback_status(state.status()).await,
-    );
-    log_err("can-go-next", player.set_can_go_next(state.can_next).await);
-    log_err(
-        "can-go-previous",
-        player.set_can_go_previous(state.can_previous).await,
-    );
-    log_err("volume", player.set_volume(state.volume).await);
-    log_err("shuffle", player.set_shuffle(state.shuffle).await);
-    log_err(
-        "loop status",
-        player.set_loop_status(state.loop_status()).await,
-    );
+async fn emit_player_properties(
+    player: Rc<LocalServer<SlipmatPlayer>>,
+    changed: Vec<(&'static str, Property)>,
+) {
+    for (name, property) in changed {
+        log_err(name, player.properties_changed([property]).await);
+    }
 }
 
 /// A failed property update is worth a log line and nothing more — the bus
@@ -395,64 +576,19 @@ fn log_err(what: &str, result: mpris_server::zbus::Result<()>) {
     }
 }
 
-/// Wire the bus's buttons to [`MprisCommand`]. This is the half that makes
-/// MPRIS bidirectional, and the half wrappers usually skip.
-fn wire_controls(player: &Player, sink: Sink) {
-    macro_rules! on {
-        ($connect:ident, $cmd:expr) => {{
-            let sink = sink.clone();
-            player.$connect(move |_| sink($cmd));
-        }};
-    }
-
-    on!(connect_play_pause, MprisCommand::PlayPause);
-    on!(connect_play, MprisCommand::Play);
-    on!(connect_pause, MprisCommand::Pause);
-    on!(connect_stop, MprisCommand::Pause);
-    on!(connect_next, MprisCommand::Next);
-    on!(connect_previous, MprisCommand::Previous);
-    on!(connect_raise, MprisCommand::Raise);
-    on!(connect_quit, MprisCommand::Quit);
-
-    // Relative seek, in microseconds, and it can be negative. Resolved here
-    // against the position the player holds, so the sink only ever sees an
-    // absolute one.
-    let s = sink.clone();
-    player.connect_seek(move |player, offset| {
-        let target = player.position().as_millis() + offset.as_millis();
-        s(MprisCommand::Seek(target.max(0) as u64));
-    });
-
-    // Absolute seek. The track id is ignored on purpose: we export one player
-    // with no TrackList, so there is nothing else it could refer to.
-    let s = sink.clone();
-    player.connect_set_position(move |_, _track, position| {
-        s(MprisCommand::Seek(position.as_millis().max(0) as u64));
-    });
-
-    let s = sink.clone();
-    player.connect_set_shuffle(move |_, shuffle| s(MprisCommand::SetShuffle(shuffle)));
-
-    // Writable properties, so a controller can set one we do not offer — MPRIS
-    // has no way to advertise a partial set. Every `LoopStatus` maps onto a
-    // `RepeatMode`, so there is nothing to reject.
-    let s = sink.clone();
-    player.connect_set_loop_status(move |_, status| {
-        s(MprisCommand::SetRepeat(match status {
-            LoopStatus::None => RepeatMode::None,
-            LoopStatus::Playlist => RepeatMode::All,
-            LoopStatus::Track => RepeatMode::One,
-        }));
-    });
-
-    player.connect_set_volume(move |_, volume| {
-        sink(MprisCommand::SetVolume(volume.clamp(0.0, 1.0)));
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_player(state: MprisState) -> (SlipmatPlayer, Rc<RefCell<Vec<MprisCommand>>>) {
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        let captured = commands.clone();
+        let sink = Rc::new(move |command| captured.borrow_mut().push(command));
+        (
+            SlipmatPlayer::new(state, sink, Capabilities::windowed()),
+            commands,
+        )
+    }
 
     #[test]
     fn track_ids_are_valid_object_paths() {
@@ -509,6 +645,38 @@ mod tests {
             ..a.clone()
         };
         assert_eq!(a.metadata_fields(), b.metadata_fields());
+        assert!(changed_player_properties(Some(&a), &b).is_empty());
+    }
+
+    #[test]
+    fn player_property_changes_match_the_existing_export() {
+        let previous = MprisState::default();
+        let state = MprisState {
+            title: "Roundabout".into(),
+            playing: true,
+            can_next: true,
+            can_previous: true,
+            volume: 0.4,
+            shuffle: true,
+            repeat: RepeatMode::One,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            changed_player_properties(Some(&previous), &state),
+            [
+                ("metadata", Property::Metadata(state.metadata())),
+                (
+                    "playback status",
+                    Property::PlaybackStatus(PlaybackStatus::Playing),
+                ),
+                ("can-go-next", Property::CanGoNext(true)),
+                ("can-go-previous", Property::CanGoPrevious(true)),
+                ("volume", Property::Volume(0.4)),
+                ("shuffle", Property::Shuffle(true)),
+                ("loop status", Property::LoopStatus(LoopStatus::Track)),
+            ]
+        );
     }
 
     #[test]
@@ -567,5 +735,162 @@ mod tests {
             state.metadata().length().is_none(),
             "a zero length would render as a 0:00 track"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_root_matches_the_existing_export() {
+        let (player, commands) = local_player(MprisState::default());
+
+        assert!(player.can_raise().await.expect("can raise"));
+        assert!(player.can_quit().await.expect("can quit"));
+        assert!(!player.fullscreen().await.expect("fullscreen"));
+        assert!(!player.can_set_fullscreen().await.expect("set fullscreen"));
+        assert!(!player.has_track_list().await.expect("has track list"));
+        assert_eq!(player.identity().await.expect("identity"), "Slipmat");
+        assert_eq!(
+            player.desktop_entry().await.expect("desktop entry"),
+            crate::APP_ID
+        );
+        assert!(
+            player
+                .supported_uri_schemes()
+                .await
+                .expect("URI schemes")
+                .is_empty()
+        );
+        assert!(
+            player
+                .supported_mime_types()
+                .await
+                .expect("MIME types")
+                .is_empty()
+        );
+
+        player.raise().await.expect("raise");
+        player.quit().await.expect("quit");
+        assert_eq!(
+            *commands.borrow(),
+            [MprisCommand::Raise, MprisCommand::Quit]
+        );
+
+        let headless = SlipmatPlayer::new(
+            MprisState::default(),
+            Rc::new(|_| {}),
+            Capabilities::headless(),
+        );
+        assert!(!headless.can_raise().await.expect("headless can raise"));
+        assert!(!headless.can_quit().await.expect("headless can quit"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_player_reports_the_current_state() {
+        let state = MprisState {
+            track_id: Some("1049009209".into()),
+            title: "Roundabout".into(),
+            position_ms: 12_345,
+            playing: true,
+            can_next: true,
+            can_previous: true,
+            volume: 0.4,
+            shuffle: true,
+            repeat: RepeatMode::One,
+            ..Default::default()
+        };
+        let (player, _) = local_player(state.clone());
+
+        assert_eq!(
+            player.playback_status().await.expect("status"),
+            state.status()
+        );
+        assert_eq!(
+            player.loop_status().await.expect("loop status"),
+            state.loop_status()
+        );
+        assert_eq!(player.rate().await.expect("rate"), 1.0);
+        assert_eq!(player.minimum_rate().await.expect("minimum rate"), 1.0);
+        assert_eq!(player.maximum_rate().await.expect("maximum rate"), 1.0);
+        assert!(player.shuffle().await.expect("shuffle"));
+        assert_eq!(player.metadata().await.expect("metadata"), state.metadata());
+        assert_eq!(player.volume().await.expect("volume"), 0.4);
+        assert_eq!(
+            player.position().await.expect("position"),
+            Time::from_millis(12_345)
+        );
+        assert!(player.can_go_next().await.expect("can go next"));
+        assert!(player.can_go_previous().await.expect("can go previous"));
+        assert!(player.can_play().await.expect("can play"));
+        assert!(player.can_pause().await.expect("can pause"));
+        assert!(player.can_seek().await.expect("can seek"));
+        assert!(player.can_control().await.expect("can control"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_controls_map_to_existing_commands() {
+        let state = MprisState {
+            track_id: Some("1049009209".into()),
+            position_ms: 5_000,
+            ..Default::default()
+        };
+        let (player, commands) = local_player(state);
+
+        player.play().await.expect("play");
+        player.pause().await.expect("pause");
+        player.play_pause().await.expect("play pause");
+        player.stop().await.expect("stop");
+        player.next().await.expect("next");
+        player.previous().await.expect("previous");
+        player
+            .seek(Time::from_millis(-2_000))
+            .await
+            .expect("relative seek");
+        player
+            .set_position(
+                track_id(Some("1049009209")).expect("track id"),
+                Time::from_millis(4_000),
+            )
+            .await
+            .expect("absolute seek");
+        player.set_shuffle(true).await.expect("shuffle");
+        player
+            .set_loop_status(LoopStatus::Playlist)
+            .await
+            .expect("loop status");
+        player.set_volume(2.0).await.expect("volume");
+
+        assert_eq!(
+            *commands.borrow(),
+            [
+                MprisCommand::Play,
+                MprisCommand::Pause,
+                MprisCommand::PlayPause,
+                MprisCommand::Pause,
+                MprisCommand::Next,
+                MprisCommand::Previous,
+                MprisCommand::Seek(3_000),
+                MprisCommand::Seek(4_000),
+                MprisCommand::SetShuffle(true),
+                MprisCommand::SetRepeat(RepeatMode::All),
+                MprisCommand::SetVolume(1.0),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_position_ignores_a_stale_track_id() {
+        let state = MprisState {
+            track_id: Some("current".into()),
+            ..Default::default()
+        };
+        let (player, commands) = local_player(state);
+
+        player
+            .set_position(
+                track_id(Some("stale")).expect("track id"),
+                Time::from_millis(9_000),
+            )
+            .await
+            .expect("stale seek");
+
+        assert!(commands.borrow().is_empty());
     }
 }
