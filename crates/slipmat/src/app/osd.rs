@@ -3,11 +3,10 @@
 
 //! The volume panel: what `Ctrl`+`Up`/`Down` shows you.
 //!
-//! Slipmat's volume is MusicKit's, not the system's, so there is no shell OSD
-//! to fall back on — the Shell's slider moves the sink, not the player. And the
-//! control that displays it stands down on a narrow window, which is exactly
-//! when the shortcut is the only way to reach it: five presses would change the
-//! volume by a quarter and show nothing at all (#120).
+//! Slipmat's shortcuts change its own desktop stream rather than the system
+//! output, so the shell does not draw its OSD. The in-window control also stands
+//! down on a narrow window, exactly when the shortcut is the only way to reach
+//! it: five presses would change the volume by a quarter and show nothing (#120).
 //!
 //! **Raised by the keyboard and by nothing else.** Not by MPRIS — the Shell
 //! draws its own slider, our window may not even be on screen, and an animated

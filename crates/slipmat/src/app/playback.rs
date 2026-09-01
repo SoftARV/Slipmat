@@ -111,8 +111,7 @@ impl AppModel {
             // one — and each of them is in the drawer.
             narrow: self.narrow_header,
             repeat: self.mirror.repeat(),
-            // Ours, not the sidecar's: MusicKit is told the volume and does not
-            // report one back, so `self.volume` is the only record of it.
+            // Mirrored from the daemon, which owns the desktop stream volume.
             volume: self.volume,
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
             artist: item.map(|i| i.artist.clone()).unwrap_or_default(),
@@ -194,8 +193,7 @@ impl AppModel {
     ///
     /// The clamp is the whole reason this is shared rather than inlined: the
     /// keyboard steps arrive as `self.volume ± VOLUME_STEP` and will walk off
-    /// both ends of the range, and MusicKit takes a `volume` outside 0.0–1.0
-    /// without complaining about it.
+    /// both ends of the range.
     pub(super) fn set_volume(&mut self, volume: f64) {
         let volume = volume.clamp(0.0, 1.0);
         if (volume - self.volume).abs() < f64::EPSILON {

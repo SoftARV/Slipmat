@@ -519,7 +519,10 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
                 });
             }
         }
-        PlayerEvent::Volume { volume } => daemon.model.borrow_mut().volume = *volume,
+        // Older installed sidecars still report MusicKit's persisted gain.
+        // The desktop stream owns volume now, so accepting this would let a
+        // hidden second gain overwrite the number every client displays.
+        PlayerEvent::Volume { .. } => {}
         // The sidecar's half of a library write. Removing and un-favouriting
         // can only be done by MusicKit itself, so they settle here rather than
         // where the REST writes do — and the library is stale until a refresh
@@ -806,63 +809,42 @@ fn answer(
             None
         }
         Request::Transport(transport) => {
-            // **A queue that was loaded but never started has no current item**,
-            // and `play` needs one to act on — so it returns having done
-            // nothing at all. That is the state every restore leaves behind,
-            // and after a sidecar restart it is what makes a perfectly healthy
-            // player refuse to start: press play, nothing happens, no error.
-            // Opening the item first is what `jumpTo` already does for a click.
-            if matches!(transport, Transport::Play | Transport::PlayPause) && needs_opening(daemon)
-            {
-                let index = daemon.model.borrow().player.queue_position;
-                tracing::info!(index, "nothing is open yet — opening the queue first");
-                daemon.send(Command::ChangeToIndex { index });
-            }
-            if let Some(command) = command_for(transport) {
-                tracing::debug!(cmd = command.name(), "transport");
-                daemon.send(command);
-            }
-            match transport {
-                Transport::SetVolume { volume } => {
-                    // **The stream, not the player.** MusicKit has a volume of
-                    // its own and driving it left two independent gains for one
-                    // application — Slipmat at 50% while the desktop's mixer
-                    // said 100%, multiplying, with only one of them where
-                    // anybody would look for it. This is the one the audio
-                    // panel shows.
-                    if let Some(mixer) = &daemon.mixer {
-                        mixer.set(volume);
-                    }
-                    // Kept regardless: it is what a client is told while
-                    // nothing is playing and there is no stream to ask.
-                    daemon.model.borrow_mut().volume = volume;
-                    // **Said at once, like a seek.** Nothing will ever echo this
-                    // back, so without it the only way a client learns the new
-                    // volume is the periodic snapshot — twice a second while
-                    // playing, and *never* while paused. A meter that moves a
-                    // beat late reads as a key that did not register, and a
-                    // client stepping from the value it last saw sends the same
-                    // number again.
-                    daemon.publish_snapshot();
-                }
-                // **Adopted before MusicKit confirms it.** A seek takes a
-                // moment to land, and the tick in between would otherwise
-                // publish the position the track was at *before* the drag —
-                // pulling the slider back under the finger that just moved it,
-                // then throwing it forward when the real reading arrives.
-                Transport::Seek { position_ms } => {
-                    daemon.model.borrow_mut().player.seeked_to(position_ms);
-                    // **Said immediately, not on the next tick.** A client that
-                    // has just dragged the slider is extrapolating from where
-                    // the track *was*; leaving it to do that for half a second
-                    // is what snaps the handle back under the finger before it
-                    // jumps forward again.
-                    daemon.publish_snapshot();
-                }
-                _ => {}
-            }
+            route_transport(daemon, transport);
             None
         }
+    }
+}
+
+pub(crate) fn route_transport(daemon: &Rc<Daemon>, transport: Transport) {
+    // A restored queue has no current item, so MusicKit's `play` does nothing
+    // until the current queue entry has been opened.
+    if matches!(transport, Transport::Play | Transport::PlayPause) && needs_opening(daemon) {
+        let index = daemon.model.borrow().player.queue_position;
+        tracing::info!(index, "nothing is open yet — opening the queue first");
+        daemon.send(Command::ChangeToIndex { index });
+    }
+    if let Some(command) = command_for(transport) {
+        tracing::debug!(cmd = command.name(), "transport");
+        daemon.send(command);
+    }
+    match transport {
+        Transport::SetVolume { volume } => {
+            let volume = volume.clamp(0.0, 1.0);
+            if let Some(mixer) = &daemon.mixer {
+                mixer.set(volume);
+            }
+            // Keep the requested value while no stream exists, and publish it
+            // at once so paused clients can step from the new value.
+            daemon.model.borrow_mut().volume = volume;
+            daemon.publish_snapshot();
+        }
+        // Adopt a seek before MusicKit confirms it so the next position tick
+        // cannot pull a client's slider back to the old position.
+        Transport::Seek { position_ms } => {
+            daemon.model.borrow_mut().player.seeked_to(position_ms);
+            daemon.publish_snapshot();
+        }
+        _ => {}
     }
 }
 
@@ -1260,6 +1242,40 @@ fn command_for(transport: Transport) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn daemon() -> Rc<Daemon> {
+        let (events, _) = broadcast::channel(8);
+        Rc::new(Daemon {
+            model: RefCell::new(Model::new()),
+            sidecar: RefCell::new(None),
+            events,
+            restored: std::cell::Cell::new(false),
+            restarts: std::cell::Cell::new(0),
+            last_queue: RefCell::new(None),
+            pending_start: RefCell::new(None),
+            healed: std::cell::Cell::new(false),
+            resume_at: std::cell::Cell::new(None),
+            after_apply: std::cell::Cell::new(None),
+            mpris: RefCell::new(None),
+            refreshing: std::cell::Cell::new(false),
+            art_for: RefCell::new(None),
+            clients: std::cell::Cell::new(0),
+            idle: std::cell::Cell::new(false),
+            wake: tokio::sync::Notify::new(),
+            mixer: None,
+            quitting: tokio::sync::Notify::new(),
+        })
+    }
+
+    #[test]
+    fn a_legacy_musickit_volume_event_cannot_replace_stream_volume() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().volume = 0.75;
+
+        on_event(&daemon, PlayerEvent::Volume { volume: 0.0 });
+
+        assert_eq!(daemon.model.borrow().volume, 0.75);
+    }
 
     #[test]
     fn every_transport_verb_has_a_sidecar_command() {
