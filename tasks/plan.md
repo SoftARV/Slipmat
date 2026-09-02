@@ -1,178 +1,167 @@
-# Sign-out account-state cleanup implementation plan
+# Issue #196 AUR sidecar payload implementation plan
 
 ## Status
 
-Completed on 2026-09-02.
+Completed and approved on 2026-09-02. Awaiting merge; AUR publication remains
+a separate explicit action.
 
 ## Source of truth
 
-- Specification:
-  [`docs/specs/SPEC-sign-out-clear-state.md`](../docs/specs/SPEC-sign-out-clear-state.md)
-- Branch: `fix/sign-out-clear-state`
+- Issue: [#196 — AUR packages omit `queue-identity.js` and prevent the
+  sidecar preload from loading](https://github.com/SoftARV/Slipmat/issues/196)
+- Branch: `fix/196-aur-queue-identity`
 - Task checklist: [`tasks/todo.md`](todo.md)
+
+Issue #196 supplies the reproduction, diagnosis, requested behavior, and
+runtime success criteria. No separate specification is needed for this focused
+packaging fix.
 
 ## Overview
 
-Move sign-out cleanup into `slipmatd`, the process that owns shared account
-state. The daemon will clear memory and persistence before publishing the
-signed-out stage, invalidate work started by the old authorization session,
-and publish existing empty-state events. Climat and GTK will clear their local
-presentation only after the daemon reports sign-out.
+Restore the preload dependency in AUR-built daemon payloads. The affected
+`slipmat-daemon-git` package must install `queue-identity.js` beside
+`preload.js`; the stable package definition must also carry the file when its
+selected release contains it without breaking the current `v0.10.0` source,
+which predates that module. Then build and inspect both package variants and
+exercise Climat against the rebuilt daemon.
 
 ## Architecture decisions
 
-1. Use one idempotent daemon cleanup operation for
-   `Authorization { authorized: false }` and `SignedOut`. The first removes
-   access promptly; the second is the completion backstop.
-2. Reset only account-derived model and command state. Preserve stream volume,
-   application settings, artwork files, and global unplayable IDs.
-3. Delete the library cache and saved playback session in the daemon. Remove
-   shared-cache deletion from the GTK request path.
-4. Add a monotonically increasing authorization generation to the daemon.
-   Library refreshes capture it and discard results if it changes before the
-   fetch completes. A stage-only check is insufficient because another account
-   may already be ready when the old result arrives.
-5. Reuse `Stage`, `Queue`, `Snapshot`, and `LibraryChanged` for cleanup. Add the
-   approved `LibraryRefreshing` event so both clients can show the daemon's
-   whole-library refresh state.
-6. Let clients preserve preferences while clearing transient account content.
-   Climat keeps view, sort, and catalog-kind choices; GTK keeps settings and
-   chrome preferences.
+1. Change only the two AUR package payload definitions. The sidecar source,
+   Rust daemon, IPC protocol, dependencies, and package ownership stay
+   unchanged.
+2. Add `sidecar/queue-identity.js` directly to the `slipmat-daemon-git` copy
+   list because current `main` requires it from `preload.js`.
+3. Keep the stable PKGBUILD compatible with `pkgver=0.10.0`. That tag has
+   neither the module nor its preload import, so the stable package will copy
+   the module only when the selected release source contains it. An
+   unconditional copy would make the current stable package fail to build.
+4. Use package-archive inspection as the regression check. This is a packaging
+   manifest correction, so a new parser, helper, or dependency would add more
+   machinery than the fix.
+5. Keep AUR publication outside this plan. Local build and runtime verification
+   do not authorize `scripts/aur-publish.sh --push` or any other external
+   release action.
 
 ## Dependency graph
 
 ```text
-Task 1: daemon account reset and empty-state events
+Task 1: Correct both AUR sidecar payload definitions
     |
     v
-Task 2: reject stale library refreshes by authorization generation
+Task 2: Build, inspect, and exercise the packages
     |
     v
-Checkpoint A: daemon boundary proven
-    |
-    +--------------------+
-    |                    |
-    v                    v
-Task 3: Climat reset     Task 4: GTK confirmed reset
-    |                    |
-    +----------+---------+
-               |
-               v
-Checkpoint B: clients converge
-               |
-               v
-Task 5: multi-client runtime verification and evidence
-               |
-               v
-Checkpoint C: ready for implementation review
+Checkpoint: Issue #196 verified and ready for review
 ```
 
-Tasks 3 and 4 are technically independent after Checkpoint A. They should
-still land as separate commits so each client remains reviewable and
-revertible. The current single-branch workflow can execute them sequentially.
+The work is sequential: package evidence is meaningful only after both
+definitions are corrected.
 
 ## Task list
 
-### Phase 1: Daemon account boundary
+### Phase 1: Package definitions
 
-- [x] Task 1: Clear daemon account state and persistence on sign-out.
-- [x] Task 2: Reject library refresh results from an ended authorization
-  session.
+- [x] Task 1: Correct the AUR sidecar payload definitions.
 
-### Checkpoint A: Daemon boundary
+### Phase 2: Package and runtime proof
 
-- [x] A populated daemon becomes empty before publishing `Stage::SignedOut`.
-- [x] Cleanup is idempotent and preserves non-account state.
-- [x] A late refresh cannot repopulate memory or disk.
-- [x] Focused `slipmatd` tests and clippy pass.
-- [x] Human review authorizes client work.
+- [x] Task 2: Build, inspect, and exercise both AUR package variants.
 
-### Phase 2: Client convergence
+### Checkpoint: Complete
 
-- [x] Task 3: Clear Climat's transient account presentation on the daemon's
-  signed-out stage.
-- [x] Task 4: Move GTK cleanup from sign-out request time to daemon
-  confirmation.
+- [x] Both PKGBUILDs are syntax-clean and build from their declared sources.
+- [x] The `slipmat-daemon-git` archive contains
+  `/usr/share/slipmat/sidecar/queue-identity.js`.
+- [x] The stable `v0.10.0` archive remains buildable without a file its source
+  does not contain, and the definition includes the module for the next source
+  release that carries it.
+- [x] The rebuilt daemon loads the preload without a missing-module error and
+  Climat reaches ready or signed-out instead of the MusicKit timeout.
+- [x] `make check` passes and the final diff contains no unrelated change.
+- [x] The human approves the result before merge or AUR publication.
 
-### Checkpoint B: Client convergence
-
-- [x] Climat and GTK clear stale account content without reconnecting.
-- [x] Both clients preserve non-account preferences.
-- [x] Focused client tests and clippy pass.
-- [x] Human review authorizes destructive runtime sign-out testing.
-
-### Phase 3: Runtime and documentation
-
-- [x] Task 5: Verify multi-client sign-out, restart, and fresh sign-in; record
-  the result.
-
-### Checkpoint C: Complete
-
-- [x] All specification success criteria are met.
-- [x] `make check` passes.
-- [x] Runtime evidence covers two clients, daemon restart, and fresh sign-in.
-- [x] The final diff contains no dependency, cache-format, or sidecar protocol
-  change; its only IPC addition is the approved refresh-status event.
-- [x] Human review approves the feature for merge.
-
-Detailed task acceptance criteria and commands live in
+Detailed acceptance criteria and verification commands live in
 [`tasks/todo.md`](todo.md).
 
 ## Risks and controls
 
 | Risk | Impact | Control |
 |---|---|---|
-| Cleanup publishes the stage before state is empty | High | Reset memory and persistence first, then publish stage and empty-state events; assert event order. |
-| An old refresh completes after sign-out or account replacement | High | Capture and compare an authorization generation before any save, model write, or event. |
-| Repeated authorization and signed-out events erase preferences | Medium | Keep cleanup idempotent and test preserved volume and global state. |
-| GTK clears optimistically while the daemon reports an error | Medium | Send only `Request::SignOut`; run presentation cleanup from daemon stage handling. |
-| Climat leaves a stale row actionable behind the prompt | High | Clear browser, page, catalog, queue, and snapshot state in one signed-out transition test. |
-| A refresh looks like an empty or frozen library | Medium | Publish daemon-owned refresh status and render it in both clients without hiding existing content. |
-| Cache tests write into the developer profile | High | Reuse isolated XDG test paths; never clear the live profile from automated tests. |
-| Runtime verification signs out a working account unexpectedly | High | Require Checkpoint B approval and explicit human participation before the manual sign-out. |
+| The stable PKGBUILD requests a file absent from `v0.10.0` | High | Make the stable install conditional on the selected release source containing the module; build the current stable package. |
+| Only the front-end package is inspected in the split build | High | Inspect `slipmat-daemon-git`, which owns `/usr/share/slipmat/sidecar`, rather than `climat-git` or `slipmat-git`. |
+| The archive is correct but the installed daemon still uses an old payload | High | Install the rebuilt daemon package, confirm the installed path, and restart the daemon before launching Climat. |
+| The existing 60-second MusicKit timeout hides another preload failure | Medium | Run the daemon with Electron logging and check the first preload error as well as Climat's final stage. |
+| Local verification accidentally publishes an AUR update | High | Use `makepkg` and archive inspection only; never pass `--push` to the publication script. |
 
 ## Verification strategy
 
-Each task starts with a focused failing test. Checkpoint A proves the shared
-daemon contract before client changes. Checkpoint B proves both projections.
-Task 5 uses one daemon with GTK and Climat connected, then verifies raw browse,
-queue, and snapshot responses after sign-out.
+Task 1 uses shell syntax and diff checks. Task 2 builds each PKGBUILD from its
+declared source, inspects the generated package archives, then verifies the
+installed `-git` daemon with the issue's logging environment and Climat flow.
 
-Required commands:
+Required checks:
 
 ```bash
-cargo test -p slipmatd sign_out -- --nocapture
-cargo clippy -p slipmatd --all-targets -- -D warnings
-cargo test -p climat signed_out -- --nocapture
-cargo clippy -p climat --all-targets -- -D warnings
-cargo test -p slipmat signed_out -- --nocapture
-cargo clippy -p slipmat --all-targets -- -D warnings
+bash -n packaging/aur/slipmat/PKGBUILD \
+  packaging/aur/slipmat-git/PKGBUILD
+git diff --check
+
+(cd packaging/aur/slipmat && makepkg -f)
+(cd packaging/aur/slipmat-git && makepkg -f)
+
+bsdtar -tf packaging/aur/slipmat-git/slipmat-daemon-git-*.pkg.tar.zst \
+  | grep -Fx usr/share/slipmat/sidecar/queue-identity.js
+
 make check
 ```
 
+The stable archive is also inspected against the direct relative imports in
+its own `preload.js`. For `v0.10.0`, absence of `queue-identity.js` is correct
+because that source does not import it. Runtime verification follows issue
+#196 after installing the rebuilt `slipmat-daemon-git` package.
+
+## Verification evidence
+
+- The stable `0.10.0-1` package built from its declared tag; all 235 release
+  tests passed, and its archive contains the three sidecar files imported by
+  that release.
+- The split `0.10.0.r136.g50088c5-1` package base built from `main`; all 331
+  release tests passed, and the daemon archive contains
+  `usr/share/slipmat/sidecar/queue-identity.js`.
+- `make check` passed on the feature branch.
+- Pacman upgraded `slipmat-daemon-git` and `climat-git` together to `r136`.
+  The installed module is owned by the daemon package.
+- With the issue's Electron logging enabled, the preload harvested the signed-in
+  authorization and refreshed 535 songs, 420 albums, 266 artists, and 8
+  playlists. Climat connected and rendered the song library without the
+  60-second timeout.
+- No AUR package was published.
+
 ## Definition of done
 
-- Every task meets its acceptance criteria and focused tests fail before the
-  implementation, then pass afterward.
-- The daemon owns shared cleanup and clients only project confirmed state.
-- No old account data survives in daemon memory, library cache, playback
-  session, client presentation, or a late refresh.
-- Runtime verification proves sign-out, signed-out restart, and clean sign-in.
-- Documentation records the observed result.
-- The human approves the result before merge.
+- Both tasks meet their acceptance criteria.
+- Package syntax, builds, archive contents, repository checks, and the Climat
+  runtime path are verified.
+- No missing-module preload error occurs with the rebuilt `-git` daemon.
+- The current stable package still builds, and its definition is ready to copy
+  the module once a release contains it.
+- No package is published without a separate explicit instruction.
+- The human reviews and approves the result before merge.
 
 ## Planning evidence and limits
 
-The code graph generation on `main` at `fa61415` was used at Verify tier.
-`set_authorization` currently changes only the stage, `Model::new` loads the
-library cache, and `refresh_library` writes every successful result without a
-session check. Climat assigns `Stage` without clearing browser or queue state.
-GTK calls `forget_session` immediately after sending `Request::SignOut`, and
-that client method currently deletes shared cache files. Coverage reported no
-recorded gaps for the inspected Rust and sidecar paths. That signal is
-best-effort, and the approved spec was read directly.
+The code graph generation `2026-09-02T16:48:10Z` on branch
+`fix/196-aur-queue-identity` was checked at Verify tier. It reported no
+recorded coverage gaps for the inspected paths, but PKGBUILD freshness is not
+tracked, so both files were read directly. Direct source inspection confirmed
+that current `sidecar/preload.js` imports `./queue-identity`, both AUR payload
+lists omit the module, and the Makefile install path includes it. Git object
+inspection also confirmed that tag `v0.10.0` contains neither
+`sidecar/queue-identity.js` nor its preload import. Coverage remains a
+best-effort signal; package archives and runtime behavior are the final proof.
 
 ## Open questions
 
-None. The approved specification fixes the cleanup boundary and the retained
-non-account state.
+None. The plan resolves the stable-tag mismatch while preserving issue #196's
+required behavior for affected `-git` installations.
