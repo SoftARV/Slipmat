@@ -108,6 +108,7 @@ modules:
       - install -Dm644 sidecar/package.json /app/share/slipmat/sidecar/package.json
       - install -Dm644 sidecar/main.js /app/share/slipmat/sidecar/main.js
       - install -Dm644 sidecar/preload.js /app/share/slipmat/sidecar/preload.js
+      - install -Dm644 sidecar/queue-identity.js /app/share/slipmat/sidecar/queue-identity.js
       - mkdir -p /app/share/slipmat/sidecar/node_modules/electron/dist
       - cp -a electron-dist/. /app/share/slipmat/sidecar/node_modules/electron/dist/
       # zypak has to be the *direct* parent of Chromium, and Chromium is the
