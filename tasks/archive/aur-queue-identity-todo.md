@@ -1,11 +1,10 @@
 # Issue #196 AUR sidecar payload task checklist
 
-- Plan: [`tasks/plan.md`](plan.md)
+- Plan: [`tasks/archive/aur-queue-identity-plan.md`](aur-queue-identity-plan.md)
 - Issue: [#196 — AUR packages omit `queue-identity.js`](https://github.com/SoftARV/Slipmat/issues/196)
 - Branch: `fix/196-aur-queue-identity`
 
-Status: Completed and approved on 2026-09-02. Awaiting merge; AUR publication
-remains a separate explicit action.
+Status: Completed and approved on 2026-09-02. Archived after PR #198 merged.
 
 ## Task 1: Correct the AUR sidecar payload definitions
 

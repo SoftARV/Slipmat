@@ -2,15 +2,15 @@
 
 ## Status
 
-Completed and approved on 2026-09-02. Awaiting merge; AUR publication remains
-a separate explicit action.
+Completed and approved on 2026-09-02. Archived after PR #198 merged.
 
 ## Source of truth
 
 - Issue: [#196 — AUR packages omit `queue-identity.js` and prevent the
   sidecar preload from loading](https://github.com/SoftARV/Slipmat/issues/196)
 - Branch: `fix/196-aur-queue-identity`
-- Task checklist: [`tasks/todo.md`](todo.md)
+- Task checklist:
+  [`tasks/archive/aur-queue-identity-todo.md`](aur-queue-identity-todo.md)
 
 Issue #196 supplies the reproduction, diagnosis, requested behavior, and
 runtime success criteria. No separate specification is needed for this focused
@@ -82,7 +82,7 @@ definitions are corrected.
 - [x] The human approves the result before merge or AUR publication.
 
 Detailed acceptance criteria and verification commands live in
-[`tasks/todo.md`](todo.md).
+[`tasks/archive/aur-queue-identity-todo.md`](aur-queue-identity-todo.md).
 
 ## Risks and controls
 
