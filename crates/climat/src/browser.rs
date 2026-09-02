@@ -134,6 +134,16 @@ fn slot(view: View) -> usize {
 }
 
 impl Browser {
+    pub fn clear_account_state(&mut self) {
+        let (view, kinds, sorts) = (self.view, self.kinds, self.sorts);
+        *self = Self {
+            view,
+            kinds,
+            sorts,
+            ..Self::default()
+        };
+    }
+
     /// Which slot the text on screen belongs to.
     fn filter_slot(&self) -> usize {
         if self.showing.is_catalog() {
@@ -584,5 +594,49 @@ mod tests {
             b.scroll(12);
             assert!((b.offset..b.offset + 12).contains(&b.cursor), "{target}");
         }
+    }
+
+    #[test]
+    fn signed_out_clears_account_rows_and_keeps_browser_choices() {
+        let mut b = Browser {
+            view: View::Albums,
+            kinds: CatalogFilter::Artists,
+            sorts: [
+                (SortBy::Title, false),
+                (SortBy::Year, true),
+                (SortBy::Title, false),
+                (SortBy::Title, false),
+            ],
+            ..Default::default()
+        };
+        *b.filter_mut() = "old album".into();
+        b.showing = Showing::Catalog { searching: true };
+        *b.filter_mut() = "old catalog search".into();
+        b.rows = vec![song(Some("old"))];
+        b.found = b.rows.clone();
+        b.cursor = 1;
+        b.typing = true;
+        b.more = true;
+        b.paging = true;
+        b.from_catalog = true;
+        b.total = 1;
+        b.offset = 1;
+
+        b.clear_account_state();
+
+        assert_eq!(b.view, View::Albums);
+        assert_eq!(b.kinds, CatalogFilter::Artists);
+        assert_eq!(b.sorts[1], (SortBy::Year, true));
+        assert!(matches!(b.showing, Showing::Library));
+        assert!(b.rows.is_empty());
+        assert!(b.found.is_empty());
+        assert!(b.filters.iter().all(String::is_empty));
+        assert_eq!(b.cursor, 0);
+        assert!(!b.typing);
+        assert!(!b.more);
+        assert!(!b.paging);
+        assert!(!b.from_catalog);
+        assert_eq!(b.total, 0);
+        assert_eq!(b.offset, 0);
     }
 }

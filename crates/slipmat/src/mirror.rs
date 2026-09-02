@@ -20,6 +20,14 @@ pub struct Mirror {
 }
 
 impl Mirror {
+    pub fn clear_account_state(&mut self) {
+        let stage = self.stage.take();
+        *self = Self {
+            stage,
+            ..Self::default()
+        };
+    }
+
     /// What is playing, or `None` when nothing is.
     ///
     /// A title is the honest test: the daemon sends a default snapshot before
@@ -126,5 +134,27 @@ mod tests {
         };
         assert!(!m.has_next());
         assert!(m.has_previous());
+    }
+
+    #[test]
+    fn signed_out_clears_the_player_projection() {
+        let mut m = Mirror {
+            snap: Snapshot {
+                title: "Old song".into(),
+                playing: true,
+                ..Default::default()
+            },
+            queue: queue(&["a", "b"]),
+            queue_position: 1,
+            stage: Some(Stage::SignedOut),
+        };
+
+        m.clear_account_state();
+
+        assert!(m.snap.title.is_empty());
+        assert!(!m.snap.playing);
+        assert!(m.queue.is_empty());
+        assert_eq!(m.queue_position, 0);
+        assert_eq!(m.stage, Some(Stage::SignedOut));
     }
 }

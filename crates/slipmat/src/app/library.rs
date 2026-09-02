@@ -82,6 +82,10 @@ impl AppModel {
         self.albums = cached.albums;
         self.artists = cached.artists;
         self.playlists = cached.playlists;
+        self.built_rows = None;
+        self.built_albums = None;
+        self.built_artists = None;
+        self.built_playlists = None;
         self.rebuild_rows();
         self.rebuild_albums();
         self.rebuild_artists();

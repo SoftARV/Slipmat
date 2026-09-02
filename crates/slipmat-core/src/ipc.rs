@@ -477,6 +477,10 @@ pub enum Event {
     #[serde(rename = "libraryChanged")]
     LibraryChanged,
 
+    /// Whether the daemon is replacing the complete library cache.
+    #[serde(rename = "libraryRefreshing")]
+    LibraryRefreshing { refreshing: bool },
+
     /// Something went wrong that a person should see.
     #[serde(rename = "error")]
     Error { detail: String },
@@ -585,6 +589,23 @@ mod tests {
                 mode: RepeatMode::All
             })
         ));
+    }
+
+    #[test]
+    fn library_refresh_state_is_explicit_on_the_wire() {
+        let started =
+            serde_json::to_string(&Event::LibraryRefreshing { refreshing: true }).unwrap();
+        let finished =
+            serde_json::to_string(&Event::LibraryRefreshing { refreshing: false }).unwrap();
+
+        assert_eq!(
+            started,
+            r#"{"event":"libraryRefreshing","refreshing":true}"#
+        );
+        assert_eq!(
+            finished,
+            r#"{"event":"libraryRefreshing","refreshing":false}"#
+        );
     }
 
     #[test]

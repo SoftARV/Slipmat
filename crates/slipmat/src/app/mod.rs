@@ -1162,6 +1162,14 @@ impl Component for AppModel {
                                             ),
                                         },
 
+                                        add_named[Some("empty-library")] = &adw::StatusPage {
+                                            set_icon_name: Some("audio-x-generic-symbolic"),
+                                            set_title: "Nothing here yet",
+                                            set_description: Some(
+                                                "Slipmat refreshes your library after sign-in. Use Refresh to try again.",
+                                            ),
+                                        },
+
                                         // Distinct from "status": an empty
                                         // library and a search with no matches
                                         // are different problems.
@@ -1698,7 +1706,6 @@ impl AppModel {
                 // MusicKit's token — and its `authorizationStatusDidChange`
                 // confirms it rather than us assuming.
                 self.ask(Request::SignOut);
-                self.forget_session();
             }
             AppMsg::PlayPause => self.transport(Transport::PlayPause),
             AppMsg::Next => self.transport(Transport::Next),
@@ -1828,18 +1835,9 @@ impl AppModel {
                 // what they had, so switching back is instant.
                 match view {
                     View::Songs => self.rebuild_rows(),
-                    View::Albums => {
-                        self.rebuild_albums();
-                        self.ask(Request::Refresh);
-                    }
-                    View::Artists => {
-                        self.rebuild_artists();
-                        self.ask(Request::Refresh);
-                    }
-                    View::Playlists => {
-                        self.rebuild_playlists();
-                        self.ask(Request::Refresh);
-                    }
+                    View::Albums => self.rebuild_albums(),
+                    View::Artists => self.rebuild_artists(),
+                    View::Playlists => self.rebuild_playlists(),
                     View::Search => {
                         self.search_gen = self.search_gen.wrapping_add(1);
                         let generation = self.search_gen;
@@ -1915,7 +1913,11 @@ impl AppModel {
                     self.run_catalog_search(&sender, generation, offset);
                 }
             }
-            AppMsg::ReloadCurrentSection => self.reload(self.view, &sender),
+            AppMsg::ReloadCurrentSection => {
+                self.reload(self.view, &sender);
+                self.set_library_refreshing(true);
+                self.ask(Request::Refresh);
+            }
             AppMsg::ShowPreferences => self.show_preferences(&sender, root),
             AppMsg::ShowShortcuts => show_shortcuts(root),
             AppMsg::ShowAbout => show_about(root),
@@ -2364,6 +2366,10 @@ impl AppModel {
                 }
             }
             CommandMsg::Artwork { path, backdrop } => {
+                if path.as_deref() != self.art_for.as_deref().map(std::path::Path::new) {
+                    tracing::debug!("discarding artwork for a track that moved on");
+                    return;
+                }
                 if path.is_none() {
                     // Cosmetic. The bar falls back to a generic icon.
                     tracing::debug!("artwork unavailable");
@@ -2437,13 +2443,16 @@ impl AppModel {
     /// after a sign-out would show one person's music to whoever signs in
     /// next. The unplayable-id cache stays — it is about Apple's catalog, not
     /// about the user.
-    fn forget_session(&mut self) {
-        self.stage = Stage::SignedOut;
-
+    fn forget_session(&mut self, sender: &ComponentSender<Self>) {
+        self.mirror.clear_account_state();
         self.all_tracks.clear();
         self.albums.clear();
         self.artists.clear();
         self.playlists.clear();
+        self.loading_albums = false;
+        self.loading_artists = false;
+        self.loading_playlists = false;
+        self.loading_library = false;
         self.tried_albums = false;
         self.tried_artists = false;
         self.tried_playlists = false;
@@ -2454,8 +2463,18 @@ impl AppModel {
         self.built_playlists = None;
         self.catalog.clear();
         self.catalog_paged = 0;
+        self.catalog_filter = CatalogFilter::default();
+        self.searching_catalog = false;
+        self.catalog_exhausted = false;
+        self.search_gen = self.search_gen.wrapping_add(1);
         self.library_query.clear();
         self.catalog_query.clear();
+        self.sync_entry = true;
+        self.searching = false;
+        self.focus_search = false;
+        self.row_overrides.borrow_mut().clear();
+        self.tile_art_pending.clear();
+        self.page_for.clear();
 
         self.rebuild_rows();
         self.rebuild_albums();
@@ -2468,8 +2487,13 @@ impl AppModel {
         self.last_item = None;
         self.last_queue = None;
         self.pending_start = None;
-        slipmat_core::session::clear();
-        slipmat_core::library_cache::clear();
+        self.art_path = None;
+        self.art_for = None;
+        self.notified_for = None;
+        self.notify_when_art_lands = None;
+        self.sync_tick(sender);
+        self.now_playing.emit(NowPlayingInput::ArtworkReady(None));
+        self.player_view.emit(PlayerViewInput::Artwork(None));
         crate::style::set_backdrop(None);
         self.push_snapshot();
     }
