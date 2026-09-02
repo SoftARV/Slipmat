@@ -81,6 +81,7 @@ struct App {
     /// The last thing worth saying, and when — so it fades rather than sitting
     /// there accusing a key that was pressed a minute ago.
     message: Option<Notice>,
+    refreshing_library: bool,
     /// Set by `q`. `_` leaves without it, and the daemon keeps playing.
     quit_daemon: bool,
     /// The visualiser's last frame. All zeroes when there is nothing to hear,
@@ -97,6 +98,7 @@ impl Default for App {
             queue: queue::Queue::default(),
             pane: Pane::default(),
             message: None,
+            refreshing_library: false,
             quit_daemon: false,
             // `#[derive(Default)]` stops at arrays of 32.
             bars: [0.0; spectrum::BANDS],
@@ -160,7 +162,14 @@ async fn run() -> Result<()> {
                         bars: &app.bars,
                         browser: &mut app.browser,
                         queue: &mut app.queue,
-                        message: app.message.as_ref().map(|n| (n.text.as_str(), n.bad)),
+                        message: app
+                            .message
+                            .as_ref()
+                            .map(|n| (n.text.as_str(), n.bad))
+                            .or_else(|| {
+                                app.refreshing_library
+                                    .then_some(("Refreshing library…", false))
+                            }),
                     },
                 )
             })?;
@@ -191,7 +200,7 @@ async fn run() -> Result<()> {
             },
             Some(message) = events.recv() => match message {
                 link::Incoming::Event(event) => {
-                    app.on_event(*event);
+                    app.on_event(*event, &link);
                     dirty = true;
                 }
                 link::Incoming::Lost(why) => {
@@ -294,6 +303,11 @@ fn on_key(key: KeyEvent, link: &link::Link, app: &mut App) -> bool {
         KeyCode::Char('r') => link.send(Request::Transport(Transport::SetRepeat {
             mode: next_repeat(app.snap.repeat),
         })),
+        KeyCode::Char('R') if matches!(app.stage, Stage::Ready) => {
+            link.send(Request::Refresh);
+            app.refreshing_library = true;
+            app.message = Some(Notice::good("Refreshing library…"));
+        }
         // Both faces of each key, now that neither means anything else: `-`
         // and `_` are one key, and so are `=` and `+`.
         KeyCode::Char('-') | KeyCode::Char('_') => volume(link, app, -0.05),
@@ -717,10 +731,11 @@ impl App {
         self.queue = queue::Queue::default();
         self.pane = Pane::Browser;
         self.message = None;
+        self.refreshing_library = false;
         self.bars = [0.0; spectrum::BANDS];
     }
 
-    fn on_event(&mut self, event: Event) {
+    fn on_event(&mut self, event: Event, link: &link::Link) {
         match event {
             Event::Snapshot(snap) => {
                 // Stopping clears the bars at once rather than leaving the
@@ -783,12 +798,21 @@ impl App {
                 self.browser.replace(entries, 0);
                 self.browser.reset();
             }
+            Event::LibraryChanged => {
+                self.refreshing_library = false;
+                self.message = None;
+                if matches!(self.stage, Stage::Ready)
+                    && matches!(self.browser.showing, Showing::Library)
+                {
+                    self.browse(link);
+                }
+            }
+            Event::LibraryRefreshing { refreshing } => {
+                self.refreshing_library = refreshing;
+            }
             // The daemon refuses things — removing the track it is playing is
             // the one that will be hit most. Saying so is rule 4's job.
             Event::Error { detail } => self.message = Some(Notice::bad(detail)),
-            // Slice 01 draws the player and nothing else. The rest of the
-            // contract is answered in the slices that draw it.
-            _ => {}
         }
     }
 }
@@ -867,6 +891,7 @@ mod tests {
 
     #[test]
     fn signed_out_clears_transient_player_state_and_keeps_choices() {
+        let (link, _) = link::Link::channel();
         let mut app = App {
             snap: Snapshot {
                 track_id: Some("old".into()),
@@ -893,7 +918,7 @@ mod tests {
         app.message = Some(Notice::bad("old error"));
         app.bars = [1.0; spectrum::BANDS];
 
-        app.on_event(Event::Stage(Stage::SignedOut));
+        app.on_event(Event::Stage(Stage::SignedOut), &link);
 
         assert_eq!(app.stage, Stage::SignedOut);
         assert!(app.snap.track_id.is_none());
@@ -911,5 +936,58 @@ mod tests {
         );
         assert!(matches!(app.browser.showing, Showing::Library));
         assert!(app.browser.catalog_query().is_empty());
+    }
+
+    #[test]
+    fn library_change_reloads_the_visible_climat_section() {
+        let (link, mut requests) = link::Link::channel();
+        let mut app = App {
+            stage: Stage::Ready,
+            ..Default::default()
+        };
+        app.browser.view = LibraryView::Albums;
+
+        app.on_event(Event::LibraryChanged, &link);
+
+        assert!(matches!(
+            requests.try_recv().expect("browse request"),
+            Request::Browse {
+                view: LibraryView::Albums,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn uppercase_r_requests_a_library_refresh() {
+        let (link, mut requests) = link::Link::channel();
+        let mut app = App {
+            stage: Stage::Ready,
+            ..Default::default()
+        };
+
+        assert!(on_key(
+            KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT),
+            &link,
+            &mut app,
+        ));
+
+        assert!(matches!(
+            requests.try_recv().expect("refresh request"),
+            Request::Refresh
+        ));
+        assert!(app.refreshing_library);
+    }
+
+    #[test]
+    fn daemon_refresh_state_controls_the_climat_indicator() {
+        let (link, _) = link::Link::channel();
+        let mut app = App::default();
+
+        app.on_event(Event::LibraryRefreshing { refreshing: true }, &link);
+        assert!(app.refreshing_library);
+
+        app.on_event(Event::LibraryRefreshing { refreshing: false }, &link);
+        assert!(!app.refreshing_library);
     }
 }

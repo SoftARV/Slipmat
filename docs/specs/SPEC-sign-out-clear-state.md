@@ -94,6 +94,8 @@ converge without reconnecting:
 - An empty `Event::Queue`
 - An empty `Event::Snapshot`
 - `Event::LibraryChanged`
+- `Event::LibraryRefreshing { refreshing }` for the approved whole-library
+  loading indicator
 
 Repeating cleanup must remain harmless and must not republish old data.
 
@@ -122,11 +124,18 @@ started it. A result from an older session must be discarded before it can
 write the library cache, replace the daemon library, or publish
 `LibraryChanged`, even if a new account is already ready.
 
+The daemon publishes `LibraryRefreshing { refreshing: true }` when a current
+refresh starts and `false` only when that refresh finishes. Both clients keep
+existing content visible during a refresh and show loading feedback until the
+daemon reports completion. A stale refresh cannot hide the indicator for a
+newer authorization session.
+
 ## Tech stack
 
 - Rust 2024 workspace
 - Tokio local tasks and broadcast events
 - Existing `slipmat_core::ipc::{Event, Request, Stage}` contract
+- One additive `LibraryRefreshing` event, approved on 2026-09-02
 - Existing `slipmat_core::{library_cache, session}` persistence helpers
 - Ratatui/Crossterm Climat client
 - GTK4/libadwaita Slipmat client
@@ -236,8 +245,28 @@ naming and error-handling conventions.
    library, and Climat shows only its sign-in prompt.
 5. Confirm browse, queue, and snapshot IPC requests return empty state.
 6. Restart the daemon while still signed out and confirm no old data returns.
-7. Sign in again and confirm the library refreshes without restoring the old
-   queue.
+7. Sign in again and confirm both clients show refresh feedback until the
+   library loads, without restoring the old queue.
+8. Trigger a manual refresh in each client and confirm the indicator remains
+   visible until the daemon finishes while existing content stays on screen.
+
+Observed on 2026-09-02 with GTK and Climat connected to the repository daemon
+and sidecar:
+
+- Both clients showed the active track before sign-out and cleared their
+  library and playback presentation after GTK requested sign-out.
+- Raw IPC reported `SignedOut`, zero browse rows, an empty queue, and an empty
+  snapshot. The library-cache and playback-session files were absent.
+- Restarting the daemon while signed out restored no account data. Signing in
+  through Climat loaded 535 songs, 420 albums, 266 artists, and 8 playlists
+  without restoring the old queue.
+- Slipmat populated Songs, Albums, Artists, and Playlists after sign-in. Its
+  manual refresh kept the library visible and showed the existing header and
+  sidebar spinners until completion.
+- Climat showed `Refreshing library…` for automatic and manual refreshes until
+  completion. We did not inspect or log any credential or token value.
+- `make check` passed with 331 tests, strict clippy, formatting, and Flatpak
+  source validation.
 
 ## Boundaries
 
@@ -281,7 +310,8 @@ naming and error-handling conventions.
    the previous account's queue.
 8. Volume, preferences, reusable artwork files, and global unplayable IDs
    survive sign-out.
-9. No dependency, cache-format, or IPC protocol change is introduced.
+9. No dependency, cache-format, or sidecar protocol change is introduced; the
+   only IPC addition is the approved `LibraryRefreshing` status event.
 10. Focused tests and `make check` pass, followed by the multi-client runtime
     verification.
 

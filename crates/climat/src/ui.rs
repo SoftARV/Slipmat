@@ -341,6 +341,7 @@ fn key_hints(width: usize, pane: Pane, typing: bool, catalog: bool) -> Line<'sta
             // Above the filter and the queueing keys: moving between tabs is
             // how you get anywhere, so it is the last hint worth losing.
             ("⇥", "tabs"),
+            ("R", "refresh"),
             ("/", "filter"),
             ("oO", "order"),
             ("t", "types"),
@@ -590,6 +591,17 @@ mod tests {
             }),
             "Playback unavailable: failed"
         );
+    }
+
+    #[test]
+    fn browser_hints_advertise_manual_refresh() {
+        let text = key_hints(300, Pane::Browser, false, false)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains("[R] refresh"));
     }
 
     #[test]

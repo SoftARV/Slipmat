@@ -30,6 +30,14 @@ fn startup_page(stage: &Stage) -> &'static str {
     }
 }
 
+fn empty_library_page(query: &str) -> &'static str {
+    if query.trim().is_empty() {
+        "empty-library"
+    } else {
+        "no-results"
+    }
+}
+
 impl AppModel {
     /// Is there anything for the content pane to show?
     ///
@@ -132,7 +140,7 @@ impl AppModel {
         // whichever section you are in, and taking over the Apple Music pane to
         // say "Loading your library" reads as the whole app being stuck; the
         // sidebar spinners cover that instead.
-        if !self.showing_library() {
+        if !self.showing_library() && !matches!(self.stage, Stage::Ready) {
             // A dead sidecar or a signed-out session outranks everything: no
             // section has anything to show.
             //
@@ -154,7 +162,7 @@ impl AppModel {
                 if self.loading_library && self.all_tracks.is_empty() {
                     "loading"
                 } else if self.library.is_empty() {
-                    "no-results"
+                    empty_library_page(&self.library_query)
                 } else {
                     "library"
                 }
@@ -163,7 +171,7 @@ impl AppModel {
                 if self.loading_albums && self.albums.is_empty() {
                     "loading"
                 } else if self.album_grid.is_empty() {
-                    "no-results"
+                    empty_library_page(&self.library_query)
                 } else {
                     "albums"
                 }
@@ -172,7 +180,7 @@ impl AppModel {
                 if self.loading_artists && self.artists.is_empty() {
                     "loading"
                 } else if self.artist_grid.is_empty() {
-                    "no-results"
+                    empty_library_page(&self.library_query)
                 } else {
                     "artists"
                 }
@@ -181,7 +189,7 @@ impl AppModel {
                 if self.loading_playlists && self.playlists.is_empty() {
                     "loading"
                 } else if self.playlist_grid.is_empty() {
-                    "no-results"
+                    empty_library_page(&self.library_query)
                 } else {
                     "playlists"
                 }
@@ -281,5 +289,11 @@ mod tests {
         ] {
             assert_eq!(startup_page(&stage), "status", "{stage:?}");
         }
+    }
+
+    #[test]
+    fn an_empty_library_is_not_reported_as_a_failed_search() {
+        assert_eq!(empty_library_page(""), "empty-library");
+        assert_eq!(empty_library_page("aitana"), "no-results");
     }
 }

@@ -145,7 +145,7 @@ reports `Stage::SignedOut`; leave shared persistence to the daemon.
 - [x] Tasks 3 and 4 meet their acceptance criteria.
 - [x] Both clients clear account data from the same daemon transition.
 - [x] Focused client tests and clippy pass without warnings.
-- [ ] Human review authorizes destructive runtime sign-out testing.
+- [x] Human review authorizes destructive runtime sign-out testing.
 
 ## Task 5: Verify the complete sign-out boundary
 
@@ -155,18 +155,20 @@ out, then sign in through Climat and record the observed result.
 
 **Acceptance criteria:**
 
-- [ ] Both connected clients clear without reconnecting, playback stops, and
+- [x] Both connected clients clear without reconnecting, playback stops, and
   raw browse, queue, and snapshot responses contain no previous account data.
-- [ ] A daemon restart while signed out restores nothing; a fresh sign-in loads
+- [x] A daemon restart while signed out restores nothing; a fresh sign-in loads
   the library without the previous queue.
-- [ ] The specification records runtime evidence and any approved deviation;
+- [x] Automatic and manual refreshes show loading feedback in both clients until
+  the daemon finishes, while existing library content remains visible.
+- [x] The specification records runtime evidence and any approved deviation;
   no credential or token is inspected or logged.
 
 **Verification:**
 
-- [ ] Complete the multi-client runtime sequence in the approved specification.
-- [ ] Run `make check`.
-- [ ] Review the final diff for unrelated changes, dependencies, protocol
+- [x] Complete the multi-client runtime sequence in the approved specification.
+- [x] Run `make check`.
+- [x] Review the final diff for unrelated changes, dependencies, protocol
   changes, debug output, weakened tests, and documentation drift.
 
 **Dependencies:** Tasks 3 and 4, Checkpoint B.
@@ -181,10 +183,10 @@ out, then sign in through Climat and record the observed result.
 
 ## Checkpoint C: Merge approval
 
-- [ ] All five tasks meet their acceptance criteria.
-- [ ] Focused tests and `make check` pass.
-- [ ] Runtime evidence covers multi-client sign-out, signed-out restart, and
+- [x] All five tasks meet their acceptance criteria.
+- [x] Focused tests and `make check` pass.
+- [x] Runtime evidence covers multi-client sign-out, signed-out restart, and
   clean sign-in.
-- [ ] The implementation adds no dependency, cache-format, IPC, or sidecar
-  protocol change.
-- [ ] The human has reviewed and approved the feature before merge.
+- [x] The implementation adds no dependency, cache-format, or sidecar protocol
+  change; its only IPC addition is the approved refresh-status event.
+- [x] The human has reviewed and approved the feature before merge.

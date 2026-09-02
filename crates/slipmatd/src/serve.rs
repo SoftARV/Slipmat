@@ -563,7 +563,23 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
                 has_user_token = tokens.music_user_token.is_some(),
                 "tokens harvested"
             );
-            daemon.model.borrow_mut().tokens = Some(tokens.clone());
+            let first_usable = {
+                let mut model = daemon.model.borrow_mut();
+                let first_usable = model
+                    .tokens
+                    .as_ref()
+                    .and_then(|old| old.music_user_token.as_ref())
+                    .is_none()
+                    && tokens.authorized
+                    && tokens.music_user_token.is_some();
+                model.tokens = Some(tokens.clone());
+                first_usable
+            };
+            // Fresh sign-in can report authorization before its tokens. The
+            // first refresh then has no client, so usable tokens retry it.
+            if first_usable {
+                refresh_library(daemon);
+            }
         }
         _ => {}
     }
@@ -1042,7 +1058,8 @@ fn refresh_library(daemon: &Rc<Daemon>) {
             client.all_library_artists(MAX),
             client.all_library_playlists(MAX),
         );
-        if !finish_library_refresh(&daemon, generation) {
+        if daemon.authorization_generation.get() != generation {
+            finish_library_refresh(&daemon, generation);
             tracing::debug!(generation, "discarded stale library refresh");
             return;
         }
@@ -1067,6 +1084,7 @@ fn refresh_library(daemon: &Rc<Daemon>) {
             }
             _ => tracing::warn!("library refresh failed; keeping what was cached"),
         }
+        finish_library_refresh(&daemon, generation);
     });
 }
 
@@ -1076,14 +1094,19 @@ fn begin_library_refresh(daemon: &Daemon) -> Option<u64> {
         return None;
     }
     daemon.refreshing.set(Some(generation));
+    daemon.publish(Event::LibraryRefreshing { refreshing: true });
     Some(generation)
 }
 
 fn finish_library_refresh(daemon: &Daemon, generation: u64) -> bool {
+    let current = daemon.authorization_generation.get() == generation;
     if daemon.refreshing.get() == Some(generation) {
         daemon.refreshing.set(None);
+        if current {
+            daemon.publish(Event::LibraryRefreshing { refreshing: false });
+        }
     }
-    daemon.authorization_generation.get() == generation
+    current
 }
 
 /// Tracks as rows.
@@ -1407,6 +1430,26 @@ mod tests {
     }
 
     #[test]
+    fn sign_in_tokens_retry_the_library_refresh() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().stage = Stage::Ready;
+        let local = tokio::task::LocalSet::new();
+        let _entered = local.enter();
+
+        on_event(
+            &daemon,
+            PlayerEvent::Tokens(Tokens {
+                developer_token: "developer".into(),
+                music_user_token: Some("user".into()),
+                storefront: "us".into(),
+                authorized: true,
+            }),
+        );
+
+        assert_eq!(daemon.refreshing.get(), Some(0));
+    }
+
+    #[test]
     fn stale_refresh_cannot_finish_or_release_the_current_guard() {
         let daemon = daemon();
         assert_eq!(daemon.authorization_generation.get(), 0);
@@ -1422,12 +1465,22 @@ mod tests {
         on_event(&daemon, PlayerEvent::Authorization { authorized: true });
         assert_eq!(daemon.authorization_generation.get(), current);
 
+        let mut events = daemon.events.subscribe();
         daemon.refreshing.set(Some(signed_out));
         assert_eq!(begin_library_refresh(&daemon), Some(current));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::LibraryRefreshing { refreshing: true })
+        ));
         assert_eq!(begin_library_refresh(&daemon), None);
         assert!(!finish_library_refresh(&daemon, signed_out));
+        assert!(events.try_recv().is_err());
         assert_eq!(daemon.refreshing.get(), Some(current));
         assert!(finish_library_refresh(&daemon, current));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::LibraryRefreshing { refreshing: false })
+        ));
         assert_eq!(daemon.refreshing.get(), None);
     }
 

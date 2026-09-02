@@ -147,7 +147,11 @@ impl AppModel {
             }
             Event::LibraryChanged => {
                 tracing::info!("the daemon refreshed the library");
+                self.set_library_refreshing(false);
                 self.reload_from_cache(sender);
+            }
+            Event::LibraryRefreshing { refreshing } => {
+                self.set_library_refreshing(refreshing);
             }
             Event::Page {
                 id,
@@ -168,6 +172,13 @@ impl AppModel {
             }
             Event::Error { detail } => self.toast(&detail),
         }
+    }
+
+    pub(super) fn set_library_refreshing(&mut self, refreshing: bool) {
+        self.loading_library = refreshing;
+        self.loading_albums = refreshing;
+        self.loading_artists = refreshing;
+        self.loading_playlists = refreshing;
     }
 }
 

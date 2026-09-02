@@ -1162,6 +1162,14 @@ impl Component for AppModel {
                                             ),
                                         },
 
+                                        add_named[Some("empty-library")] = &adw::StatusPage {
+                                            set_icon_name: Some("audio-x-generic-symbolic"),
+                                            set_title: "Nothing here yet",
+                                            set_description: Some(
+                                                "Slipmat refreshes your library after sign-in. Use Refresh to try again.",
+                                            ),
+                                        },
+
                                         // Distinct from "status": an empty
                                         // library and a search with no matches
                                         // are different problems.
@@ -1827,18 +1835,9 @@ impl AppModel {
                 // what they had, so switching back is instant.
                 match view {
                     View::Songs => self.rebuild_rows(),
-                    View::Albums => {
-                        self.rebuild_albums();
-                        self.ask(Request::Refresh);
-                    }
-                    View::Artists => {
-                        self.rebuild_artists();
-                        self.ask(Request::Refresh);
-                    }
-                    View::Playlists => {
-                        self.rebuild_playlists();
-                        self.ask(Request::Refresh);
-                    }
+                    View::Albums => self.rebuild_albums(),
+                    View::Artists => self.rebuild_artists(),
+                    View::Playlists => self.rebuild_playlists(),
                     View::Search => {
                         self.search_gen = self.search_gen.wrapping_add(1);
                         let generation = self.search_gen;
@@ -1914,7 +1913,11 @@ impl AppModel {
                     self.run_catalog_search(&sender, generation, offset);
                 }
             }
-            AppMsg::ReloadCurrentSection => self.reload(self.view, &sender),
+            AppMsg::ReloadCurrentSection => {
+                self.reload(self.view, &sender);
+                self.set_library_refreshing(true);
+                self.ask(Request::Refresh);
+            }
             AppMsg::ShowPreferences => self.show_preferences(&sender, root),
             AppMsg::ShowShortcuts => show_shortcuts(root),
             AppMsg::ShowAbout => show_about(root),

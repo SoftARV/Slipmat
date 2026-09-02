@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved on 2026-09-02. This plan contains no implementation changes.
+Completed on 2026-09-02.
 
 ## Source of truth
 
@@ -32,8 +32,9 @@ presentation only after the daemon reports sign-out.
    Library refreshes capture it and discard results if it changes before the
    fetch completes. A stage-only check is insufficient because another account
    may already be ready when the old result arrives.
-5. Reuse `Stage`, `Queue`, `Snapshot`, and `LibraryChanged` events. No IPC or
-   sidecar protocol change is needed.
+5. Reuse `Stage`, `Queue`, `Snapshot`, and `LibraryChanged` for cleanup. Add the
+   approved `LibraryRefreshing` event so both clients can show the daemon's
+   whole-library refresh state.
 6. Let clients preserve preferences while clearing transient account content.
    Climat keeps view, sort, and catalog-kind choices; GTK keeps settings and
    chrome preferences.
@@ -98,21 +99,21 @@ revertible. The current single-branch workflow can execute them sequentially.
 - [x] Climat and GTK clear stale account content without reconnecting.
 - [x] Both clients preserve non-account preferences.
 - [x] Focused client tests and clippy pass.
-- [ ] Human review authorizes destructive runtime sign-out testing.
+- [x] Human review authorizes destructive runtime sign-out testing.
 
 ### Phase 3: Runtime and documentation
 
-- [ ] Task 5: Verify multi-client sign-out, restart, and fresh sign-in; record
+- [x] Task 5: Verify multi-client sign-out, restart, and fresh sign-in; record
   the result.
 
 ### Checkpoint C: Complete
 
-- [ ] All specification success criteria are met.
-- [ ] `make check` passes.
-- [ ] Runtime evidence covers two clients, daemon restart, and fresh sign-in.
-- [ ] The final diff contains no dependency, cache-format, IPC, or sidecar
-  protocol change.
-- [ ] Human review approves the feature for merge.
+- [x] All specification success criteria are met.
+- [x] `make check` passes.
+- [x] Runtime evidence covers two clients, daemon restart, and fresh sign-in.
+- [x] The final diff contains no dependency, cache-format, or sidecar protocol
+  change; its only IPC addition is the approved refresh-status event.
+- [x] Human review approves the feature for merge.
 
 Detailed task acceptance criteria and commands live in
 [`tasks/todo.md`](todo.md).
@@ -126,6 +127,7 @@ Detailed task acceptance criteria and commands live in
 | Repeated authorization and signed-out events erase preferences | Medium | Keep cleanup idempotent and test preserved volume and global state. |
 | GTK clears optimistically while the daemon reports an error | Medium | Send only `Request::SignOut`; run presentation cleanup from daemon stage handling. |
 | Climat leaves a stale row actionable behind the prompt | High | Clear browser, page, catalog, queue, and snapshot state in one signed-out transition test. |
+| A refresh looks like an empty or frozen library | Medium | Publish daemon-owned refresh status and render it in both clients without hiding existing content. |
 | Cache tests write into the developer profile | High | Reuse isolated XDG test paths; never clear the live profile from automated tests. |
 | Runtime verification signs out a working account unexpectedly | High | Require Checkpoint B approval and explicit human participation before the manual sign-out. |
 
