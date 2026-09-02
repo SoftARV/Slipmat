@@ -15,18 +15,18 @@ not contain or require it, remains buildable.
 
 **Acceptance criteria:**
 
-- [ ] `package_slipmat-daemon-git()` copies `sidecar/queue-identity.js` into
+- [x] `package_slipmat-daemon-git()` copies `sidecar/queue-identity.js` into
   `/usr/share/slipmat/sidecar/` with the other preload runtime files.
-- [ ] The stable `package()` copies the module when it exists in the selected
+- [x] The stable `package()` copies the module when it exists in the selected
   release source and does not fail when building `v0.10.0`.
-- [ ] No package names, ownership, dependencies, sidecar behavior, or unrelated
+- [x] No package names, ownership, dependencies, sidecar behavior, or unrelated
   install paths change.
 
 **Verification:**
 
-- [ ] Run `bash -n packaging/aur/slipmat/PKGBUILD packaging/aur/slipmat-git/PKGBUILD`.
-- [ ] Run `git diff --check`.
-- [ ] Review the focused diff against `Makefile`'s existing sidecar install
+- [x] Run `bash -n packaging/aur/slipmat/PKGBUILD packaging/aur/slipmat-git/PKGBUILD`.
+- [x] Run `git diff --check`.
+- [x] Review the focused diff against `Makefile`'s existing sidecar install
   list and the direct imports in `sidecar/preload.js`.
 
 **Dependencies:** None.

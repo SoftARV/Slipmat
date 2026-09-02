@@ -61,7 +61,7 @@ definitions are corrected.
 
 ### Phase 1: Package definitions
 
-- [ ] Task 1: Correct the AUR sidecar payload definitions.
+- [x] Task 1: Correct the AUR sidecar payload definitions.
 
 ### Phase 2: Package and runtime proof
 
