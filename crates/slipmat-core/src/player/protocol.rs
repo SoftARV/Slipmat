@@ -299,11 +299,11 @@ pub enum Event {
 
     /// Apple's session is gone: cookies and web storage cleared, page reloaded.
     ///
-    /// Confirmation, not a request to do anything — the model already forgot
-    /// its half when it sent `signOut`. Worth having as a real variant rather
-    /// than letting it fall through to `Unparsed`, because a sign-out that
-    /// silently failed is the exact bug this pair was written to fix, and a
-    /// `warn!("unparsed sidecar line")` on every sign-out would bury it.
+    /// Confirmation and an idempotent cleanup backstop. Worth having as a real
+    /// variant rather than letting it fall through to `Unparsed`, because a
+    /// sign-out that silently failed is the exact bug this pair was written to
+    /// fix, and a `warn!("unparsed sidecar line")` on every sign-out would bury
+    /// it.
     #[serde(rename = "signed-out")]
     SignedOut,
 

@@ -17,19 +17,19 @@ events to every client.
 
 **Acceptance criteria:**
 
-- [ ] `Authorization { authorized: false }` clears tokens, library, player,
+- [x] `Authorization { authorized: false }` clears tokens, library, player,
   artwork selection, queue verification, retry, resume, restart, and completed
   command state before `Stage::SignedOut` is published.
-- [ ] `SignedOut` runs the same cleanup harmlessly, the library and session
+- [x] `SignedOut` runs the same cleanup harmlessly, the library and session
   files are absent, and volume plus global unplayable IDs remain unchanged.
-- [ ] Subscribers receive signed-out stage, empty queue, empty snapshot, and
+- [x] Subscribers receive signed-out stage, empty queue, empty snapshot, and
   library-change events; new IPC requests return no old rows or playback data.
 
 **Verification:**
 
-- [ ] Add focused tests that fail against the current stage-only behavior.
-- [ ] Run `cargo test -p slipmatd sign_out -- --nocapture`.
-- [ ] Run `cargo clippy -p slipmatd --all-targets -- -D warnings`.
+- [x] Add focused tests that fail against the current stage-only behavior.
+- [x] Run `cargo test -p slipmatd sign_out -- --nocapture`.
+- [x] Run `cargo clippy -p slipmatd --all-targets -- -D warnings`.
 
 **Dependencies:** None.
 

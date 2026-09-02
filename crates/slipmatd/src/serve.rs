@@ -486,12 +486,21 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
     tracing::debug!(event = event_name(&event), "sidecar event");
     // Stage transitions before the mirror moves, so a client is told the daemon
     // is ready by the same pass that makes it so.
+    let signed_out = matches!(
+        &event,
+        PlayerEvent::HookReady {
+            authorized: false,
+            ..
+        } | PlayerEvent::Authorization { authorized: false }
+            | PlayerEvent::SignedOut
+    );
     match &event {
         PlayerEvent::HookReady { authorized, .. } => {
             daemon.restarts.set(0);
             set_authorization(daemon, *authorized);
         }
         PlayerEvent::Authorization { authorized } => set_authorization(daemon, *authorized),
+        PlayerEvent::SignedOut => set_authorization(daemon, false),
         PlayerEvent::HookFailed { detail } => {
             let stage = Stage::Broken {
                 detail: detail.clone(),
@@ -555,6 +564,10 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
         _ => {}
     }
 
+    if signed_out {
+        return;
+    }
+
     let queue_changed = matches!(
         event,
         PlayerEvent::Queue(_) | PlayerEvent::NowPlaying { .. }
@@ -589,24 +602,46 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
 }
 
 fn set_authorization(daemon: &Rc<Daemon>, authorized: bool) {
-    let stage = if authorized {
-        Stage::Ready
-    } else {
-        Stage::SignedOut
-    };
-    let restore = authorized && !daemon.restored.replace(true);
-    daemon.model.borrow_mut().stage = stage.clone();
-    daemon.publish(Event::Stage(stage));
-
-    if authorized {
-        daemon.send(Command::Hide);
-        // Once per run: the hook re-attaches on every navigation, and a second
-        // restore would throw away whatever is playing by then.
-        if restore {
-            restore_session(daemon);
-        }
-        refresh_library(daemon);
+    if !authorized {
+        clear_account_state(daemon);
+        return;
     }
+
+    let restore = !daemon.restored.replace(true);
+    daemon.model.borrow_mut().stage = Stage::Ready;
+    daemon.publish(Event::Stage(Stage::Ready));
+    daemon.send(Command::Hide);
+    // Once per run: the hook re-attaches on every navigation, and a second
+    // restore would throw away whatever is playing by then.
+    if restore {
+        restore_session(daemon);
+    }
+    refresh_library(daemon);
+}
+
+fn clear_account_state(daemon: &Daemon) {
+    let mut model = daemon.model.borrow_mut();
+    model.clear_account_state();
+    model.stage = Stage::SignedOut;
+    drop(model);
+
+    daemon.last_queue.borrow_mut().take();
+    daemon.pending_start.borrow_mut().take();
+    daemon.healed.set(false);
+    daemon.resume_at.set(None);
+    daemon.restart_at.borrow_mut().take();
+    daemon.after_apply.take();
+    daemon.art_for.borrow_mut().take();
+    slipmat_core::library_cache::clear();
+    slipmat_core::session::clear();
+
+    daemon.publish(Event::Stage(Stage::SignedOut));
+    daemon.publish(Event::Queue {
+        items: Vec::new(),
+        position: 0,
+    });
+    daemon.publish_snapshot();
+    daemon.publish(Event::LibraryChanged);
 }
 
 /// Is there a queue with nothing open in it?
@@ -1288,6 +1323,8 @@ fn command_for(transport: Transport) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slipmat_core::music::types::{Track, TrackId};
+    use slipmat_core::player::protocol::{Item, RepeatMode, Tokens};
 
     fn daemon() -> Rc<Daemon> {
         let (events, _) = broadcast::channel(8);
@@ -1332,6 +1369,189 @@ mod tests {
         on_event(&daemon, PlayerEvent::Authorization { authorized: true });
 
         assert_eq!(daemon.model.borrow().stage, Stage::Ready);
+    }
+
+    fn populate_account_state(daemon: &Daemon) {
+        let item = Item {
+            occurrence_id: "old:1".into(),
+            id: Some("old-library-id".into()),
+            catalog_id: Some("old-catalog-id".into()),
+            title: "Old song".into(),
+            ..Default::default()
+        };
+        let mut model = daemon.model.borrow_mut();
+        model.volume = 0.75;
+        model.dead_ids.insert("globally-dead".into());
+        model.tokens = Some(Tokens {
+            developer_token: "developer".into(),
+            music_user_token: Some("user".into()),
+            storefront: "us".into(),
+            authorized: true,
+        });
+        model.library.tracks.push(Track {
+            date_added: String::new(),
+            year: String::new(),
+            favorite: false,
+            in_library: true,
+            library_id: Some("old-library-id".into()),
+            id: TrackId("old-library-id".into()),
+            catalog_id: Some("old-catalog-id".into()),
+            title: "Old song".into(),
+            artist: "Old artist".into(),
+            album: "Old album".into(),
+            duration_ms: 180_000,
+            track_number: 1,
+            artwork: None,
+        });
+        model.player.state = PlaybackState::Playing;
+        model.player.now_playing = Some(item.clone());
+        model.player.queue = vec![item];
+        model.player.queue_position = 4;
+        model.player.position_disagrees = true;
+        model.player.position_ms = 42_000;
+        model.player.duration_ms = 180_000;
+        model.player.shuffle = true;
+        model.player.repeat = RepeatMode::All;
+        model.art_path = Some("/tmp/old-art".into());
+        drop(model);
+
+        daemon
+            .last_queue
+            .replace(Some((vec!["old-catalog-id".into()], None)));
+        daemon.pending_start.replace(Some("old-catalog-id".into()));
+        daemon.healed.set(true);
+        daemon.resume_at.set(Some(42_000));
+        daemon.restart_at.replace(Some("old:1".into()));
+        daemon.after_apply.set(Some("play".into()));
+        daemon.art_for.replace(Some("old-art-template".into()));
+    }
+
+    fn assert_account_state_is_empty(daemon: &Daemon) {
+        let model = daemon.model.borrow();
+        assert_eq!(model.stage, Stage::SignedOut);
+        assert!(model.tokens.is_none());
+        assert!(model.library.tracks.is_empty());
+        assert!(model.player.queue.is_empty());
+        assert!(model.player.now_playing.is_none());
+        assert_eq!(model.player.state, PlaybackState::None);
+        assert_eq!(model.player.queue_position, 0);
+        assert!(!model.player.position_disagrees);
+        assert_eq!(model.player.position_ms, 0);
+        assert_eq!(model.player.duration_ms, 0);
+        assert!(!model.player.shuffle);
+        assert_eq!(model.player.repeat, RepeatMode::None);
+        assert!(model.art_path.is_none());
+        assert_eq!(model.volume, 0.75);
+        assert!(model.dead_ids.contains("globally-dead"));
+        drop(model);
+
+        assert!(daemon.last_queue.borrow().is_none());
+        assert!(daemon.pending_start.borrow().is_none());
+        assert!(!daemon.healed.get());
+        assert!(daemon.resume_at.get().is_none());
+        assert!(daemon.restart_at.borrow().is_none());
+        assert!(daemon.after_apply.take().is_none());
+        assert!(daemon.art_for.borrow().is_none());
+    }
+
+    fn assert_signed_out_events(events: &mut broadcast::Receiver<Event>) {
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::Stage(Stage::SignedOut))
+        ));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::Queue { items, position }) if items.is_empty() && position == 0
+        ));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::Snapshot(snapshot))
+                if snapshot.track_id.is_none()
+                    && snapshot.title.is_empty()
+                    && !snapshot.playing
+        ));
+        assert!(matches!(events.try_recv(), Ok(Event::LibraryChanged)));
+    }
+
+    #[test]
+    fn sign_out_clears_account_state_and_notifies_clients() {
+        let daemon = daemon();
+        let mut events = daemon.events.subscribe();
+        populate_account_state(&daemon);
+
+        on_event(&daemon, PlayerEvent::Authorization { authorized: false });
+
+        assert_account_state_is_empty(&daemon);
+        assert_signed_out_events(&mut events);
+
+        on_event(&daemon, PlayerEvent::SignedOut);
+
+        assert_account_state_is_empty(&daemon);
+        assert_signed_out_events(&mut events);
+    }
+
+    #[test]
+    fn sign_out_confirmation_is_a_cleanup_backstop() {
+        let daemon = daemon();
+        let mut events = daemon.events.subscribe();
+        populate_account_state(&daemon);
+
+        on_event(&daemon, PlayerEvent::SignedOut);
+
+        assert_account_state_is_empty(&daemon);
+        assert_signed_out_events(&mut events);
+    }
+
+    #[test]
+    fn sign_out_removes_account_persistence() {
+        const CHILD: &str = "SLIPMAT_SIGN_OUT_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let daemon = daemon();
+            populate_account_state(&daemon);
+            let model = daemon.model.borrow();
+            slipmat_core::library_cache::save(&model.library.tracks, &[], &[], &[]);
+            drop(model);
+            slipmat_core::session::save(&slipmat_core::session::Session {
+                songs: vec!["old-catalog-id".into()],
+                start: 0,
+                position_ms: 42_000,
+            });
+            let library = slipmat_core::paths::cache_dir()
+                .expect("test cache directory")
+                .join("library.json");
+            let session = slipmat_core::paths::state_dir()
+                .expect("test state directory")
+                .join("session.json");
+            assert!(library.exists());
+            assert!(session.exists());
+
+            on_event(&daemon, PlayerEvent::SignedOut);
+
+            assert!(!library.exists());
+            assert!(!session.exists());
+            return;
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("slipmat-sign-out-{}-{unique}", std::process::id()));
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "serve::tests::sign_out_removes_account_persistence",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", root.join("home"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .status()
+            .expect("run isolated sign-out test");
+        let _ = std::fs::remove_dir_all(root);
+        assert!(status.success());
     }
 
     #[test]

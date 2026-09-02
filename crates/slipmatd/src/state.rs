@@ -39,6 +39,13 @@ impl Model {
         }
     }
 
+    pub fn clear_account_state(&mut self) {
+        self.player = PlayerState::new();
+        self.tokens = None;
+        self.library = Library::default();
+        self.art_path = None;
+    }
+
     /// What a client draws from.
     ///
     /// `position_ms` is interpolated rather than last-reported: MusicKit reports

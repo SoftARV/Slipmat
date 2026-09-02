@@ -74,7 +74,7 @@ revertible. The current single-branch workflow can execute them sequentially.
 
 ### Phase 1: Daemon account boundary
 
-- [ ] Task 1: Clear daemon account state and persistence on sign-out.
+- [x] Task 1: Clear daemon account state and persistence on sign-out.
 - [ ] Task 2: Reject library refresh results from an ended authorization
   session.
 
