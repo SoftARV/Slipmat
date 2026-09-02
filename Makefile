@@ -79,6 +79,7 @@ FLATPAK_BUILDER := $(shell command -v flatpak-builder >/dev/null 2>&1 \
 flatpak:
 	$(FLATPAK_BUILDER) --force-clean --user --install \
 		--repo=flatpak-repo build-dir packaging/flatpak/dev.miguelrincon.Slipmat.yml
+	test -f build-dir/files/share/slipmat/sidecar/queue-identity.js
 
 # `--runtime-repo` is the difference between a bundle that installs and one
 # that stops with "requires the runtime org.gnome.Platform/x86_64/49 which was
