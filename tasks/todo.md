@@ -4,8 +4,8 @@
 - Issue: [#196 — AUR packages omit `queue-identity.js`](https://github.com/SoftARV/Slipmat/issues/196)
 - Branch: `fix/196-aur-queue-identity`
 
-Status: Implementation and verification completed on 2026-09-02. Awaiting
-human approval before merge or AUR publication.
+Status: Completed and approved on 2026-09-02. Awaiting merge; AUR publication
+remains a separate explicit action.
 
 ## Task 1: Correct the AUR sidecar payload definitions
 
@@ -88,4 +88,4 @@ Electron logging enabled.
   timeout caused by the missing preload module.
 - [x] `make check` passes.
 - [x] No external AUR publication occurred.
-- [ ] The human has reviewed and approved the fix before merge or publication.
+- [x] The human has reviewed and approved the fix before merge or publication.

@@ -2,8 +2,8 @@
 
 ## Status
 
-Implementation and verification completed on 2026-09-02. Awaiting human
-approval before merge or AUR publication.
+Completed and approved on 2026-09-02. Awaiting merge; AUR publication remains
+a separate explicit action.
 
 ## Source of truth
 
@@ -79,7 +79,7 @@ definitions are corrected.
 - [x] The rebuilt daemon loads the preload without a missing-module error and
   Climat reaches ready or signed-out instead of the MusicKit timeout.
 - [x] `make check` passes and the final diff contains no unrelated change.
-- [ ] The human approves the result before merge or AUR publication.
+- [x] The human approves the result before merge or AUR publication.
 
 Detailed acceptance criteria and verification commands live in
 [`tasks/todo.md`](todo.md).
