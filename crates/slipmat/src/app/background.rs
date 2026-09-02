@@ -38,7 +38,7 @@ impl AppModel {
         // position for no reason.
         if self.mirror.queue.is_empty() {
             tracing::info!("closing: nothing loaded, quitting");
-            crate::notify::quit_cleanly();
+            sender.input(super::AppMsg::Quit);
             return;
         }
 

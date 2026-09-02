@@ -412,6 +412,7 @@ impl LibraryAction {
 
 #[derive(Debug)]
 pub enum AppMsg {
+    Quit,
     SignIn,
     /// Asks first — see `confirm_sign_out`.
     SignOut,
@@ -593,6 +594,8 @@ pub enum AppMsg {
 
 #[derive(Debug)]
 pub enum CommandMsg {
+    /// The quit request reached the daemon socket, so the client can exit.
+    QuitWritten,
     /// Everything the daemon pushed down, including losing it.
     Daemon(daemon::Incoming),
     /// Cover art is on disk. `None` when the fetch failed — a missing cover is
@@ -1692,6 +1695,16 @@ impl AppModel {
     ) {
         let sender = sender.clone();
         match msg {
+            AppMsg::Quit => {
+                if let Some(daemon) = self.daemon.clone() {
+                    sender.oneshot_command(async move {
+                        daemon.quit().await;
+                        CommandMsg::QuitWritten
+                    });
+                } else {
+                    notify::quit_cleanly();
+                }
+            }
             AppMsg::SignIn => self.ask(Request::SignIn),
             AppMsg::SignOut => {
                 // The menu item is always there; asking to sign out when you
@@ -2296,6 +2309,7 @@ impl AppModel {
     ) {
         let sender = sender.clone();
         match msg {
+            CommandMsg::QuitWritten => notify::quit_cleanly(),
             CommandMsg::Pruned(report) => {
                 // Reported here rather than inside the sweep, so the sweep
                 // stays a function that returns facts and can be tested as one.

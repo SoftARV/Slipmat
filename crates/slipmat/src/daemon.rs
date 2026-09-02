@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use slipmat_core::ipc::{Event, Request};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// A cheap, cloneable handle for sending requests.
 ///
@@ -23,12 +23,19 @@ use tokio::sync::mpsc;
 /// reason the sidecar's handle worked that way: `update()` must not await, and
 /// a socket write can block.
 #[derive(Debug, Clone)]
-pub struct Handle(mpsc::UnboundedSender<Request>);
+pub struct Handle(mpsc::UnboundedSender<(Request, Option<oneshot::Sender<()>>)>);
 
 impl Handle {
     pub fn send(&self, request: Request) {
-        if self.0.send(request).is_err() {
+        if self.0.send((request, None)).is_err() {
             tracing::debug!("dropped: no daemon connection");
+        }
+    }
+
+    pub async fn quit(&self) {
+        let (written, wait) = oneshot::channel();
+        if self.0.send((Request::Quit, Some(written))).is_ok() {
+            let _ = wait.await;
         }
     }
 }
@@ -92,16 +99,23 @@ pub async fn connect(out: mpsc::UnboundedSender<Incoming>) {
     };
 
     let (read, mut write) = stream.into_split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Request>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<(Request, Option<oneshot::Sender<()>>)>();
 
     // Writer task, owning the write half.
     tokio::spawn(async move {
-        while let Some(request) = rx.recv().await {
+        while let Some((request, written)) = rx.recv().await {
             let Ok(mut line) = serde_json::to_vec(&request) else {
+                if let Some(written) = written {
+                    let _ = written.send(());
+                }
                 continue;
             };
             line.push(b'\n');
-            if write.write_all(&line).await.is_err() {
+            let result = write.write_all(&line).await;
+            if let Some(written) = written {
+                let _ = written.send(());
+            }
+            if result.is_err() {
                 break;
             }
         }
@@ -136,5 +150,27 @@ pub async fn connect(out: mpsc::UnboundedSender<Incoming>) {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn quit_waits_until_the_request_is_written() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = Handle(tx);
+        let quit = tokio::spawn(async move { handle.quit().await });
+
+        let (request, written) = rx.recv().await.expect("quit request");
+        assert!(matches!(request, Request::Quit));
+        assert!(!quit.is_finished());
+
+        written
+            .expect("write acknowledgement")
+            .send(())
+            .expect("waiting client");
+        quit.await.expect("quit task");
     }
 }
