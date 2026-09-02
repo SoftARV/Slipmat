@@ -75,15 +75,15 @@ revertible. The current single-branch workflow can execute them sequentially.
 ### Phase 1: Daemon account boundary
 
 - [x] Task 1: Clear daemon account state and persistence on sign-out.
-- [ ] Task 2: Reject library refresh results from an ended authorization
+- [x] Task 2: Reject library refresh results from an ended authorization
   session.
 
 ### Checkpoint A: Daemon boundary
 
-- [ ] A populated daemon becomes empty before publishing `Stage::SignedOut`.
-- [ ] Cleanup is idempotent and preserves non-account state.
-- [ ] A late refresh cannot repopulate memory or disk.
-- [ ] Focused `slipmatd` tests and clippy pass.
+- [x] A populated daemon becomes empty before publishing `Stage::SignedOut`.
+- [x] Cleanup is idempotent and preserves non-account state.
+- [x] A late refresh cannot repopulate memory or disk.
+- [x] Focused `slipmatd` tests and clippy pass.
 - [ ] Human review authorizes client work.
 
 ### Phase 2: Client convergence

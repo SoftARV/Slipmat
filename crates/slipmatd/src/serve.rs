@@ -77,8 +77,11 @@ pub struct Daemon {
     /// The bus. Filled in after the daemon exists, because it needs one.
     pub mpris: RefCell<Option<slipmat_core::mpris::Mpris>>,
     /// Whether a library fetch is in flight, so a reload button cannot stack
-    /// four of them.
-    pub refreshing: std::cell::Cell<bool>,
+    /// four of them. The generation lets a new account refresh without waiting
+    /// for the old account's request to finish.
+    pub refreshing: std::cell::Cell<Option<u64>>,
+    /// Changes whenever authorization crosses an account boundary.
+    pub authorization_generation: std::cell::Cell<u64>,
     /// The artwork template already fetched, so a 500ms tick does not ask again
     /// for a file that is on disk.
     pub art_for: RefCell<Option<String>>,
@@ -177,7 +180,8 @@ pub async fn run() -> Result<()> {
         restart_at: RefCell::new(None),
         after_apply: std::cell::Cell::new(None),
         mpris: RefCell::new(None),
-        refreshing: std::cell::Cell::new(false),
+        refreshing: std::cell::Cell::new(None),
+        authorization_generation: std::cell::Cell::new(0),
         art_for: RefCell::new(None),
         clients: std::cell::Cell::new(0),
         idle: std::cell::Cell::new(false),
@@ -602,6 +606,17 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
 }
 
 fn set_authorization(daemon: &Rc<Daemon>, authorized: bool) {
+    let stage = if authorized {
+        Stage::Ready
+    } else {
+        Stage::SignedOut
+    };
+    if daemon.model.borrow().stage != stage {
+        daemon
+            .authorization_generation
+            .set(daemon.authorization_generation.get().saturating_add(1));
+    }
+
     if !authorized {
         clear_account_state(daemon);
         return;
@@ -1009,12 +1024,12 @@ fn write(daemon: &Rc<Daemon>, action: WriteAction, id: String) {
 /// Spawned, and at most one at a time: a client hammering a reload button must
 /// not queue up four full library fetches behind it.
 fn refresh_library(daemon: &Rc<Daemon>) {
-    if daemon.refreshing.replace(true) {
+    let Some(generation) = begin_library_refresh(daemon) else {
         tracing::debug!("library refresh already running");
         return;
-    }
+    };
     let Some(client) = daemon.client() else {
-        daemon.refreshing.set(false);
+        finish_library_refresh(daemon, generation);
         return;
     };
 
@@ -1027,7 +1042,10 @@ fn refresh_library(daemon: &Rc<Daemon>) {
             client.all_library_artists(MAX),
             client.all_library_playlists(MAX),
         );
-        daemon.refreshing.set(false);
+        if !finish_library_refresh(&daemon, generation) {
+            tracing::debug!(generation, "discarded stale library refresh");
+            return;
+        }
 
         match fetched {
             (Ok(songs), Ok(albums), Ok(artists), Ok(playlists)) => {
@@ -1050,6 +1068,22 @@ fn refresh_library(daemon: &Rc<Daemon>) {
             _ => tracing::warn!("library refresh failed; keeping what was cached"),
         }
     });
+}
+
+fn begin_library_refresh(daemon: &Daemon) -> Option<u64> {
+    let generation = daemon.authorization_generation.get();
+    if daemon.refreshing.get() == Some(generation) {
+        return None;
+    }
+    daemon.refreshing.set(Some(generation));
+    Some(generation)
+}
+
+fn finish_library_refresh(daemon: &Daemon, generation: u64) -> bool {
+    if daemon.refreshing.get() == Some(generation) {
+        daemon.refreshing.set(None);
+    }
+    daemon.authorization_generation.get() == generation
 }
 
 /// Tracks as rows.
@@ -1341,7 +1375,8 @@ mod tests {
             restart_at: RefCell::new(None),
             after_apply: std::cell::Cell::new(None),
             mpris: RefCell::new(None),
-            refreshing: std::cell::Cell::new(false),
+            refreshing: std::cell::Cell::new(None),
+            authorization_generation: std::cell::Cell::new(0),
             art_for: RefCell::new(None),
             clients: std::cell::Cell::new(0),
             idle: std::cell::Cell::new(false),
@@ -1369,6 +1404,31 @@ mod tests {
         on_event(&daemon, PlayerEvent::Authorization { authorized: true });
 
         assert_eq!(daemon.model.borrow().stage, Stage::Ready);
+    }
+
+    #[test]
+    fn stale_refresh_cannot_finish_or_release_the_current_guard() {
+        let daemon = daemon();
+        assert_eq!(daemon.authorization_generation.get(), 0);
+
+        on_event(&daemon, PlayerEvent::Authorization { authorized: false });
+        let signed_out = daemon.authorization_generation.get();
+        on_event(&daemon, PlayerEvent::SignedOut);
+        assert_eq!(daemon.authorization_generation.get(), signed_out);
+
+        on_event(&daemon, PlayerEvent::Authorization { authorized: true });
+        let current = daemon.authorization_generation.get();
+        assert!(current > signed_out);
+        on_event(&daemon, PlayerEvent::Authorization { authorized: true });
+        assert_eq!(daemon.authorization_generation.get(), current);
+
+        daemon.refreshing.set(Some(signed_out));
+        assert_eq!(begin_library_refresh(&daemon), Some(current));
+        assert_eq!(begin_library_refresh(&daemon), None);
+        assert!(!finish_library_refresh(&daemon, signed_out));
+        assert_eq!(daemon.refreshing.get(), Some(current));
+        assert!(finish_library_refresh(&daemon, current));
+        assert_eq!(daemon.refreshing.get(), None);
     }
 
     fn populate_account_state(daemon: &Daemon) {

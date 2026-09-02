@@ -49,18 +49,18 @@ memory, or clients.
 
 **Acceptance criteria:**
 
-- [ ] Every authorization transition advances a monotonic generation captured
+- [x] Every authorization transition advances a monotonic generation captured
   by `refresh_library`.
-- [ ] A refresh from an ended session cannot save cache data, replace library
+- [x] A refresh from an ended session cannot save cache data, replace library
   rows, or publish `LibraryChanged`, including after a new account is ready.
-- [ ] A refresh from the current ready session still saves and publishes
+- [x] A refresh from the current ready session still saves and publishes
   normally, and the single-refresh guard can recover after a discarded result.
 
 **Verification:**
 
-- [ ] Add a deterministic failing test for a late old-session result.
-- [ ] Run `cargo test -p slipmatd refresh -- --nocapture`.
-- [ ] Run `cargo clippy -p slipmatd --all-targets -- -D warnings`.
+- [x] Add a deterministic failing test for a late old-session result.
+- [x] Run `cargo test -p slipmatd refresh -- --nocapture`.
+- [x] Run `cargo clippy -p slipmatd --all-targets -- -D warnings`.
 
 **Dependencies:** Task 1.
 
@@ -72,10 +72,10 @@ memory, or clients.
 
 ## Checkpoint A: Daemon boundary
 
-- [ ] Tasks 1 and 2 meet their acceptance criteria.
-- [ ] Focused tests prove cleanup order, idempotence, persistence removal, and
+- [x] Tasks 1 and 2 meet their acceptance criteria.
+- [x] Focused tests prove cleanup order, idempotence, persistence removal, and
   stale-result rejection.
-- [ ] `slipmatd` builds and passes clippy without warnings.
+- [x] `slipmatd` builds and passes clippy without warnings.
 - [ ] Human review authorizes client work.
 
 ## Task 3: Clear Climat on confirmed sign-out
