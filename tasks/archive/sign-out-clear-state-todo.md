@@ -1,11 +1,13 @@
 # Sign-out account-state cleanup task checklist
 
-Plan: [`tasks/plan.md`](plan.md)
+Plan:
+[`tasks/archive/sign-out-clear-state-plan.md`](sign-out-clear-state-plan.md)
 Specification:
-[`docs/specs/SPEC-sign-out-clear-state.md`](../docs/specs/SPEC-sign-out-clear-state.md)
+[`docs/specs/SPEC-sign-out-clear-state.md`](../../docs/specs/SPEC-sign-out-clear-state.md)
 Branch: `fix/sign-out-clear-state`
 
-Status: Approved on 2026-09-02. Implementation in progress.
+Status: Completed and approved on 2026-09-02. Archived after runtime
+verification.
 
 ## Task 1: Clear daemon account state and persistence
 

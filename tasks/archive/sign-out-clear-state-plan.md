@@ -2,14 +2,15 @@
 
 ## Status
 
-Completed on 2026-09-02.
+Completed and approved on 2026-09-02. Archived after runtime verification.
 
 ## Source of truth
 
 - Specification:
-  [`docs/specs/SPEC-sign-out-clear-state.md`](../docs/specs/SPEC-sign-out-clear-state.md)
+  [`docs/specs/SPEC-sign-out-clear-state.md`](../../docs/specs/SPEC-sign-out-clear-state.md)
 - Branch: `fix/sign-out-clear-state`
-- Task checklist: [`tasks/todo.md`](todo.md)
+- Task checklist:
+  [`tasks/archive/sign-out-clear-state-todo.md`](sign-out-clear-state-todo.md)
 
 ## Overview
 
@@ -116,7 +117,7 @@ revertible. The current single-branch workflow can execute them sequentially.
 - [x] Human review approves the feature for merge.
 
 Detailed task acceptance criteria and commands live in
-[`tasks/todo.md`](todo.md).
+[`tasks/archive/sign-out-clear-state-todo.md`](sign-out-clear-state-todo.md).
 
 ## Risks and controls
 
