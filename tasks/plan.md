@@ -90,14 +90,14 @@ revertible. The current single-branch workflow can execute them sequentially.
 
 - [x] Task 3: Clear Climat's transient account presentation on the daemon's
   signed-out stage.
-- [ ] Task 4: Move GTK cleanup from sign-out request time to daemon
+- [x] Task 4: Move GTK cleanup from sign-out request time to daemon
   confirmation.
 
 ### Checkpoint B: Client convergence
 
-- [ ] Climat and GTK clear stale account content without reconnecting.
-- [ ] Both clients preserve non-account preferences.
-- [ ] Focused client tests and clippy pass.
+- [x] Climat and GTK clear stale account content without reconnecting.
+- [x] Both clients preserve non-account preferences.
+- [x] Focused client tests and clippy pass.
 - [ ] Human review authorizes destructive runtime sign-out testing.
 
 ### Phase 3: Runtime and documentation

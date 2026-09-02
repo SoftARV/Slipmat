@@ -23,6 +23,10 @@ fn redial_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis(200 * (1 << attempt.min(5)) as u64)
 }
 
+fn clears_account_state(stage: &DaemonStage) -> bool {
+    matches!(stage, DaemonStage::SignedOut)
+}
+
 pub(super) fn connect(sender: &ComponentSender<AppModel>) {
     reconnect(sender, std::time::Duration::ZERO);
 }
@@ -128,6 +132,7 @@ impl AppModel {
                 self.mark_now_playing();
             }
             Event::Stage(stage) => {
+                let clear = clears_account_state(&stage);
                 self.mirror.stage = Some(stage.clone());
                 self.stage = match stage {
                     DaemonStage::Connecting => Stage::Connecting,
@@ -136,6 +141,9 @@ impl AppModel {
                     // The loud failure rule 4 demands.
                     DaemonStage::Broken { detail } => Stage::Broken(detail),
                 };
+                if clear {
+                    self.forget_session(sender);
+                }
             }
             Event::LibraryChanged => {
                 tracing::info!("the daemon refreshed the library");
@@ -160,5 +168,20 @@ impl AppModel {
             }
             Event::Error { detail } => self.toast(&detail),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_confirmed_signed_out_stage_clears_account_state() {
+        assert!(clears_account_state(&DaemonStage::SignedOut));
+        assert!(!clears_account_state(&DaemonStage::Connecting));
+        assert!(!clears_account_state(&DaemonStage::Ready));
+        assert!(!clears_account_state(&DaemonStage::Broken {
+            detail: "sign-out failed".into(),
+        }));
     }
 }

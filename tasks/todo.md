@@ -118,18 +118,18 @@ reports `Stage::SignedOut`; leave shared persistence to the daemon.
 
 **Acceptance criteria:**
 
-- [ ] `AppMsg::SignOutConfirmed` sends `Request::SignOut` without changing the
+- [x] `AppMsg::SignOutConfirmed` sends `Request::SignOut` without changing the
   stage or deleting client/shared state immediately.
-- [ ] The daemon's signed-out stage clears GTK library, catalog, pages, queue
+- [x] The daemon's signed-out stage clears GTK library, catalog, pages, queue
   projection, current-track presentation, and backdrop without deleting
   preferences or shared cache files from the client.
-- [ ] A sign-out error leaves the current presentation intact and visible.
+- [x] A sign-out error leaves the current presentation intact and visible.
 
 **Verification:**
 
-- [ ] Add focused coverage for request-versus-confirmation ordering.
-- [ ] Run `cargo test -p slipmat signed_out -- --nocapture`.
-- [ ] Run `cargo clippy -p slipmat --all-targets -- -D warnings`.
+- [x] Add focused coverage for request-versus-confirmation ordering.
+- [x] Run `cargo test -p slipmat signed_out -- --nocapture`.
+- [x] Run `cargo clippy -p slipmat --all-targets -- -D warnings`.
 
 **Dependencies:** Tasks 1 and 2, Checkpoint A.
 
@@ -142,9 +142,9 @@ reports `Stage::SignedOut`; leave shared persistence to the daemon.
 
 ## Checkpoint B: Client convergence
 
-- [ ] Tasks 3 and 4 meet their acceptance criteria.
-- [ ] Both clients clear account data from the same daemon transition.
-- [ ] Focused client tests and clippy pass without warnings.
+- [x] Tasks 3 and 4 meet their acceptance criteria.
+- [x] Both clients clear account data from the same daemon transition.
+- [x] Focused client tests and clippy pass without warnings.
 - [ ] Human review authorizes destructive runtime sign-out testing.
 
 ## Task 5: Verify the complete sign-out boundary
