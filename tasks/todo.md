@@ -4,7 +4,8 @@
 - Issue: [#196 — AUR packages omit `queue-identity.js`](https://github.com/SoftARV/Slipmat/issues/196)
 - Branch: `fix/196-aur-queue-identity`
 
-Status: Approved for implementation on 2026-09-02.
+Status: Implementation and verification completed on 2026-09-02. Awaiting
+human approval before merge or AUR publication.
 
 ## Task 1: Correct the AUR sidecar payload definitions
 
@@ -47,24 +48,26 @@ Electron logging enabled.
 
 **Acceptance criteria:**
 
-- [ ] Both package bases build successfully, and the `slipmat-daemon-git`
+- [x] Both package bases build successfully, and the `slipmat-daemon-git`
   archive contains `usr/share/slipmat/sidecar/queue-identity.js`.
-- [ ] The current stable archive matches the runtime imports in its `v0.10.0`
+- [x] The current stable archive matches the runtime imports in its `v0.10.0`
   preload; the PKGBUILD is ready to include the module when a release contains
   it.
-- [ ] After installing and restarting the rebuilt daemon, Electron reports no
+- [x] After installing and restarting the rebuilt daemon, Electron reports no
   `Cannot find module ./queue-identity` error and Climat reaches ready or
   signed-out instead of timing out.
 
 **Verification:**
 
-- [ ] Run `(cd packaging/aur/slipmat && makepkg -f)`.
-- [ ] Run `(cd packaging/aur/slipmat-git && makepkg -f)`.
-- [ ] Inspect the daemon archives with `bsdtar -tf`; confirm the `-git` module
+- [x] Build `packaging/aur/slipmat/PKGBUILD` with `makepkg -f` in a standalone
+  temporary directory.
+- [x] Build `packaging/aur/slipmat-git/PKGBUILD` with `makepkg -f` in a
+  standalone temporary directory.
+- [x] Inspect the daemon archives with `bsdtar -tf`; confirm the `-git` module
   path and compare each archive with its source preload imports.
-- [ ] Install the rebuilt daemon package, restart `slipmatd`, and repeat issue
+- [x] Install the rebuilt daemon package, restart `slipmatd`, and repeat issue
   #196's logging and Climat startup sequence.
-- [ ] Run `make check` and review the final diff for unrelated changes.
+- [x] Run `make check` and review the final diff for unrelated changes.
 
 **Dependencies:** Task 1.
 
@@ -77,12 +80,12 @@ Electron logging enabled.
 
 ## Checkpoint: Issue #196 ready for review
 
-- [ ] Tasks 1 and 2 meet their acceptance criteria.
-- [ ] Both PKGBUILDs are syntax-clean and build from their declared sources.
-- [ ] Package inspection proves the affected daemon payload contains the
+- [x] Tasks 1 and 2 meet their acceptance criteria.
+- [x] Both PKGBUILDs are syntax-clean and build from their declared sources.
+- [x] Package inspection proves the affected daemon payload contains the
   preload dependency without breaking the current stable source.
-- [ ] Runtime evidence proves Climat no longer reaches the masked MusicKit
+- [x] Runtime evidence proves Climat no longer reaches the masked MusicKit
   timeout caused by the missing preload module.
-- [ ] `make check` passes.
-- [ ] No external AUR publication occurred.
+- [x] `make check` passes.
+- [x] No external AUR publication occurred.
 - [ ] The human has reviewed and approved the fix before merge or publication.

@@ -2,7 +2,8 @@
 
 ## Status
 
-Approved for implementation on 2026-09-02.
+Implementation and verification completed on 2026-09-02. Awaiting human
+approval before merge or AUR publication.
 
 ## Source of truth
 
@@ -65,19 +66,19 @@ definitions are corrected.
 
 ### Phase 2: Package and runtime proof
 
-- [ ] Task 2: Build, inspect, and exercise both AUR package variants.
+- [x] Task 2: Build, inspect, and exercise both AUR package variants.
 
 ### Checkpoint: Complete
 
-- [ ] Both PKGBUILDs are syntax-clean and build from their declared sources.
-- [ ] The `slipmat-daemon-git` archive contains
+- [x] Both PKGBUILDs are syntax-clean and build from their declared sources.
+- [x] The `slipmat-daemon-git` archive contains
   `/usr/share/slipmat/sidecar/queue-identity.js`.
-- [ ] The stable `v0.10.0` archive remains buildable without a file its source
+- [x] The stable `v0.10.0` archive remains buildable without a file its source
   does not contain, and the definition includes the module for the next source
   release that carries it.
-- [ ] The rebuilt daemon loads the preload without a missing-module error and
+- [x] The rebuilt daemon loads the preload without a missing-module error and
   Climat reaches ready or signed-out instead of the MusicKit timeout.
-- [ ] `make check` passes and the final diff contains no unrelated change.
+- [x] `make check` passes and the final diff contains no unrelated change.
 - [ ] The human approves the result before merge or AUR publication.
 
 Detailed acceptance criteria and verification commands live in
@@ -119,6 +120,23 @@ The stable archive is also inspected against the direct relative imports in
 its own `preload.js`. For `v0.10.0`, absence of `queue-identity.js` is correct
 because that source does not import it. Runtime verification follows issue
 #196 after installing the rebuilt `slipmat-daemon-git` package.
+
+## Verification evidence
+
+- The stable `0.10.0-1` package built from its declared tag; all 235 release
+  tests passed, and its archive contains the three sidecar files imported by
+  that release.
+- The split `0.10.0.r136.g50088c5-1` package base built from `main`; all 331
+  release tests passed, and the daemon archive contains
+  `usr/share/slipmat/sidecar/queue-identity.js`.
+- `make check` passed on the feature branch.
+- Pacman upgraded `slipmat-daemon-git` and `climat-git` together to `r136`.
+  The installed module is owned by the daemon package.
+- With the issue's Electron logging enabled, the preload harvested the signed-in
+  authorization and refreshed 535 songs, 420 albums, 266 artists, and 8
+  playlists. Climat connected and rendered the song library without the
+  60-second timeout.
+- No AUR package was published.
 
 ## Definition of done
 
