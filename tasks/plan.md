@@ -84,11 +84,11 @@ revertible. The current single-branch workflow can execute them sequentially.
 - [x] Cleanup is idempotent and preserves non-account state.
 - [x] A late refresh cannot repopulate memory or disk.
 - [x] Focused `slipmatd` tests and clippy pass.
-- [ ] Human review authorizes client work.
+- [x] Human review authorizes client work.
 
 ### Phase 2: Client convergence
 
-- [ ] Task 3: Clear Climat's transient account presentation on the daemon's
+- [x] Task 3: Clear Climat's transient account presentation on the daemon's
   signed-out stage.
 - [ ] Task 4: Move GTK cleanup from sign-out request time to daemon
   confirmation.

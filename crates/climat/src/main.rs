@@ -708,6 +708,18 @@ fn seek(link: &link::Link, app: &App, delta: i64) {
 }
 
 impl App {
+    fn clear_account_state(&mut self) {
+        self.snap = Snapshot {
+            volume: self.snap.volume,
+            ..Default::default()
+        };
+        self.browser.clear_account_state();
+        self.queue = queue::Queue::default();
+        self.pane = Pane::Browser;
+        self.message = None;
+        self.bars = [0.0; spectrum::BANDS];
+    }
+
     fn on_event(&mut self, event: Event) {
         match event {
             Event::Snapshot(snap) => {
@@ -719,7 +731,12 @@ impl App {
                 self.snap = snap;
             }
             Event::Queue { items, position } => self.queue.replace(items, position),
-            Event::Stage(stage) => self.stage = stage,
+            Event::Stage(stage) => {
+                if stage == Stage::SignedOut {
+                    self.clear_account_state();
+                }
+                self.stage = stage;
+            }
             Event::Rows { entries, total, .. } => {
                 // Ignored while the catalog is showing: a stale library answer
                 // must not overwrite the results somebody asked Apple for.
@@ -846,5 +863,53 @@ mod tests {
             ));
             assert!(requests.try_recv().is_err());
         }
+    }
+
+    #[test]
+    fn signed_out_clears_transient_player_state_and_keeps_choices() {
+        let mut app = App {
+            snap: Snapshot {
+                track_id: Some("old".into()),
+                title: "Old song".into(),
+                volume: 0.75,
+                playing: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        app.browser.view = LibraryView::Albums;
+        app.browser.kinds = slipmat_core::ipc::CatalogFilter::Artists;
+        app.browser.sorts[1] = (slipmat_core::sort::SortBy::Year, true);
+        app.browser.showing = Showing::Catalog { searching: true };
+        *app.browser.filter_mut() = "old search".into();
+        app.queue.replace(
+            vec![slipmat_core::ipc::QueueItem {
+                title: "Old song".into(),
+                ..Default::default()
+            }],
+            0,
+        );
+        app.pane = Pane::Queue;
+        app.message = Some(Notice::bad("old error"));
+        app.bars = [1.0; spectrum::BANDS];
+
+        app.on_event(Event::Stage(Stage::SignedOut));
+
+        assert_eq!(app.stage, Stage::SignedOut);
+        assert!(app.snap.track_id.is_none());
+        assert!(app.snap.title.is_empty());
+        assert_eq!(app.snap.volume, 0.75);
+        assert!(app.queue.items.is_empty());
+        assert!(matches!(app.pane, Pane::Browser));
+        assert!(app.message.is_none());
+        assert_eq!(app.bars, [0.0; spectrum::BANDS]);
+        assert_eq!(app.browser.view, LibraryView::Albums);
+        assert_eq!(app.browser.kinds, slipmat_core::ipc::CatalogFilter::Artists);
+        assert_eq!(
+            app.browser.sorts[1],
+            (slipmat_core::sort::SortBy::Year, true)
+        );
+        assert!(matches!(app.browser.showing, Showing::Library));
+        assert!(app.browser.catalog_query().is_empty());
     }
 }

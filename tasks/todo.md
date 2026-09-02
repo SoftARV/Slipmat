@@ -76,7 +76,7 @@ memory, or clients.
 - [x] Focused tests prove cleanup order, idempotence, persistence removal, and
   stale-result rejection.
 - [x] `slipmatd` builds and passes clippy without warnings.
-- [ ] Human review authorizes client work.
+- [x] Human review authorizes client work.
 
 ## Task 3: Clear Climat on confirmed sign-out
 
@@ -87,19 +87,19 @@ preferences.
 
 **Acceptance criteria:**
 
-- [ ] The signed-out stage clears snapshot, queue, bars, message, browser rows,
+- [x] The signed-out stage clears snapshot, queue, bars, message, browser rows,
   catalog results, open page, filters, searches, and pagination state before
   the next draw.
-- [ ] No stale row can be opened, played, or queued while the sign-in prompt is
+- [x] No stale row can be opened, played, or queued while the sign-in prompt is
   shown.
-- [ ] View, sort, and catalog-kind choices survive the reset, and other stage
+- [x] View, sort, and catalog-kind choices survive the reset, and other stage
   transitions keep their current behavior.
 
 **Verification:**
 
-- [ ] Add a focused `App::on_event` test populated with account state.
-- [ ] Run `cargo test -p climat signed_out -- --nocapture`.
-- [ ] Run `cargo clippy -p climat --all-targets -- -D warnings`.
+- [x] Add a focused `App::on_event` test populated with account state.
+- [x] Run `cargo test -p climat signed_out -- --nocapture`.
+- [x] Run `cargo clippy -p climat --all-targets -- -D warnings`.
 
 **Dependencies:** Tasks 1 and 2, Checkpoint A.
 
