@@ -9,7 +9,7 @@ members = [
 
 # Shared so the two crates cannot drift apart on a version.
 [workspace.package]
-version = "0.11.0-dev"
+version = "0.11.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
