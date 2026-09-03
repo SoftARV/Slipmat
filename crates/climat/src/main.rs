@@ -40,6 +40,17 @@ use crate::ui::Pane;
 /// tick between them rather than stepping half a second at a time.
 const FRAME_MS: u64 = 100;
 
+/// Fastest cadence at which the spectrum may ask the terminal to redraw.
+const SPECTRUM_FRAME: std::time::Duration = std::time::Duration::from_nanos(1_000_000_000 / 24);
+
+fn spectrum_redraw_due(last: &mut std::time::Instant, now: std::time::Instant) -> bool {
+    if now.duration_since(*last) < SPECTRUM_FRAME {
+        return false;
+    }
+    *last = now;
+    true
+}
+
 /// How long a notice stays on screen.
 const MESSAGE_FOR: std::time::Duration = std::time::Duration::from_secs(4);
 
@@ -147,6 +158,7 @@ async fn run() -> Result<()> {
     // times a second is exactly the idle cost a background player should not
     // have.
     let mut dirty = true;
+    let mut last_draw = std::time::Instant::now();
 
     loop {
         if dirty {
@@ -174,6 +186,7 @@ async fn run() -> Result<()> {
                 )
             })?;
             dirty = false;
+            last_draw = std::time::Instant::now();
         }
 
         tokio::select! {
@@ -224,7 +237,9 @@ async fn run() -> Result<()> {
                 // chime with nothing playing must not move them.
                 if app.snap.playing {
                     app.bars = bars;
-                    dirty = true;
+                    if spectrum_redraw_due(&mut last_draw, std::time::Instant::now()) {
+                        dirty = true;
+                    }
                 }
             }
             _ = frame.tick() => {
@@ -989,5 +1004,17 @@ mod tests {
 
         app.on_event(Event::LibraryRefreshing { refreshing: false }, &link);
         assert!(!app.refreshing_library);
+    }
+
+    #[test]
+    fn spectrum_redraws_are_limited_to_twenty_four_frames_per_second() {
+        let start = std::time::Instant::now();
+        let mut last = start;
+
+        assert!(!spectrum_redraw_due(
+            &mut last,
+            start + SPECTRUM_FRAME - std::time::Duration::from_nanos(1)
+        ));
+        assert!(spectrum_redraw_due(&mut last, start + SPECTRUM_FRAME));
     }
 }
