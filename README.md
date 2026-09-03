@@ -33,6 +33,12 @@ audio. The GNOME app and terminal player share that engine.
 - **Fast startup.** Slipmat opens on its cached library and restores the last
   queue without resuming playback.
 
+<p align="center">
+  <img src="docs/screenshots/climat.png" width="720" alt="Climat playing Something Comforting by Porter Robinson, with its spectrum visualizer and queue visible in a terminal">
+  <br>
+  <sub>Climat, the terminal player</sub>
+</p>
+
 <table>
   <tr>
     <td colspan="2" width="33%">
@@ -76,14 +82,15 @@ uses about **200 MB** and provides the Widevine CDM.
 ### Arch and derivatives
 
 ```bash
-yay -S slipmat        # the latest release
+yay -S slipmat        # latest release: the GNOME app
+yay -S climat         # latest release: the terminal player
 yay -S slipmat-git    # tracks main: the GNOME app
 yay -S climat-git     # tracks main: the terminal player
 ```
 
-The release and `-git` packages conflict, following the AUR convention.
-`slipmat-git` builds the current `main` branch, which may contain unfinished
-work.
+Either client pulls in the shared playback daemon. The release and `-git`
+packages conflict, following the AUR convention. `-git` packages build the
+current `main` branch, which may contain unfinished work.
 
 ### Flatpak for any distribution
 
