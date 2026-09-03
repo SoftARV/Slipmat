@@ -10,8 +10,7 @@ license=('GPL-3.0-or-later')
 makedepends=('cargo' 'nodejs' 'npm' 'git' 'pkgconf' 'librsvg'
              'gtk4' 'libadwaita' 'libpulse')
 source=("$pkgbase-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# Replace after GitHub creates the tag archive.
-sha256sums=('SKIP')
+sha256sums=('ad026864baeea9d8f16b35539bbc903cda7df4c368962294167e3bd5115667d9')
 options=('!debug' '!lto')
 
 prepare() {
