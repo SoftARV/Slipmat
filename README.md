@@ -33,6 +33,12 @@ audio. The GNOME app and terminal player share that engine.
 - **Fast startup.** Slipmat opens on its cached library and restores the last
   queue without resuming playback.
 
+<p align="center">
+  <img src="docs/screenshots/climat.png" width="720" alt="Climat playing Something Comforting by Porter Robinson, with its spectrum visualizer and queue visible in a terminal">
+  <br>
+  <sub>Climat, the terminal player</sub>
+</p>
+
 <table>
   <tr>
     <td colspan="2" width="33%">
