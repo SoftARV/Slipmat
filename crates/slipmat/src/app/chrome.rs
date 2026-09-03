@@ -119,7 +119,8 @@ pub(super) fn register_actions(
     // primary menu, a signed-out app had no visible way to exit at all.
     let app = relm4::main_application();
     let quit = gtk::gio::SimpleAction::new("quit", None);
-    quit.connect_activate(|_, _| crate::notify::quit_cleanly());
+    let s = sender.clone();
+    quit.connect_activate(move |_, _| s.input(AppMsg::Quit));
     app.add_action(&quit);
 
     // Transport, so the app answers the keyboard even when the bar does not
@@ -357,7 +358,10 @@ impl AppModel {
             .label("Quit")
             .css_classes(["flat"])
             .build();
-        quit.connect_clicked(|_| crate::notify::quit_cleanly());
+        {
+            let sender = sender.clone();
+            quit.connect_clicked(move |_| sender.input(AppMsg::Quit));
+        }
 
         // The bar exists only to hold that button — the dialog cannot be
         // closed, so there are no window controls to show and no title to
@@ -411,10 +415,11 @@ impl AppModel {
         let shortcuts = gtk::ShortcutController::new();
         shortcuts.set_scope(gtk::ShortcutScope::Local);
         shortcuts.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let sender = sender.clone();
         shortcuts.add_shortcut(gtk::Shortcut::new(
             gtk::ShortcutTrigger::parse_string("<Control>q"),
-            Some(gtk::CallbackAction::new(|_, _| {
-                crate::notify::quit_cleanly();
+            Some(gtk::CallbackAction::new(move |_, _| {
+                sender.input(AppMsg::Quit);
                 gtk::glib::Propagation::Stop
             })),
         ));
