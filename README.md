@@ -73,9 +73,9 @@ audio. The GNOME app and terminal player share that engine.
 ## Install
 
 You need an **active Apple Music subscription** and **a network connection
-whenever you play**. Linux Widevine cannot cache playback licences. The current
-release targets x86_64; `0.12.0-dev` adds aarch64 test builds. See
-[Limitations](#limitations).
+whenever you play**. Linux Widevine cannot cache playback licences. The v0.11
+release targets x86_64. Development builds for v0.12 support both x86_64 and
+aarch64. See [Limitations](#limitations).
 
 Each installation method downloads castLabs Electron once. Its Chromium bundle
 uses about **200 MB**, and its component updater fetches the Widevine CDM on
@@ -92,8 +92,8 @@ yay -S climat-git     # tracks main: the terminal player
 
 Either client pulls in the shared playback daemon. The release and `-git`
 packages conflict, following the AUR convention. `-git` packages build the
-current `main` branch, which may contain unfinished work. ARM64 testers need
-the `-git` packages until the next release.
+current `main` branch, which may contain unfinished work. The `-git` packages
+support both x86_64 and aarch64. ARM64 users need them until v0.12 is released.
 
 ### Flatpak for any distribution
 
@@ -104,6 +104,9 @@ release](https://github.com/SoftARV/Slipmat/releases/latest), then:
 flatpak install ./Slipmat.flatpak
 flatpak run dev.miguelrincon.Slipmat
 ```
+
+Starting with v0.12, choose `Slipmat-x86_64.flatpak` or
+`Slipmat-aarch64.flatpak` to match your CPU.
 
 A bundle contains the app but fetches its runtime during installation. Accept
 the prompt to download GNOME 49 from Flathub. Declining it reports that the
@@ -152,9 +155,10 @@ The platform imposes these limitations:
   each track over the network, so Slipmat cannot play offline.
 - **~200 MB on disk for the sidecar.** The sidecar bundles Chromium to provide
   Widevine.
-- **Released builds are x86_64.** Native aarch64 builds are available from
-  `0.12.0-dev`, but remain unreleased until a clean ARM64 VM completes the
-  playback checklist.
+- **ARM64 ships with v0.12.** The v0.11 release remains x86_64-only. We verified
+  the v0.12 development packages through first-run Widevine setup, Apple
+  sign-in, library loading and playback as both an Arch Linux ARM package and a
+  GNOME 49 Flatpak.
 - **`climat` needs a desktop session.** Its daemon runs Chromium, which requires
   a display server even when it keeps the window hidden.
 - **Apple can change `music.apple.com`.** Slipmat uses a small hook to drive
