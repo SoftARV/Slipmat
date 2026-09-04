@@ -58,6 +58,9 @@ modules:
       append-path: /usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/slipmat/cargo
+    run-tests: true
+    test-commands:
+      - cargo --offline test --release --verbose --workspace
     sources:
       - type: dir
         path: ../..
@@ -96,7 +99,6 @@ modules:
           - aarch64
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
-      - cargo --offline test --release --verbose --workspace
       # **Only what this package ships.** The workspace also holds `climat`,
       # the terminal client, which the Flatpak deliberately does not install —
       # this stays the GNOME application. Its crates still have to be

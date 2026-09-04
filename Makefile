@@ -42,6 +42,7 @@ check:
 	# dependency added without regenerating the source list only fails after
 	# a merge. Check the source list and packaging contracts here instead.
 	python3 packaging/flatpak/check-sources.py
+	python3 packaging/flatpak/check-electron-shim.py
 	python3 packaging/check-architectures.py
 
 # Fetch castLabs Electron. Two steps, both required: `npm install` brings down
