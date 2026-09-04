@@ -93,8 +93,16 @@ jobs:
           echo "changed files:"; echo "$changed"
 
   flatpak:
-    name: Flatpak bundle
-    runs-on: ubuntu-latest
+    name: Flatpak bundle · ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # Creating a release needs this, and the default token does not have it:
     # the first tag build produced a perfectly good bundle and then failed with
     # `403 Resource not accessible by integration`. Scoped to this job because
@@ -140,13 +148,13 @@ jobs:
 
       # The same target a developer runs, so CI cannot quietly diverge from it.
       - name: make flatpak-bundle
-        run: make flatpak-bundle
+        run: make flatpak-bundle FLATPAK_ARCH=${{ matrix.arch }}
 
       - name: Keep the bundle for a while
         uses: actions/upload-artifact@v4
         with:
-          name: Slipmat.flatpak
-          path: Slipmat.flatpak
+          name: Slipmat-${{ matrix.arch }}.flatpak
+          path: Slipmat-${{ matrix.arch }}.flatpak
           retention-days: 14
 
       # Attached to the release on a tag, so `v0.2.0` carries something
@@ -156,5 +164,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: Slipmat.flatpak
+          files: Slipmat-${{ matrix.arch }}.flatpak
           fail_on_unmatched_files: true

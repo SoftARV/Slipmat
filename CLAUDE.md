@@ -43,8 +43,8 @@ this?** If yes, it does not belong in `components/` or the reducer.
 ## The constraint that shapes everything
 
 Apple Music full-track playback is HLS + **Widevine** DRM (FairPlay only in
-Safari). On Linux the only Widevine CDM that exists is the one Google ships
-inside Chrome x86_64 and Chromium shells that bundle it.
+Safari). Google ships its Linux CDM for x86_64 and aarch64 through Chromium's
+component updater.
 
 | Path                            | Verdict                                                        |
 | ------------------------------- | -------------------------------------------------------------- |
@@ -157,7 +157,7 @@ allow this" and nothing finer.
 
 ```bash
 make flatpak          # build and install it locally
-make flatpak-bundle   # a single .flatpak file to carry to another machine
+make flatpak-bundle   # Slipmat-<architecture>.flatpak to carry elsewhere
 ```
 
 Three things in the manifest are not obvious and were each found the hard way:
@@ -194,7 +194,7 @@ Two Linux facts that follow, and that you must not design around:
 | Serde          | `serde`, `serde_json`  | 1                                          |
 | Async runtime  | `tokio`                | 1 (`rt-multi-thread`, `process`, `io-util`)|
 | Logging        | `tracing`              | 0.1                                        |
-| Sidecar shell  | castLabs ECS           | `github:castlabs/electron-releases#v43.0.0+wvcus` |
+| Sidecar shell  | castLabs ECS           | `github:castlabs/electron-releases#v44.1.0+wvcus` |
 
 Rust edition 2024, plus `anyhow` 1 (rule 5) and `tracing-subscriber` 0.3 with
 `env-filter` for `RUST_LOG`. Toolchain ≥ 1.93 (relm4 0.11's MSRV); libadwaita

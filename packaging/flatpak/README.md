@@ -10,7 +10,7 @@ yourself.
 
 ```bash
 make flatpak          # build and install locally
-make flatpak-bundle   # produces Slipmat.flatpak to carry elsewhere
+make flatpak-bundle   # produces Slipmat-$(uname -m).flatpak
 ```
 
 The first build needs the toolchain, all of it from Flathub and none of it
@@ -83,3 +83,29 @@ This was measured rather than assumed: Slipmat was run inside a real
 `org.gnome.Platform//49` sandbox with `--nofilesystem=home` and a private `HOME`
 carrying no CDM, and a track played. The original plan deferred Flatpak on the
 grounds that a sandboxed component updater was "genuinely hard"; it is not.
+
+## ARM64 acceptance
+
+Use a clean ARM64 Linux VM on Apple Silicon. Confirm `uname -m` prints
+`aarch64`; an x86_64 guest under emulation does not test this build.
+
+1. Start from a snapshot with no Chrome installation, Widevine files, or
+   Slipmat configuration.
+2. Install `Slipmat-aarch64.flatpak` and confirm
+   `flatpak info --show-ref dev.miguelrincon.Slipmat` contains `aarch64`.
+3. Run `flatpak run --env=RUST_LOG=slipmat=debug
+   dev.miguelrincon.Slipmat`. Confirm the log reports `widevine ready` and the
+   CDM appears below
+   `~/.var/app/dev.miguelrincon.Slipmat/config/Slipmat/WidevineCdm/`.
+4. Sign in, load the library, and play a protected full-length track with
+   audible output. Test play, pause, seek, previous, next, volume, and desktop
+   media controls.
+5. Open the queue drawer, collapse history, and let a gapless album cross a
+   natural boundary. Check the transition log and PipeWire stream, then listen
+   for a gap.
+6. Restart Slipmat and play another protected track. Confirm the Apple session
+   and CDM survived the restart.
+
+Before publishing the ARM64 bundle, inspect its contents and confirm it ships
+castLabs Electron without a Widevine binary. Repeat the sign-in and playback
+smoke test with the x86_64 bundle after the Electron upgrade.

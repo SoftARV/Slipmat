@@ -11,6 +11,6 @@
     "test": "node --test queue-identity.test.js"
   },
   "devDependencies": {
-    "electron": "https://github.com/castlabs/electron-releases#v43.0.0+wvcus"
+    "electron": "https://github.com/castlabs/electron-releases#v44.1.0+wvcus"
   }
 }

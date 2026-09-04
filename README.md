@@ -74,10 +74,12 @@ audio. The GNOME app and terminal player share that engine.
 
 You need an **active Apple Music subscription**, an **x86_64** machine and **a
 network connection whenever you play**. Linux Widevine cannot cache playback
-licences. See [Limitations](#limitations).
+licences. ARM64 support is available for testing in `0.12.0-dev`, before the
+next release. See [Limitations](#limitations).
 
 Each installation method downloads castLabs Electron once. Its Chromium bundle
-uses about **200 MB** and provides the Widevine CDM.
+uses about **200 MB**, and its component updater fetches the Widevine CDM on
+first run.
 
 ### Arch and derivatives
 
@@ -90,7 +92,8 @@ yay -S climat-git     # tracks main: the terminal player
 
 Either client pulls in the shared playback daemon. The release and `-git`
 packages conflict, following the AUR convention. `-git` packages build the
-current `main` branch, which may contain unfinished work.
+current `main` branch, which may contain unfinished work. ARM64 testers need
+the `-git` packages until the next release.
 
 ### Flatpak for any distribution
 
@@ -103,8 +106,8 @@ flatpak run dev.miguelrincon.Slipmat
 ```
 
 A bundle contains the app but fetches its runtime during installation. Accept
-the prompt to download GNOME 49 from Flathub. Declining it produces *"requires
-the runtime org.gnome.Platform/x86_64/49 which was not found"*.
+the prompt to download GNOME 49 from Flathub. Declining it reports that the
+matching `org.gnome.Platform` runtime was not found.
 If your machine has no Flathub remote at all:
 
 ```bash
@@ -149,8 +152,9 @@ The platform imposes these limitations:
   each track over the network, so Slipmat cannot play offline.
 - **~200 MB on disk for the sidecar.** The sidecar bundles Chromium to provide
   Widevine.
-- **x86_64 builds.** Slipmat remains x86_64-only while we wait for the next
-  stable castLabs Electron release with Linux ARM support.
+- **Released builds are x86_64.** Native aarch64 builds are available from
+  `0.12.0-dev`, but remain unreleased until a clean ARM64 VM completes the
+  playback checklist.
 - **`climat` needs a desktop session.** Its daemon runs Chromium, which requires
   a display server even when it keeps the window hidden.
 - **Apple can change `music.apple.com`.** Slipmat uses a small hook to drive
