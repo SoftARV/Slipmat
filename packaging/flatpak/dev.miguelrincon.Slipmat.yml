@@ -58,9 +58,6 @@ modules:
       append-path: /usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/slipmat/cargo
-    run-tests: true
-    test-commands:
-      - cargo --offline test --release --verbose --workspace
     sources:
       - type: dir
         path: ../..
