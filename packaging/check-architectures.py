@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Check the public packaging targets for each supported architecture."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,13 +26,25 @@ for arch in ("x86_64", "aarch64"):
     elif missing:
         failures.append(f"{arch}: missing {', '.join(missing)}")
 
+makepkg = ["makepkg", "--printsrcinfo"]
+env = None
+if os.geteuid() == 0:
+    makepkg = ["runuser", "-u", "nobody", "--", *makepkg]
+    env = os.environ | {
+        name: "/tmp"
+        for name in ("BUILDDIR", "PKGDEST", "SRCDEST", "SRCPKGDEST", "LOGDEST")
+    }
+
 result = subprocess.run(
-    ["makepkg", "--printsrcinfo"],
+    makepkg,
     cwd=root / "packaging" / "aur" / "slipmat-git",
     capture_output=True,
     text=True,
+    env=env,
 )
-if result.returncode or "\tarch = aarch64" not in result.stdout:
+if result.returncode:
+    failures.append(f"slipmat-git: metadata generation failed: {result.stderr.strip()}")
+elif "\tarch = aarch64" not in result.stdout:
     failures.append("slipmat-git: generated metadata does not support aarch64")
 
 if failures:
