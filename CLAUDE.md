@@ -1400,3 +1400,17 @@ ceiling, not a starting point.
 Say it the way a user would. **Never "MPRIS"** — that is a bus name, not a
 feature. It is "play, pause and skip from the GNOME top bar, the lock screen, or
 your media keys", because that is the thing they can picture.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five canonical triage labels without overrides. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a single-context domain doc layout. See `docs/agents/domain.md`.
