@@ -43,7 +43,7 @@ jobs:
             git pkgconf rust gtk4 libadwaita librsvg libpulse
           rustc --version
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -67,7 +67,7 @@ jobs:
     outputs:
       needed: ${{ steps.filter.outputs.needed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: filter
@@ -118,7 +118,7 @@ jobs:
       needs.flatpak_needed.outputs.needed == 'true'
     needs: [flatpak_needed]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # **No prebuilt Flatpak image.** The usual one
       # (`bilelmoussaoui/flatpak-github-actions`) stops at `gnome-47`, and this
