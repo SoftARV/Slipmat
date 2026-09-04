@@ -1,7 +1,7 @@
 name: CI
 
-# Every push and every pull request. The Flatpak job is deliberately not on
-# pull requests — see the comment on it.
+# Every push and every pull request. Pull requests build both Flatpak
+# architectures when anything other than documentation changes.
 on:
   push:
     branches: [main]
@@ -43,7 +43,7 @@ jobs:
             git pkgconf rust gtk4 libadwaita librsvg libpulse
           rustc --version
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -61,34 +61,35 @@ jobs:
       - name: make check
         run: make check
 
-  packaging-changed:
-    name: Did the packaging move?
+  flatpak_needed:
+    name: Does this need a Flatpak build?
     runs-on: ubuntu-latest
     outputs:
-      changed: ${{ steps.filter.outputs.any }}
+      needed: ${{ steps.filter.outputs.needed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          fetch-depth: 2
-      # Deliberately a plain `git diff` rather than an action: the question is
-      # small, and one fewer third-party step in the release path is worth more
-      # than the convenience.
+          fetch-depth: 0
       - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          AFTER_SHA: ${{ github.sha }}
         run: |
-          if [ "${{ github.event_name }}" != "push" ] || [ -z "${{ github.event.before }}" ]; then
-            echo "any=true" >> "$GITHUB_OUTPUT"; exit 0
+          case "$EVENT_NAME" in
+            pull_request) before="$BASE_SHA" ;;
+            push) before="$BEFORE_SHA" ;;
+            *) echo "needed=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" || echo ALL)
-          # `Makefile` is in this list because CI runs `make flatpak-bundle`
-          # — the build command itself lives there, so a change to it that
-          # skipped this job would ship a bundle nobody had built. That is not
-          # hypothetical: the `--runtime-repo` fix was a one-line Makefile
-          # change, and its build only ran because a README under packaging/
-          # happened to move in the same PR.
-          if echo "$changed" | grep -qE '^(packaging/|sidecar/|Cargo\.lock|Cargo\.toml|\.github/workflows/|Makefile|slipmat-launcher)'; then
-            echo "any=true" >> "$GITHUB_OUTPUT"
+          changed=$(git diff --name-only "$before" "$AFTER_SHA")
+          if echo "$changed" | grep -qvE '(^|/)[^/]+\.md$|^COPYING$|^docs/|^tasks/|^\.github/FUNDING\.yml$'; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
           fi
           echo "changed files:"; echo "$changed"
 
@@ -109,21 +110,15 @@ jobs:
     # it is the only one that publishes anything.
     permissions:
       contents: write
-    # Not on pull requests, and not on every merge either. The build fetches a
-    # ~1.5GB SDK and 120MB of Electron and takes far longer than the checks —
-    # too slow to sit in front of every review, and wasteful on a day when six
-    # PRs land and none of them touch packaging.
-    #
-    # So: always on a tag, on demand, and on a merge **only when something that
-    # could break the build moved**. `check` is what guards a PR; this guards
-    # the packaging.
+    # Both architectures guard non-documentation pull requests. Tags and
+    # manual runs always build; documentation-only changes skip the downloads.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'push' && needs.packaging-changed.outputs.changed == 'true')
-    needs: [packaging-changed]
+      needs.flatpak_needed.outputs.needed == 'true'
+    needs: [flatpak_needed]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # **No prebuilt Flatpak image.** The usual one
       # (`bilelmoussaoui/flatpak-github-actions`) stops at `gnome-47`, and this
@@ -166,3 +161,20 @@ jobs:
         with:
           files: Slipmat-${{ matrix.arch }}.flatpak
           fail_on_unmatched_files: true
+
+  # One stable check for branch protection, including documentation-only PRs
+  # where GitHub skips the matrix before expanding its architecture names.
+  flatpak_gate:
+    name: Flatpak bundles
+    if: always() && github.event_name == 'pull_request'
+    needs: [flatpak_needed, flatpak]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful Flatpak builds
+        env:
+          FILTER_RESULT: ${{ needs.flatpak_needed.result }}
+          FLATPAK_NEEDED: ${{ needs.flatpak_needed.outputs.needed }}
+          FLATPAK_RESULT: ${{ needs.flatpak.result }}
+        run: |
+          test "$FILTER_RESULT" = success
+          test "$FLATPAK_NEEDED" != true || test "$FLATPAK_RESULT" = success

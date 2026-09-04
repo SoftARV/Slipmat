@@ -38,9 +38,8 @@ check:
 	cargo fmt --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test
-	# The Flatpak build is offline and does not run on pull requests, so a
-	# dependency added without regenerating the source list only fails after
-	# a merge. Check the source list and packaging contracts here instead.
+	# Keep the fast packaging checks local even though CI also builds bundles.
+	# They catch stale sources and architecture drift before a seven-minute job.
 	python3 packaging/flatpak/check-sources.py
 	python3 packaging/flatpak/check-electron-shim.py
 	python3 packaging/check-architectures.py
