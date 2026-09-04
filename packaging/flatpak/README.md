@@ -91,19 +91,34 @@ Use a clean ARM64 Linux VM on Apple Silicon. Confirm `uname -m` prints
 
 1. Start from a snapshot with no Chrome installation, Widevine files, or
    Slipmat configuration.
-2. Install `Slipmat-aarch64.flatpak` and confirm
-   `flatpak info --show-ref dev.miguelrincon.Slipmat` contains `aarch64`.
-3. Run `flatpak run --env=RUST_LOG=slipmat=debug
+2. Install `Slipmat-aarch64.flatpak`. Confirm both commands name `aarch64`:
+
+   ```bash
+   flatpak info --show-ref dev.miguelrincon.Slipmat
+   flatpak info --show-runtime dev.miguelrincon.Slipmat
+   ```
+
+   The runtime command must report `org.gnome.Platform/aarch64/49`; no x86_64
+   runtime should appear in the installation transaction.
+3. Inspect both installed executables and confirm `file` reports AArch64:
+
+   ```bash
+   deployment=$(flatpak info --show-location dev.miguelrincon.Slipmat)
+   file "$deployment/files/bin/slipmat.real" \
+     "$deployment/files/share/slipmat/sidecar/node_modules/electron/dist/electron.bin"
+   ```
+
+4. Run `flatpak run --env=RUST_LOG=slipmat=debug
    dev.miguelrincon.Slipmat`. Confirm the log reports `widevine ready` and the
    CDM appears below
    `~/.var/app/dev.miguelrincon.Slipmat/config/Slipmat/WidevineCdm/`.
-4. Sign in, load the library, and play a protected full-length track with
+5. Sign in, load the library, and play a protected full-length track with
    audible output. Test play, pause, seek, previous, next, volume, and desktop
    media controls.
-5. Open the queue drawer, collapse history, and let a gapless album cross a
+6. Open the queue drawer, collapse history, and let a gapless album cross a
    natural boundary. Check the transition log and PipeWire stream, then listen
    for a gap.
-6. Restart Slipmat and play another protected track. Confirm the Apple session
+7. Restart Slipmat and play another protected track. Confirm the Apple session
    and CDM survived the restart.
 
 Before publishing the ARM64 bundle, inspect its contents and confirm it ships

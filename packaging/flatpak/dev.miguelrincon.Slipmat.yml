@@ -96,6 +96,7 @@ modules:
           - aarch64
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline test --release --verbose --workspace
       # **Only what this package ships.** The workspace also holds `climat`,
       # the terminal client, which the Flatpak deliberately does not install —
       # this stays the GNOME application. Its crates still have to be

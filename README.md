@@ -72,10 +72,10 @@ audio. The GNOME app and terminal player share that engine.
 
 ## Install
 
-You need an **active Apple Music subscription**, an **x86_64** machine and **a
-network connection whenever you play**. Linux Widevine cannot cache playback
-licences. ARM64 support is available for testing in `0.12.0-dev`, before the
-next release. See [Limitations](#limitations).
+You need an **active Apple Music subscription** and **a network connection
+whenever you play**. Linux Widevine cannot cache playback licences. The current
+release targets x86_64; `0.12.0-dev` adds aarch64 test builds. See
+[Limitations](#limitations).
 
 Each installation method downloads castLabs Electron once. Its Chromium bundle
 uses about **200 MB**, and its component updater fetches the Widevine CDM on

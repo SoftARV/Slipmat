@@ -97,7 +97,7 @@ flatpak-bundle: flatpak
 	flatpak build-bundle --arch=$(FLATPAK_ARCH) \
 		--runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
 		flatpak-repo Slipmat-$(FLATPAK_ARCH).flatpak dev.miguelrincon.Slipmat master
-	@echo "Slipmat-$(FLATPAK_ARCH).flatpak — copy it anywhere and install it with flatpak"
+	@echo "Slipmat-$(FLATPAK_ARCH).flatpak: copy it anywhere and install it with flatpak"
 
 # Show what publishing to the AUR would do, without doing it. `make aur-publish`
 # is the same thing with --push. Deliberately local rather than a CI job: the
