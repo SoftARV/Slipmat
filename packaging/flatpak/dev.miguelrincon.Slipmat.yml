@@ -58,6 +58,9 @@ modules:
       append-path: /usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/slipmat/cargo
+    run-tests: true
+    test-commands:
+      - cargo --offline test --release --verbose --workspace
     sources:
       - type: dir
         path: ../..
@@ -81,10 +84,19 @@ modules:
       # `node_modules/electron/dist/electron` directly, and the other thirteen
       # packages exist only to download that binary.
       - type: archive
-        url: https://github.com/castlabs/electron-releases/releases/download/v43.0.0%2Bwvcus/electron-v43.0.0+wvcus-linux-x64.zip
-        sha256: 53782f44b8a88703ed54da1602c54c0af998ce076839f719efe1c850b05baccf
+        url: https://github.com/castlabs/electron-releases/releases/download/v44.1.0%2Bwvcus/electron-v44.1.0%2Bwvcus-linux-x64.zip
+        sha256: a719a9cc77924edfa50348b9fdb3d5cef2e5afa44317108ec1c3cb94c58f9085
         strip-components: 0
         dest: electron-dist
+        only-arches:
+          - x86_64
+      - type: archive
+        url: https://github.com/castlabs/electron-releases/releases/download/v44.1.0%2Bwvcus/electron-v44.1.0%2Bwvcus-linux-arm64.zip
+        sha256: 72e3010d05edf07a11a40149b68ff1b0c1a5db680a435a40903893bf02f5adf3
+        strip-components: 0
+        dest: electron-dist
+        only-arches:
+          - aarch64
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
       # **Only what this package ships.** The workspace also holds `climat`,

@@ -1,8 +1,14 @@
 #!/bin/sh
-# Stands where `electron_binary()` expects the real thing, so that zypak ends up
-# the *direct* parent of Chromium — which is what it needs to be to translate
-# the sandbox calls Flatpak refuses.
-#
-# The Rust side deliberately spawns `node_modules/electron/dist/electron`
-# rather than `.bin/electron`; this keeps that true while inserting the wrapper.
-exec zypak-wrapper "$(dirname "$0")/electron.bin" "$@"
+# Zypak must be Chromium's direct parent. Select the display explicitly because
+# castLabs Electron defaults to X11 even when Flatpak only exposes Wayland.
+if [ -n "${WAYLAND_DISPLAY:-}" ] &&
+  [ -S "${XDG_RUNTIME_DIR:-}/${WAYLAND_DISPLAY}" ]; then
+  ozone=wayland
+elif [ -n "${DISPLAY:-}" ]; then
+  ozone=x11
+else
+  echo "[sidecar] no usable Wayland or X11 display" >&2
+  exit 1
+fi
+
+exec zypak-wrapper "$(dirname "$0")/electron.bin" "--ozone-platform=$ozone" "$@"

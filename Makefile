@@ -40,8 +40,10 @@ check:
 	cargo test
 	# The Flatpak build is offline and does not run on pull requests, so a
 	# dependency added without regenerating the source list only fails after
-	# a merge. Two files and a second, here instead.
+	# a merge. Check the source list and packaging contracts here instead.
 	python3 packaging/flatpak/check-sources.py
+	python3 packaging/flatpak/check-electron-shim.py
+	python3 packaging/check-architectures.py
 
 # Fetch castLabs Electron. Two steps, both required: `npm install` brings down
 # the ~14 MB wrapper, and install.js fetches the ~200 MB Chromium itself.
@@ -75,15 +77,16 @@ footprint:
 # twenty seconds after installing exactly that.
 FLATPAK_BUILDER := $(shell command -v flatpak-builder >/dev/null 2>&1 \
 	&& echo flatpak-builder || echo flatpak run org.flatpak.Builder)
+FLATPAK_ARCH ?= $(shell uname -m)
 
 flatpak:
-	$(FLATPAK_BUILDER) --force-clean --user --install \
+	$(FLATPAK_BUILDER) --arch=$(FLATPAK_ARCH) --force-clean --user --install \
 		--repo=flatpak-repo build-dir packaging/flatpak/dev.miguelrincon.Slipmat.yml
 	test -f build-dir/files/share/slipmat/sidecar/queue-identity.js
 
 # `--runtime-repo` is the difference between a bundle that installs and one
-# that stops with "requires the runtime org.gnome.Platform/x86_64/49 which was
-# not found". A .flatpak carries the *app* and never the runtime, so on a
+# that stops because the matching GNOME runtime was not found. A .flatpak
+# carries the *app* and never the runtime, so on a
 # machine with no Flathub remote there is nothing for it to sit on and flatpak
 # has no idea where to look. The URL is recorded inside the bundle, so
 # installing it offers to add Flathub and pull the runtime itself.
@@ -92,9 +95,10 @@ flatpak:
 # have been found: every machine that has ever built this already had the
 # runtime.
 flatpak-bundle: flatpak
-	flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
-		flatpak-repo Slipmat.flatpak dev.miguelrincon.Slipmat master
-	@echo "Slipmat.flatpak — copy it anywhere and: flatpak install ./Slipmat.flatpak"
+	flatpak build-bundle --arch=$(FLATPAK_ARCH) \
+		--runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+		flatpak-repo Slipmat-$(FLATPAK_ARCH).flatpak dev.miguelrincon.Slipmat master
+	@echo "Slipmat-$(FLATPAK_ARCH).flatpak: copy it anywhere and install it with flatpak"
 
 # Show what publishing to the AUR would do, without doing it. `make aur-publish`
 # is the same thing with --push. Deliberately local rather than a CI job: the

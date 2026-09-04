@@ -126,10 +126,11 @@ find the sidecar installed beside it, and it baked its own build directory in â€
 which is what `makepkg` was reporting as a reference to `$srcdir`. Both were
 fixed in 0.1.1, and that release exists because of this packaging work.
 
-**Foreign-architecture binaries are pruned.** One npm dependency ships 7 MB of
-prebuilt `.node` files for arm64, ia32, darwin and win32. `package()` deletes
-everything that is not `linux-x64-gnu`; they were noticed because `strip`
-complained about them.
+**Foreign-architecture binaries are pruned.** The `-git` package maps Arch's
+`x86_64` and `aarch64` names to Node's `x64` and `arm64` names, then keeps the
+matching Linux `.node` files. The v0.11.0 release package remains x86_64-only
+because its source archive still pins Electron 43. Enable aarch64 there when
+the recipe advances to the tested v0.12.0 release.
 
 ## Building one locally
 
