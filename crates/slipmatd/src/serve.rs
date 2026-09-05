@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 
 use crate::bus;
 use crate::heal;
+use crate::library::Library;
 use crate::state::Model;
 use crate::watchdog;
 
@@ -82,6 +83,8 @@ pub struct Daemon {
     pub refreshing: std::cell::Cell<Option<u64>>,
     /// Changes whenever authorization crosses an account boundary.
     pub authorization_generation: std::cell::Cell<u64>,
+    /// The authorization generation whose automatic freshness check started.
+    pub automatic_refresh: std::cell::Cell<Option<u64>>,
     /// The artwork template already fetched, so a 500ms tick does not ask again
     /// for a file that is on disk.
     pub art_for: RefCell<Option<String>>,
@@ -128,6 +131,19 @@ impl Daemon {
     fn client(&self) -> Option<Client> {
         let model = self.model.borrow();
         let tokens = model.tokens.as_ref()?;
+        Some(Client::new(
+            tokens.developer_token.clone(),
+            tokens.music_user_token.clone(),
+            tokens.storefront.clone(),
+        ))
+    }
+
+    fn library_client(&self) -> Option<Client> {
+        let model = self.model.borrow();
+        let tokens = model.tokens.as_ref()?;
+        if model.stage != Stage::Ready || !tokens.authorized || tokens.music_user_token.is_none() {
+            return None;
+        }
         Some(Client::new(
             tokens.developer_token.clone(),
             tokens.music_user_token.clone(),
@@ -182,6 +198,7 @@ pub async fn run() -> Result<()> {
         mpris: RefCell::new(None),
         refreshing: std::cell::Cell::new(None),
         authorization_generation: std::cell::Cell::new(0),
+        automatic_refresh: std::cell::Cell::new(None),
         art_for: RefCell::new(None),
         clients: std::cell::Cell::new(0),
         idle: std::cell::Cell::new(false),
@@ -563,23 +580,8 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
                 has_user_token = tokens.music_user_token.is_some(),
                 "tokens harvested"
             );
-            let first_usable = {
-                let mut model = daemon.model.borrow_mut();
-                let first_usable = model
-                    .tokens
-                    .as_ref()
-                    .and_then(|old| old.music_user_token.as_ref())
-                    .is_none()
-                    && tokens.authorized
-                    && tokens.music_user_token.is_some();
-                model.tokens = Some(tokens.clone());
-                first_usable
-            };
-            // Fresh sign-in can report authorization before its tokens. The
-            // first refresh then has no client, so usable tokens retry it.
-            if first_usable {
-                refresh_library(daemon);
-            }
+            daemon.model.borrow_mut().tokens = Some(tokens.clone());
+            maybe_refresh_library(daemon);
         }
         _ => {}
     }
@@ -631,6 +633,7 @@ fn set_authorization(daemon: &Rc<Daemon>, authorized: bool) {
         daemon
             .authorization_generation
             .set(daemon.authorization_generation.get().saturating_add(1));
+        daemon.refreshing.set(None);
     }
 
     if !authorized {
@@ -647,7 +650,7 @@ fn set_authorization(daemon: &Rc<Daemon>, authorized: bool) {
     if restore {
         restore_session(daemon);
     }
-    refresh_library(daemon);
+    maybe_refresh_library(daemon);
 }
 
 fn clear_account_state(daemon: &Daemon) {
@@ -1039,14 +1042,23 @@ fn write(daemon: &Rc<Daemon>, action: WriteAction, id: String) {
 ///
 /// Spawned, and at most one at a time: a client hammering a reload button must
 /// not queue up four full library fetches behind it.
-fn refresh_library(daemon: &Rc<Daemon>) {
+fn maybe_refresh_library(daemon: &Rc<Daemon>) {
+    let generation = daemon.authorization_generation.get();
+    if daemon.automatic_refresh.get() == Some(generation) {
+        return;
+    }
+    if refresh_library(daemon) {
+        daemon.automatic_refresh.set(Some(generation));
+    }
+}
+
+fn refresh_library(daemon: &Rc<Daemon>) -> bool {
+    let Some(client) = daemon.library_client() else {
+        return false;
+    };
     let Some(generation) = begin_library_refresh(daemon) else {
         tracing::debug!("library refresh already running");
-        return;
-    };
-    let Some(client) = daemon.client() else {
-        finish_library_refresh(daemon, generation);
-        return;
+        return true;
     };
 
     let daemon = daemon.clone();
@@ -1059,33 +1071,63 @@ fn refresh_library(daemon: &Rc<Daemon>) {
             client.all_library_playlists(MAX),
         );
         if daemon.authorization_generation.get() != generation {
-            finish_library_refresh(&daemon, generation);
             tracing::debug!(generation, "discarded stale library refresh");
             return;
         }
 
         match fetched {
             (Ok(songs), Ok(albums), Ok(artists), Ok(playlists)) => {
-                tracing::info!(
-                    songs = songs.len(),
-                    albums = albums.len(),
-                    artists = artists.len(),
-                    playlists = playlists.len(),
-                    "library refreshed"
-                );
-                slipmat_core::library_cache::save(&songs, &albums, &artists, &playlists);
-                let mut model = daemon.model.borrow_mut();
-                model.library.tracks = songs;
-                model.library.albums = albums;
-                model.library.artists = artists;
-                model.library.playlists = playlists;
-                drop(model);
-                daemon.publish(Event::LibraryChanged);
+                let next = Library {
+                    tracks: songs,
+                    albums,
+                    artists,
+                    playlists,
+                };
+                if commit_library(&daemon, generation, next, |library| {
+                    slipmat_core::library_cache::save(
+                        &library.tracks,
+                        &library.albums,
+                        &library.artists,
+                        &library.playlists,
+                    )
+                }) {
+                    let library = &daemon.model.borrow().library;
+                    tracing::info!(
+                        songs = library.tracks.len(),
+                        albums = library.albums.len(),
+                        artists = library.artists.len(),
+                        playlists = library.playlists.len(),
+                        "library refreshed"
+                    );
+                }
             }
             _ => tracing::warn!("library refresh failed; keeping what was cached"),
         }
         finish_library_refresh(&daemon, generation);
     });
+    true
+}
+
+fn commit_library(
+    daemon: &Daemon,
+    generation: u64,
+    next: Library,
+    persist: impl FnOnce(&Library) -> bool,
+) -> bool {
+    if daemon.authorization_generation.get() != generation {
+        return false;
+    }
+    if daemon.model.borrow().library == next {
+        tracing::info!("library unchanged");
+        return false;
+    }
+    if !persist(&next) {
+        tracing::warn!("library refresh could not be persisted; keeping the cache");
+        return false;
+    }
+    daemon.model.borrow_mut().library = next;
+    daemon.publish(Event::LibraryChanged);
+    true
 }
 
 fn begin_library_refresh(daemon: &Daemon) -> Option<u64> {
@@ -1400,6 +1442,7 @@ mod tests {
             mpris: RefCell::new(None),
             refreshing: std::cell::Cell::new(None),
             authorization_generation: std::cell::Cell::new(0),
+            automatic_refresh: std::cell::Cell::new(None),
             art_for: RefCell::new(None),
             clients: std::cell::Cell::new(0),
             idle: std::cell::Cell::new(false),
@@ -1407,6 +1450,46 @@ mod tests {
             mixer: None,
             quitting: tokio::sync::Notify::new(),
         })
+    }
+
+    fn usable_tokens() -> Tokens {
+        Tokens {
+            developer_token: "developer".into(),
+            music_user_token: Some("user".into()),
+            storefront: "us".into(),
+            authorized: true,
+        }
+    }
+
+    fn refresh_events(events: &mut broadcast::Receiver<Event>) -> Vec<bool> {
+        let mut refreshing = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let Event::LibraryRefreshing { refreshing: state } = event {
+                refreshing.push(state);
+            }
+        }
+        refreshing
+    }
+
+    fn library_with_track(title: &str) -> crate::library::Library {
+        crate::library::Library {
+            tracks: vec![Track {
+                date_added: String::new(),
+                year: String::new(),
+                favorite: false,
+                in_library: true,
+                library_id: None,
+                id: TrackId(title.into()),
+                catalog_id: Some(title.into()),
+                title: title.into(),
+                artist: String::new(),
+                album: String::new(),
+                duration_ms: 0,
+                track_number: 0,
+                artwork: None,
+            }],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1430,23 +1513,153 @@ mod tests {
     }
 
     #[test]
-    fn sign_in_tokens_retry_the_library_refresh() {
+    fn tokens_wait_for_readiness_before_refreshing_the_library() {
         let daemon = daemon();
-        daemon.model.borrow_mut().stage = Stage::Ready;
+        let mut events = daemon.events.subscribe();
         let local = tokio::task::LocalSet::new();
         let _entered = local.enter();
 
+        on_event(&daemon, PlayerEvent::Tokens(usable_tokens()));
+
+        assert_eq!(daemon.refreshing.get(), None);
+        assert!(refresh_events(&mut events).is_empty());
+
+        on_event(&daemon, PlayerEvent::Authorization { authorized: true });
+        on_event(&daemon, PlayerEvent::Authorization { authorized: true });
+        on_event(&daemon, PlayerEvent::Tokens(usable_tokens()));
+
+        assert_eq!(daemon.refreshing.get(), Some(1));
+        assert_eq!(refresh_events(&mut events), [true]);
+    }
+
+    #[test]
+    fn readiness_waits_for_tokens_before_refreshing_the_library() {
+        let daemon = daemon();
+        let mut events = daemon.events.subscribe();
+        let local = tokio::task::LocalSet::new();
+        let _entered = local.enter();
+
+        on_event(&daemon, PlayerEvent::Authorization { authorized: true });
+
+        assert_eq!(daemon.refreshing.get(), None);
+        assert!(refresh_events(&mut events).is_empty());
+
+        on_event(&daemon, PlayerEvent::Tokens(usable_tokens()));
+        on_event(&daemon, PlayerEvent::Tokens(usable_tokens()));
+        refresh_library(&daemon);
         on_event(
             &daemon,
-            PlayerEvent::Tokens(Tokens {
-                developer_token: "developer".into(),
-                music_user_token: Some("user".into()),
-                storefront: "us".into(),
-                authorized: true,
-            }),
+            PlayerEvent::LibraryWrite {
+                kind: "remove".into(),
+                id: "song".into(),
+                ok: true,
+                detail: String::new(),
+            },
         );
 
-        assert_eq!(daemon.refreshing.get(), Some(0));
+        assert_eq!(daemon.refreshing.get(), Some(1));
+        assert_eq!(refresh_events(&mut events), [true]);
+    }
+
+    #[test]
+    fn an_automatic_trigger_coalesces_with_an_in_flight_manual_refresh() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().stage = Stage::Ready;
+        daemon.model.borrow_mut().tokens = Some(usable_tokens());
+        let mut events = daemon.events.subscribe();
+        let local = tokio::task::LocalSet::new();
+        let _entered = local.enter();
+
+        assert!(refresh_library(&daemon));
+        on_event(&daemon, PlayerEvent::Tokens(usable_tokens()));
+        assert_eq!(daemon.automatic_refresh.get(), Some(0));
+
+        finish_library_refresh(&daemon, 0);
+        on_event(&daemon, PlayerEvent::Tokens(usable_tokens()));
+
+        assert_eq!(daemon.refreshing.get(), None);
+        assert_eq!(refresh_events(&mut events), [true, false]);
+    }
+
+    #[test]
+    fn an_unchanged_library_is_not_persisted_or_published() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().library = crate::library::Library::default();
+        let persisted = std::cell::Cell::new(0);
+        let mut events = daemon.events.subscribe();
+
+        assert!(!commit_library(
+            &daemon,
+            0,
+            crate::library::Library::default(),
+            |_| {
+                persisted.set(persisted.get() + 1);
+                true
+            },
+        ));
+
+        assert_eq!(persisted.get(), 0);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_changed_library_is_persisted_then_published_once() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().library = crate::library::Library::default();
+        let persisted = std::cell::Cell::new(0);
+        let mut events = daemon.events.subscribe();
+
+        assert!(commit_library(
+            &daemon,
+            0,
+            library_with_track("new"),
+            |_| {
+                persisted.set(persisted.get() + 1);
+                true
+            },
+        ));
+
+        assert_eq!(persisted.get(), 1);
+        assert_eq!(daemon.model.borrow().library.tracks[0].title, "new");
+        assert!(matches!(events.try_recv(), Ok(Event::LibraryChanged)));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_persistence_failure_keeps_the_known_good_library() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().library = library_with_track("old");
+        let mut events = daemon.events.subscribe();
+
+        assert!(!commit_library(
+            &daemon,
+            0,
+            library_with_track("new"),
+            |_| false,
+        ));
+
+        assert_eq!(daemon.model.borrow().library.tracks[0].title, "old");
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_stale_library_result_changes_nothing() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().library = library_with_track("current");
+        daemon.authorization_generation.set(1);
+        daemon.refreshing.set(Some(1));
+        let mut events = daemon.events.subscribe();
+
+        assert!(!commit_library(
+            &daemon,
+            0,
+            library_with_track("stale"),
+            |_| panic!("a stale result must not reach persistence"),
+        ));
+
+        assert_eq!(daemon.model.borrow().library.tracks[0].title, "current");
+        assert_eq!(daemon.refreshing.get(), Some(1));
+        assert!(events.try_recv().is_err());
     }
 
     #[test]

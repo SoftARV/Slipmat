@@ -814,7 +814,6 @@ impl App {
                 self.browser.reset();
             }
             Event::LibraryChanged => {
-                self.refreshing_library = false;
                 self.message = None;
                 if matches!(self.stage, Stage::Ready)
                     && matches!(self.browser.showing, Showing::Library)
@@ -1000,6 +999,9 @@ mod tests {
         let mut app = App::default();
 
         app.on_event(Event::LibraryRefreshing { refreshing: true }, &link);
+        assert!(app.refreshing_library);
+
+        app.on_event(Event::LibraryChanged, &link);
         assert!(app.refreshing_library);
 
         app.on_event(Event::LibraryRefreshing { refreshing: false }, &link);
