@@ -35,6 +35,7 @@ fn on_command(daemon: &Rc<Daemon>, cmd: MprisCommand) {
     if let MprisCommand::GoTo { index } = cmd {
         let planned = go_to(&daemon.model.borrow(), index);
         daemon.resume_at.set(None);
+        daemon.restore_start.set(None);
         *daemon.restart_at.borrow_mut() =
             planned.as_ref().and_then(|(_, target, _)| target.clone());
         if let Some((command, _, seek_now)) = planned {
@@ -96,7 +97,7 @@ pub fn state(daemon: &Daemon) -> MprisState {
 }
 
 fn state_from_model(model: &Model) -> MprisState {
-    let item = model.player.now_playing.as_ref();
+    let item = model.current_item();
     MprisState {
         track_id: item.and_then(|i| i.catalog_id.clone().or_else(|| i.id.clone())),
         current_item: item.cloned(),
@@ -107,7 +108,7 @@ fn state_from_model(model: &Model) -> MprisState {
         album: item.map(|i| i.album.clone()).unwrap_or_default(),
         track_number: item.map(|i| i.track_number).unwrap_or_default(),
         art_path: model.art_path.clone(),
-        length_ms: model.player.duration_ms,
+        length_ms: model.duration_ms(),
         position_ms: model.player.interpolated_position_ms(),
         playing: model.player.state.is_playing(),
         stopped: model.player.queue.is_empty(),
@@ -161,6 +162,36 @@ mod tests {
                 .as_ref()
                 .map(|item| item.occurrence_id.as_str()),
             Some("run:2")
+        );
+    }
+
+    #[test]
+    fn mpris_uses_the_selected_queue_item_before_playback() {
+        let selected = Item {
+            occurrence_id: "run:2".into(),
+            catalog_id: Some("song-b".into()),
+            title: "Restored song".into(),
+            artist: "Restored artist".into(),
+            album: "Restored album".into(),
+            duration_ms: 180_000,
+            track_number: 4,
+            ..Default::default()
+        };
+        let mut model = Model::new();
+        model.player.queue = vec![Item::default(), selected];
+        model.player.queue_position = 1;
+        model.player.position_ms = 55_000;
+
+        let state = state_from_model(&model);
+
+        assert_eq!(state.track_id.as_deref(), Some("song-b"));
+        assert_eq!(state.title, "Restored song");
+        assert_eq!(state.length_ms, 180_000);
+        assert_eq!(state.position_ms, 55_000);
+        assert!(!state.playing);
+        assert_eq!(
+            state.current_item.as_ref().map(|item| item.track_number),
+            Some(4)
         );
     }
 

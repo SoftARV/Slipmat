@@ -70,6 +70,8 @@ pub struct Daemon {
     pub healed: std::cell::Cell<bool>,
     /// A position to restore once the reloaded track is current.
     pub resume_at: std::cell::Cell<Option<u64>>,
+    /// The saved queue occurrence until MusicKit reports the restored queue.
+    pub restore_start: std::cell::Cell<Option<usize>>,
     /// An occurrence selected through MPRIS, restarted when that exact item arrives.
     pub restart_at: RefCell<Option<String>>,
     /// A finished command whose ending state is worth judging, once the mirror
@@ -193,6 +195,7 @@ pub async fn run() -> Result<()> {
         pending_start: RefCell::new(None),
         healed: std::cell::Cell::new(false),
         resume_at: std::cell::Cell::new(None),
+        restore_start: std::cell::Cell::new(None),
         restart_at: RefCell::new(None),
         after_apply: std::cell::Cell::new(None),
         mpris: RefCell::new(None),
@@ -460,6 +463,9 @@ fn retry_without_dead_tracks(daemon: &Daemon, detail: &str) -> bool {
         position,
         "retrying queue without unresolvable tracks"
     );
+    if daemon.restore_start.get().is_some() {
+        daemon.restore_start.set(Some(position));
+    }
     *daemon.pending_start.borrow_mut() = wanted.clone();
     *daemon.last_queue.borrow_mut() = Some((retry.clone(), wanted));
     daemon.send(Command::SetQueue {
@@ -590,6 +596,17 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
         return;
     }
 
+    let reported_queue = match &event {
+        PlayerEvent::Queue(queue) | PlayerEvent::NowPlaying { queue, .. } => Some(queue),
+        _ => None,
+    };
+    if daemon.restore_start.get().is_some()
+        && reported_queue.is_some_and(|queue| !heal::is_last_queue(daemon, &queue.items))
+    {
+        tracing::debug!("discarded queue event from before session restoration");
+        return;
+    }
+
     let queue_changed = matches!(
         event,
         PlayerEvent::Queue(_) | PlayerEvent::NowPlaying { .. }
@@ -597,20 +614,26 @@ fn on_event(daemon: &Rc<Daemon>, event: PlayerEvent) {
     daemon.model.borrow_mut().player.apply(&event);
 
     if queue_changed {
+        restore_queue_selection(daemon);
+    }
+    // The position goes back once there is an item to seek within, which is
+    // what `nowPlayingItemDidChange` means. Do this before persisting the event
+    // so its temporary zero cannot replace the saved position.
+    if matches!(event, PlayerEvent::NowPlaying { .. }) {
+        if let Some(command) = heal::resume_position(daemon) {
+            daemon.send(command);
+        }
+        if let Some(command) = restart_selected_occurrence(daemon) {
+            daemon.send(command);
+        }
+    }
+    if queue_changed {
         let (items, position) = daemon.model.borrow().queue();
         tracing::debug!(len = items.len(), position, "queue changed");
         daemon.publish(Event::Queue { items, position });
         // On every track change, because shutdown is the moment that might not
         // run — a SIGKILL, a session ending badly.
         save_session(daemon);
-    }
-    // The position goes back once there is an item to seek within, which is
-    // what `nowPlayingItemDidChange` means.
-    if matches!(event, PlayerEvent::NowPlaying { .. }) {
-        heal::resume_position(daemon);
-        if let Some(command) = restart_selected_occurrence(daemon) {
-            daemon.send(command);
-        }
         fetch_artwork(daemon);
     }
     if let Some(cmd) = daemon.after_apply.take() {
@@ -663,6 +686,7 @@ fn clear_account_state(daemon: &Daemon) {
     daemon.pending_start.borrow_mut().take();
     daemon.healed.set(false);
     daemon.resume_at.set(None);
+    daemon.restore_start.set(None);
     daemon.restart_at.borrow_mut().take();
     daemon.after_apply.take();
     daemon.art_for.borrow_mut().take();
@@ -881,6 +905,8 @@ fn answer(
             // this is the half MusicKit cannot know about.
             *daemon.last_queue.borrow_mut() = None;
             *daemon.pending_start.borrow_mut() = None;
+            daemon.resume_at.set(None);
+            daemon.restore_start.set(None);
             slipmat_core::session::clear();
             None
         }
@@ -905,6 +931,8 @@ pub(crate) fn route_transport(daemon: &Rc<Daemon>, transport: Transport) {
         Transport::Next | Transport::Previous | Transport::Seek { .. }
     ) {
         daemon.restart_at.borrow_mut().take();
+        daemon.resume_at.set(None);
+        daemon.restore_start.set(None);
     }
     // A restored queue has no current item, so MusicKit's `play` does nothing
     // until the current queue entry has been opened.
@@ -947,9 +975,7 @@ fn fetch_artwork(daemon: &Rc<Daemon>) {
     let template = daemon
         .model
         .borrow()
-        .player
-        .now_playing
-        .as_ref()
+        .current_item()
         .and_then(|item| item.artwork_template.clone());
 
     if template == *daemon.art_for.borrow() {
@@ -1293,6 +1319,8 @@ fn play(daemon: &Daemon, ids: &[String], index: usize, start: Start) {
         });
         return;
     }
+    daemon.resume_at.set(None);
+    daemon.restore_start.set(None);
 
     let position = start_index(&songs, start_id.as_ref());
     tracing::info!(queue = songs.len(), position, ?start, "enqueuing");
@@ -1348,6 +1376,15 @@ fn restore_session(daemon: &Daemon) {
     );
     // Sequential: the saved order *is* what was playing, and `start` indexes
     // into it (#152).
+    {
+        let mut model = daemon.model.borrow_mut();
+        model.player.queue_position = start;
+        model.player.position_ms = session.position_ms;
+    }
+    daemon.restore_start.set(Some(start));
+    daemon
+        .resume_at
+        .set((session.position_ms > 0).then_some(session.position_ms));
     daemon.send(Command::SetShuffle { shuffle: false });
     let wanted = session.songs.get(start).cloned();
     *daemon.pending_start.borrow_mut() = wanted.clone();
@@ -1358,6 +1395,25 @@ fn restore_session(daemon: &Daemon) {
         start_playing: false,
         start_time_ms: session.position_ms,
     });
+}
+
+fn restore_queue_selection(daemon: &Daemon) {
+    let Some(start) = daemon.restore_start.get() else {
+        return;
+    };
+    let model = daemon.model.borrow();
+    if model.player.queue.is_empty() || !heal::is_last_queue(daemon, &model.player.queue) {
+        return;
+    }
+    let has_now_playing = model.player.now_playing.is_some();
+    let len = model.player.queue.len();
+    drop(model);
+
+    if has_now_playing {
+        daemon.restore_start.set(None);
+    } else {
+        daemon.model.borrow_mut().player.queue_position = start.min(len - 1);
+    }
 }
 
 /// The event's kind, for a log line that stays one line.
@@ -1422,8 +1478,8 @@ fn command_for(transport: Transport) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slipmat_core::music::types::{Track, TrackId};
-    use slipmat_core::player::protocol::{Item, RepeatMode, Tokens};
+    use slipmat_core::music::types::{Artwork, Track, TrackId};
+    use slipmat_core::player::protocol::{Item, Queue, RepeatMode, Tokens};
 
     fn daemon() -> Rc<Daemon> {
         let (events, _) = broadcast::channel(8);
@@ -1437,6 +1493,7 @@ mod tests {
             pending_start: RefCell::new(None),
             healed: std::cell::Cell::new(false),
             resume_at: std::cell::Cell::new(None),
+            restore_start: std::cell::Cell::new(None),
             restart_at: RefCell::new(None),
             after_apply: std::cell::Cell::new(None),
             mpris: RefCell::new(None),
@@ -1747,6 +1804,7 @@ mod tests {
         daemon.pending_start.replace(Some("old-catalog-id".into()));
         daemon.healed.set(true);
         daemon.resume_at.set(Some(42_000));
+        daemon.restore_start.set(Some(4));
         daemon.restart_at.replace(Some("old:1".into()));
         daemon.after_apply.set(Some("play".into()));
         daemon.art_for.replace(Some("old-art-template".into()));
@@ -1775,6 +1833,7 @@ mod tests {
         assert!(daemon.pending_start.borrow().is_none());
         assert!(!daemon.healed.get());
         assert!(daemon.resume_at.get().is_none());
+        assert!(daemon.restore_start.get().is_none());
         assert!(daemon.restart_at.borrow().is_none());
         assert!(daemon.after_apply.take().is_none());
         assert!(daemon.art_for.borrow().is_none());
@@ -1936,5 +1995,218 @@ mod tests {
             Some(Command::Seek { position_ms: 0 })
         ));
         assert!(daemon.restart_at.borrow().is_none());
+    }
+
+    #[test]
+    fn a_deferred_position_is_consumed_once() {
+        let daemon = daemon();
+        daemon.resume_at.set(Some(55_000));
+
+        assert!(matches!(
+            heal::resume_position(&daemon),
+            Some(Command::Seek {
+                position_ms: 55_000
+            })
+        ));
+        assert!(heal::resume_position(&daemon).is_none());
+        assert_eq!(daemon.model.borrow().player.position_ms, 55_000);
+    }
+
+    #[test]
+    fn play_keeps_the_restored_seek_but_navigation_cancels_it() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().player.queue = vec![Item::default()];
+        daemon.resume_at.set(Some(55_000));
+        daemon.restore_start.set(Some(0));
+
+        route_transport(&daemon, Transport::Play);
+
+        assert_eq!(daemon.resume_at.get(), Some(55_000));
+        assert_eq!(daemon.restore_start.get(), Some(0));
+
+        route_transport(&daemon, Transport::Next);
+
+        assert!(daemon.resume_at.get().is_none());
+        assert!(daemon.restore_start.get().is_none());
+    }
+
+    #[test]
+    fn a_selected_queue_item_can_start_an_artwork_fetch() {
+        let daemon = daemon();
+        let template = "https://example.test/restored/{w}x{h}.{f}";
+        daemon.model.borrow_mut().player.queue = vec![Item {
+            artwork_template: Some(template.into()),
+            ..Default::default()
+        }];
+        let local = tokio::task::LocalSet::new();
+        let _entered = local.enter();
+
+        fetch_artwork(&daemon);
+
+        assert_eq!(daemon.art_for.borrow().as_deref(), Some(template));
+        assert!(daemon.model.borrow().art_path.is_none());
+    }
+
+    #[test]
+    fn a_restored_session_keeps_its_complete_paused_projection() {
+        const CHILD: &str = "SLIPMAT_RESTORE_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let restored = daemon();
+            let session = slipmat_core::session::Session {
+                songs: vec!["song-a".into(), "song-b".into(), "song-a".into()],
+                start: 2,
+                position_ms: 55_000,
+            };
+            slipmat_core::session::save(&session);
+
+            let template = "https://example.test/{w}x{h}.{f}";
+            let art = Artwork::new(template);
+            let art_path = slipmat_core::artwork::cache_path(&art, slipmat_core::artwork::ART_SIZE)
+                .expect("artwork cache path");
+            std::fs::create_dir_all(art_path.parent().expect("artwork directory"))
+                .expect("create artwork directory");
+            std::fs::write(&art_path, b"cached artwork").expect("cache artwork");
+
+            restore_session(&restored);
+
+            assert_eq!(restored.model.borrow().player.queue_position, 2);
+            assert_eq!(restored.model.borrow().player.position_ms, 55_000);
+            assert_eq!(restored.resume_at.get(), Some(55_000));
+
+            let stale = Item {
+                occurrence_id: "old:1".into(),
+                catalog_id: Some("old-song".into()),
+                title: "Old song".into(),
+                ..Default::default()
+            };
+            on_event(
+                &restored,
+                PlayerEvent::NowPlaying {
+                    item: Some(stale.clone()),
+                    queue: Queue {
+                        position: 0,
+                        items: vec![stale.clone()],
+                        ..Default::default()
+                    },
+                },
+            );
+            assert!(restored.model.borrow().player.queue.is_empty());
+            assert_eq!(restored.resume_at.get(), Some(55_000));
+            let saved = slipmat_core::session::load().expect("original session");
+            assert_eq!(saved.songs, session.songs);
+            assert_eq!(saved.start, session.start);
+            assert_eq!(saved.position_ms, session.position_ms);
+
+            let items = vec![
+                Item {
+                    occurrence_id: "run:1".into(),
+                    catalog_id: Some("song-a".into()),
+                    title: "Song A".into(),
+                    duration_ms: 180_000,
+                    artwork_template: Some(template.into()),
+                    ..Default::default()
+                },
+                Item {
+                    occurrence_id: "run:2".into(),
+                    catalog_id: Some("song-b".into()),
+                    title: "Song B".into(),
+                    duration_ms: 200_000,
+                    ..Default::default()
+                },
+                Item {
+                    occurrence_id: "run:3".into(),
+                    catalog_id: Some("song-a".into()),
+                    title: "Song A".into(),
+                    duration_ms: 180_000,
+                    artwork_template: Some(template.into()),
+                    ..Default::default()
+                },
+            ];
+            let queue = Queue {
+                position: -1,
+                items: items.clone(),
+                ..Default::default()
+            };
+            on_event(&restored, PlayerEvent::Queue(queue.clone()));
+            on_event(
+                &restored,
+                PlayerEvent::NowPlaying {
+                    item: Some(stale.clone()),
+                    queue: Queue {
+                        position: 0,
+                        items: vec![stale],
+                        ..Default::default()
+                    },
+                },
+            );
+
+            let snapshot = restored.model.borrow().snapshot();
+            assert_eq!(restored.model.borrow().player.queue_position, 2);
+            assert_eq!(restored.restore_start.get(), Some(2));
+            assert_eq!(snapshot.title, "Song A");
+            assert_eq!(snapshot.position_ms, 55_000);
+            assert_eq!(snapshot.duration_ms, 180_000);
+            assert_eq!(
+                snapshot.art_path.as_deref(),
+                Some(art_path.to_str().unwrap())
+            );
+            assert!(!snapshot.playing);
+            let saved = slipmat_core::session::load().expect("saved restored session");
+            assert_eq!(saved.songs, session.songs);
+            assert_eq!(saved.start, session.start);
+            assert_eq!(saved.position_ms, session.position_ms);
+
+            on_event(
+                &restored,
+                PlayerEvent::NowPlaying {
+                    item: Some(items[2].clone()),
+                    queue: Queue {
+                        position: 2,
+                        items,
+                        ..Default::default()
+                    },
+                },
+            );
+
+            assert_eq!(restored.model.borrow().player.position_ms, 55_000);
+            assert!(restored.resume_at.get().is_none());
+            assert!(restored.restore_start.get().is_none());
+            let saved = slipmat_core::session::load().expect("saved resumed session");
+            assert_eq!(saved.songs, session.songs);
+            assert_eq!(saved.start, session.start);
+            assert_eq!(saved.position_ms, session.position_ms);
+            assert!(!restored.model.borrow().snapshot().playing);
+
+            slipmat_core::session::save(&slipmat_core::session::Session {
+                songs: vec!["song-a".into()],
+                start: 0,
+                position_ms: 0,
+            });
+            let zero = daemon();
+            restore_session(&zero);
+            assert!(zero.resume_at.get().is_none());
+            return;
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("slipmat-restore-{}-{unique}", std::process::id()));
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "serve::tests::a_restored_session_keeps_its_complete_paused_projection",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", root.join("home"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .status()
+            .expect("run isolated restoration test");
+        let _ = std::fs::remove_dir_all(root);
+        assert!(status.success());
     }
 }

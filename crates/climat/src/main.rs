@@ -1009,6 +1009,27 @@ mod tests {
     }
 
     #[test]
+    fn a_paused_restored_snapshot_keeps_its_position_and_duration() {
+        let (link, _) = link::Link::channel();
+        let mut app = App::default();
+
+        app.on_event(
+            Event::Snapshot(Snapshot {
+                title: "Restored song".into(),
+                position_ms: 55_000,
+                duration_ms: 180_000,
+                playing: false,
+                ..Default::default()
+            }),
+            &link,
+        );
+
+        assert_eq!(app.snap.position_ms, 55_000);
+        assert_eq!(app.snap.duration_ms, 180_000);
+        assert!(!app.snap.playing);
+    }
+
+    #[test]
     fn spectrum_redraws_are_limited_to_twenty_four_frames_per_second() {
         let start = std::time::Instant::now();
         let mut last = start;
