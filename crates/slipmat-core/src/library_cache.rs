@@ -102,7 +102,6 @@ fn parse(raw: &str) -> Library {
 /// there are no albums.
 pub fn save(songs: &[Track], albums: &[Album], artists: &[Artist], playlists: &[Playlist]) {
     let Some(path) = cache_file() else { return };
-    let Some(dir) = path.parent() else { return };
     let started = std::time::Instant::now();
     let writing = Writing {
         version: VERSION,
@@ -115,7 +114,7 @@ pub fn save(songs: &[Track], albums: &[Album], artists: &[Artist], playlists: &[
         return;
     };
     let bytes = json.len();
-    if let Err(err) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, json)) {
+    if let Err(err) = crate::artwork::write_atomically(&path, json.as_bytes()) {
         tracing::debug!(?err, "could not save the library cache");
         return;
     }
