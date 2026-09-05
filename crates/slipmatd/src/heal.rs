@@ -68,19 +68,18 @@ fn reseat_current(daemon: &Daemon, why: &str) {
     daemon.send(Command::ChangeToIndex { index });
     // **Not sent yet.** A seek needs a current item to seek within, and the
     // reload has not produced one. `nowPlayingItemDidChange` is when there is
-    // something to seek in; `resume_position` sends it then.
+    // something to seek in; `resume_position` produces it then.
     daemon
         .resume_at
         .set((position_ms > 0).then_some(position_ms));
 }
 
 /// Put the position back once the reloaded track is actually current.
-pub fn resume_position(daemon: &Daemon) {
-    let Some(position_ms) = daemon.resume_at.take() else {
-        return;
-    };
+pub fn resume_position(daemon: &Daemon) -> Option<Command> {
+    let position_ms = daemon.resume_at.take()?;
     tracing::info!(position_ms, "restoring the position after a reload");
-    daemon.send(Command::Seek { position_ms });
+    daemon.model.borrow_mut().player.seeked_to(position_ms);
+    Some(Command::Seek { position_ms })
 }
 
 /// Confirm MusicKit opened on the track that was named, and correct it if not.
@@ -102,14 +101,8 @@ pub fn verify_start(daemon: &Daemon) {
     // twice means both have the same ids — so "is a queue loaded" cannot tell
     // them apart. Compared sorted, because with shuffle on the order is
     // deliberately not ours.
-    if let Some((sent, _)) = daemon.last_queue.borrow().as_ref() {
-        let mut theirs: Vec<String> = model.player.queue.iter().filter_map(id_of).collect();
-        let mut ours = sent.clone();
-        theirs.sort_unstable();
-        ours.sort_unstable();
-        if theirs != ours {
-            return;
-        }
+    if !is_last_queue(daemon, &model.player.queue) {
+        return;
     }
 
     // The queue arrives before the item does, and in that gap `queue_position`
@@ -146,6 +139,18 @@ pub fn verify_start(daemon: &Daemon) {
         "MusicKit started the wrong track; correcting"
     );
     daemon.send(Command::ChangeToIndex { index });
+}
+
+pub fn is_last_queue(daemon: &Daemon, items: &[Item]) -> bool {
+    let last_queue = daemon.last_queue.borrow();
+    let Some((sent, _)) = last_queue.as_ref() else {
+        return true;
+    };
+    let mut theirs: Vec<String> = items.iter().filter_map(id_of).collect();
+    let mut ours = sent.clone();
+    theirs.sort_unstable();
+    ours.sort_unstable();
+    theirs == ours
 }
 
 fn id_of(item: &Item) -> Option<String> {
