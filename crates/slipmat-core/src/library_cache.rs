@@ -100,9 +100,11 @@ fn parse(raw: &str) -> Library {
 /// An empty collection is written as empty, and read back as "not cached" — so
 /// saving after only the songs have arrived does not tell the next launch that
 /// there are no albums.
-pub fn save(songs: &[Track], albums: &[Album], artists: &[Artist], playlists: &[Playlist]) {
-    let Some(path) = cache_file() else { return };
-    let Some(dir) = path.parent() else { return };
+/// Returns whether the complete replacement reached disk.
+pub fn save(songs: &[Track], albums: &[Album], artists: &[Artist], playlists: &[Playlist]) -> bool {
+    let Some(path) = cache_file() else {
+        return false;
+    };
     let started = std::time::Instant::now();
     let writing = Writing {
         version: VERSION,
@@ -112,17 +114,16 @@ pub fn save(songs: &[Track], albums: &[Album], artists: &[Artist], playlists: &[
         playlists,
     };
     let Ok(json) = serde_json::to_string(&writing) else {
-        return;
+        return false;
     };
     let bytes = json.len();
-    if let Err(err) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, json)) {
+    if let Err(err) = crate::artwork::write_atomically(&path, json.as_bytes()) {
         tracing::debug!(?err, "could not save the library cache");
-        return;
+        return false;
     }
-    // Serialising and writing happen on the GTK thread, so the cost is worth
-    // knowing rather than assuming. It runs at most four times a launch, each
-    // right after a network load the user has already waited for.
+    // Serialising and writing are synchronous, so keep their cost visible.
     tracing::debug!(bytes, ms = started.elapsed().as_millis(), "library cached");
+    true
 }
 
 /// Forget it — the user signed out, and this was their music.

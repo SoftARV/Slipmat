@@ -814,7 +814,6 @@ impl App {
                 self.browser.reset();
             }
             Event::LibraryChanged => {
-                self.refreshing_library = false;
                 self.message = None;
                 if matches!(self.stage, Stage::Ready)
                     && matches!(self.browser.showing, Showing::Library)
@@ -1002,8 +1001,32 @@ mod tests {
         app.on_event(Event::LibraryRefreshing { refreshing: true }, &link);
         assert!(app.refreshing_library);
 
+        app.on_event(Event::LibraryChanged, &link);
+        assert!(app.refreshing_library);
+
         app.on_event(Event::LibraryRefreshing { refreshing: false }, &link);
         assert!(!app.refreshing_library);
+    }
+
+    #[test]
+    fn a_paused_restored_snapshot_keeps_its_position_and_duration() {
+        let (link, _) = link::Link::channel();
+        let mut app = App::default();
+
+        app.on_event(
+            Event::Snapshot(Snapshot {
+                title: "Restored song".into(),
+                position_ms: 55_000,
+                duration_ms: 180_000,
+                playing: false,
+                ..Default::default()
+            }),
+            &link,
+        );
+
+        assert_eq!(app.snap.position_ms, 55_000);
+        assert_eq!(app.snap.duration_ms, 180_000);
+        assert!(!app.snap.playing);
     }
 
     #[test]

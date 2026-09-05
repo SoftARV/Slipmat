@@ -10,7 +10,7 @@ use slipmat_core::library_cache;
 use slipmat_core::music::types::{Album, Artist, Playlist, Track};
 use slipmat_core::sort::SortBy;
 
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Library {
     pub tracks: Vec<Track>,
     pub albums: Vec<Album>,

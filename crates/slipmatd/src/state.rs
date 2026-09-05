@@ -46,6 +46,23 @@ impl Model {
         self.art_path = None;
     }
 
+    pub fn current_item(&self) -> Option<&slipmat_core::player::protocol::Item> {
+        self.player
+            .now_playing
+            .as_ref()
+            .or_else(|| self.player.queue.get(self.player.queue_position))
+    }
+
+    pub fn duration_ms(&self) -> u64 {
+        if self.player.now_playing.is_some() {
+            self.player.duration_ms
+        } else {
+            self.current_item()
+                .map(|item| item.duration_ms)
+                .unwrap_or(0)
+        }
+    }
+
     /// What a client draws from.
     ///
     /// `position_ms` is interpolated rather than last-reported: MusicKit reports
@@ -56,11 +73,7 @@ impl Model {
         // state a restored session is in. The queue's own current entry is the
         // honest answer to "what is this player on", and answering it here
         // means no client has to work it out again.
-        let item = self
-            .player
-            .now_playing
-            .as_ref()
-            .or_else(|| self.player.queue.get(self.player.queue_position));
+        let item = self.current_item();
         Snapshot {
             // From the same item as the title beside it, which is the whole
             // point: one object, one answer.
@@ -79,7 +92,7 @@ impl Model {
             // the interpolated one, because a polled property has no other
             // chance to be current.
             position_ms: self.player.position_ms,
-            duration_ms: self.player.duration_ms,
+            duration_ms: self.duration_ms(),
             playing: self.player.state.is_playing(),
             busy: self.player.state.is_busy(),
             volume: self.volume,
@@ -95,5 +108,38 @@ impl Model {
             self.player.queue.iter().map(QueueItem::from).collect(),
             self.player.queue_position,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slipmat_core::player::protocol::Item;
+
+    #[test]
+    fn a_selected_queue_item_completes_a_paused_snapshot() {
+        let mut model = Model::new();
+        model.player.queue = vec![
+            Item::default(),
+            Item {
+                occurrence_id: "run:2".into(),
+                catalog_id: Some("song-b".into()),
+                title: "Restored song".into(),
+                artist: "Restored artist".into(),
+                album: "Restored album".into(),
+                duration_ms: 180_000,
+                ..Default::default()
+            },
+        ];
+        model.player.queue_position = 1;
+        model.player.position_ms = 55_000;
+
+        let snapshot = model.snapshot();
+
+        assert_eq!(snapshot.track_id.as_deref(), Some("song-b"));
+        assert_eq!(snapshot.title, "Restored song");
+        assert_eq!(snapshot.position_ms, 55_000);
+        assert_eq!(snapshot.duration_ms, 180_000);
+        assert!(!snapshot.playing);
     }
 }
