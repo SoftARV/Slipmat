@@ -88,11 +88,8 @@ fi
 
 # --- find the app -------------------------------------------------------------
 
-# **Ask the bus, never scan /proc.** An instance started as ./target/debug/slipmat
-# whose binary has since been rebuilt no longer matches by name, and a second
-# instance hands off to the first and exits silently — so the process you find by
-# scanning may not be the one holding the session. The bus is never wrong about
-# who owns the name.
+# Ask the bus for the active instances, then include leftover development
+# instances too: a process can outlive the test session's bus.
 owner() {
 	busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
 		org.freedesktop.DBus GetConnectionUnixProcessID s "$1" 2>/dev/null |
@@ -108,6 +105,11 @@ for bus in "$APP_BUS" "$MPRIS_BUS"; do
 	for seen in ${ROOTS[@]+"${ROOTS[@]}"}; do [ "$seen" = "$pid" ] && continue 2; done
 	ROOTS+=("$pid")
 done
+
+while read -r pid; do
+	for seen in ${ROOTS[@]+"${ROOTS[@]}"}; do [ "$seen" = "$pid" ] && continue 2; done
+	ROOTS+=("$pid")
+done < <(pgrep -u "$UID" -x 'slipmat|slipmatd' 2>/dev/null)
 
 if [ ${#ROOTS[@]} -eq 0 ]; then
 	echo "Nothing is running — start Slipmat or slipmatd first, or use --disk." >&2
@@ -126,6 +128,8 @@ PIDS=()
 for root in "${ROOTS[@]}"; do
 	mapfile -t -O "${#PIDS[@]}" PIDS < <(descendants "$root")
 done
+# A daemon spawned by the GTK client is also a root through its MPRIS name.
+mapfile -t PIDS < <(printf '%s\n' "${PIDS[@]}" | sort -nu)
 
 # What each process is for. Chromium tells you in its own argv, and seven rows
 # reading "electron" is not a report.
@@ -166,7 +170,7 @@ HZ=$(getconf CLK_TCK)
 # --- report -------------------------------------------------------------------
 
 echo "MEMORY AND CPU   (${#ROOTS[@]} tree(s): ${ROOTS[*]}, ${SAMPLE}s sample)"
-printf '  %-28s %9s %9s %7s\n' "" RSS PSS CPU
+printf '  %7s %-28s %9s %9s %7s\n' PID "" RSS PSS CPU
 rss_total=0
 pss_total=0
 cpu_total=0
@@ -179,7 +183,7 @@ for p in "${PIDS[@]}"; do
 	used=$(($(jiffies "$p") - ${before[$p]:-0}))
 	cpu=$(awk -v u="$used" -v hz="$HZ" -v s="$SAMPLE" 'BEGIN { printf "%.1f", 100*u/hz/s }')
 
-	printf '  %-28s %9s %9s %6s%%\n' "$(role "$cmd")" \
+	printf '  %7s %-28s %9s %9s %6s%%\n' "$p" "$(role "$cmd")" \
 		"$(human "$rss")" "$(human "$pss")" "$cpu"
 	rss_total=$((rss_total + rss))
 	pss_total=$((pss_total + pss))
@@ -187,7 +191,7 @@ for p in "${PIDS[@]}"; do
 done
 
 echo "  ────────────────────────────────────────────────────────────"
-printf '  %-28s %9s %9s %6s%%\n' "$(printf '%d processes' "${#PIDS[@]}")" \
+printf '  %7s %-28s %9s %9s %6s%%\n' "" "$(printf '%d processes' "${#PIDS[@]}")" \
 	"$(human "$rss_total")" "$(human "$pss_total")" "$cpu_total"
 echo
 echo "  PSS is the honest total. The RSS column sums to a much larger number"
