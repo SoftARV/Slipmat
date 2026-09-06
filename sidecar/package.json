@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "debug": "SLIPMAT_SHOW_SIDECAR=1 electron .",
-    "test": "node --test queue-identity.test.js"
+    "test": "node --test *.test.js"
   },
   "devDependencies": {
     "electron": "https://github.com/castlabs/electron-releases#v44.1.0+wvcus"

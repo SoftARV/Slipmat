@@ -177,6 +177,16 @@ let suspensionBlocker = null
 let probeTimer = null
 let tokenTimer = null
 
+function syncSuspension(state) {
+  const active = ['loading', 'playing', 'seeking', 'waiting', 'stalled'].includes(state)
+  if (active && suspensionBlocker === null) {
+    suspensionBlocker = powerSaveBlocker.start('prevent-app-suspension')
+  } else if (!active && suspensionBlocker !== null) {
+    powerSaveBlocker.stop(suspensionBlocker)
+    suspensionBlocker = null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Protocol
 // ---------------------------------------------------------------------------
@@ -284,6 +294,7 @@ async function createWindow() {
         : { isMainFrame: args[3], isSameDocument: args[2] }
 
     if (d.isMainFrame && !d.isSameDocument) {
+      syncSuspension('none')
       log('main-frame navigation — hook invalidated, re-probing')
       hookReady = false
       // Re-arm the probe. The new document gets a fresh preload which will
@@ -293,6 +304,8 @@ async function createWindow() {
       probeForMusicKit()
     }
   })
+
+  win.webContents.on('render-process-gone', () => syncSuspension('none'))
 
   win.on('close', (e) => {
     // Closing the login window must not kill playback; Rust owns our lifetime.
@@ -313,13 +326,6 @@ async function createWindow() {
 /// shell. `concealed` is the fallback: mapped but 1x1, transparent and
 /// click-through, for a compositor that freezes unmapped renderers.
 function conceal() {
-  // Tell the OS this process must not be suspended. On its own this does not
-  // stop Chromium's per-page freezing, but without it a laptop on battery can
-  // suspend the whole sidecar mid-track.
-  if (suspensionBlocker === null) {
-    suspensionBlocker = powerSaveBlocker.start('prevent-app-suspension')
-  }
-
   if (WINDOW_MODE === 'hidden') {
     // Truly invisible: nothing in the overview, nothing in the dash.
     win.hide()
@@ -562,6 +568,8 @@ app.whenReady().then(async () => {
   const { ipcMain } = require('electron')
 
   ipcMain.on('slipmat:event', (_e, ev) => {
+    if (ev && ev.event === 'playbackState') syncSuspension(ev.state)
+    if (ev && ev.event === 'hook-failed') syncSuspension('none')
     if (ev && ev.event === 'queue-identity-probe') {
       log('queue identity probe:', JSON.stringify(ev))
       return
