@@ -157,4 +157,23 @@ mod tests {
         assert_eq!(m.queue_position, 0);
         assert_eq!(m.stage, Some(Stage::SignedOut));
     }
+
+    #[test]
+    fn a_paused_restored_snapshot_keeps_its_position_and_duration() {
+        let mirror = Mirror {
+            snap: Snapshot {
+                title: "Restored song".into(),
+                position_ms: 55_000,
+                duration_ms: 180_000,
+                playing: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let restored = mirror.now_playing().expect("restored track");
+        assert_eq!(restored.position_ms, 55_000);
+        assert_eq!(restored.duration_ms, 180_000);
+        assert!(!restored.playing);
+    }
 }

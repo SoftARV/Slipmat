@@ -9,7 +9,7 @@ Two split package bases, both built from this tree:
 
 | Directory | Builds | Builds from |
 | --- | --- | --- |
-| `slipmat/` | `slipmat-daemon`, `slipmat`, `climat` | the `v0.11.0` release tarball |
+| `slipmat/` | `slipmat-daemon`, `slipmat`, `climat` | the `v0.11.1` release tarball |
 | `slipmat-git/` | `slipmat-daemon-git`, `slipmat-git`, `climat-git` | the latest commit on `main` |
 
 The release and `-git` lines conflict with each other, as the two conventions

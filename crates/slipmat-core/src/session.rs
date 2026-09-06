@@ -68,14 +68,9 @@ fn parse(raw: &str) -> Option<Session> {
 /// playback, and the cost of losing it is one restore.
 pub fn save(session: &Session) {
     let Some(path) = path() else { return };
-    let Some(dir) = path.parent() else { return };
-    if let Err(err) = std::fs::create_dir_all(dir) {
-        tracing::warn!(?err, "could not create the state directory");
-        return;
-    }
     match serde_json::to_string(session) {
         Ok(json) => {
-            if let Err(err) = std::fs::write(&path, json) {
+            if let Err(err) = crate::artwork::write_atomically(&path, json.as_bytes()) {
                 tracing::warn!(?err, "could not save the session");
             }
         }

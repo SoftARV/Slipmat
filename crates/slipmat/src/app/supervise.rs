@@ -147,7 +147,6 @@ impl AppModel {
             }
             Event::LibraryChanged => {
                 tracing::info!("the daemon refreshed the library");
-                self.set_library_refreshing(false);
                 self.reload_from_cache(sender);
             }
             Event::LibraryRefreshing { refreshing } => {

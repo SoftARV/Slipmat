@@ -1513,8 +1513,6 @@ impl Component for AppModel {
         model.refresh_pin_names();
 
         connect(&sender);
-        // Whatever the daemon had last time, until it says otherwise.
-        model.reload_from_cache(&sender);
 
         ComponentParts { model, widgets }
     }
@@ -2539,6 +2537,15 @@ impl AppModel {
 mod tests {
     use super::*;
     use slipmat_core::music::types::TrackId;
+
+    #[test]
+    fn startup_reads_the_library_cache_once() {
+        let source = include_str!("mod.rs");
+        let seed = concat!("model.", "seed_from_cache();");
+        let reload = concat!("model.", "reload_from_cache(&sender);");
+        assert_eq!(source.matches(seed).count(), 1);
+        assert!(!source.contains(reload));
+    }
 
     fn track(title: &str, catalog: Option<&str>) -> Track {
         Track {

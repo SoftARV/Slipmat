@@ -34,6 +34,14 @@ pub(super) fn matches(track: &Track, needle: &str) -> bool {
         || track.album.to_lowercase().contains(needle)
 }
 
+fn replace_changed<T: PartialEq>(current: &mut Vec<T>, next: Vec<T>) -> bool {
+    if *current == next {
+        return false;
+    }
+    *current = next;
+    true
+}
+
 impl AppModel {
     /// Show what the daemon found in the catalog.
     ///
@@ -78,22 +86,32 @@ impl AppModel {
             playlists = cached.playlists.len(),
             "read the library from cache"
         );
-        self.all_tracks = cached.songs;
-        self.albums = cached.albums;
-        self.artists = cached.artists;
-        self.playlists = cached.playlists;
-        self.built_rows = None;
-        self.built_albums = None;
-        self.built_artists = None;
-        self.built_playlists = None;
-        self.rebuild_rows();
-        self.rebuild_albums();
-        self.rebuild_artists();
-        self.rebuild_playlists();
+        if replace_changed(&mut self.all_tracks, cached.songs) {
+            self.built_rows = None;
+        }
+        if replace_changed(&mut self.albums, cached.albums) {
+            self.built_albums = None;
+        }
+        if replace_changed(&mut self.artists, cached.artists) {
+            self.built_artists = None;
+        }
+        if replace_changed(&mut self.playlists, cached.playlists) {
+            self.built_playlists = None;
+        }
+        self.rebuild_current_section();
         // A pin whose playlist is gone (#133). The cache read is when we know
         // what still exists, which is what the playlist fetch used to be.
         self.prune_stale_pins(sender);
         self.maybe_prune_artwork(sender);
+    }
+
+    fn rebuild_current_section(&mut self) {
+        match self.view {
+            View::Albums => self.rebuild_albums(),
+            View::Artists => self.rebuild_artists(),
+            View::Playlists => self.rebuild_playlists(),
+            View::Songs | View::Search => self.rebuild_rows(),
+        }
     }
 
     /// The query for whichever scope is showing.
@@ -469,12 +487,7 @@ impl AppModel {
         // Only the section being opened into: the other three cost ~500ms each
         // in cover decoding, and `SetView` builds them on the way in. Doing all
         // four here would spend that before the window is even mapped.
-        match self.view {
-            View::Albums => self.rebuild_albums(),
-            View::Artists => self.rebuild_artists(),
-            View::Playlists => self.rebuild_playlists(),
-            View::Songs | View::Search => self.rebuild_rows(),
-        }
+        self.rebuild_current_section();
     }
 
     /// Every artwork the library can account for, as cache keys.
@@ -553,5 +566,25 @@ mod tests {
         assert!(matches(&t, "aitana"), "artist");
         assert!(!matches(&t, "superstrella"), "not fuzzy, by design");
         assert!(!matches(&t, "rosalia"));
+    }
+
+    #[test]
+    fn an_unchanged_collection_keeps_its_identity() {
+        let mut current = vec![track("SUPERESTRELLA", Some("1"))];
+        let address = current.as_ptr();
+        let next = current.clone();
+
+        assert!(!replace_changed(&mut current, next));
+
+        assert_eq!(current.as_ptr(), address);
+    }
+
+    #[test]
+    fn a_changed_collection_is_replaced() {
+        let mut current = vec![track("old", Some("1"))];
+
+        assert!(replace_changed(&mut current, vec![track("new", Some("2"))]));
+
+        assert_eq!(current[0].title, "new");
     }
 }

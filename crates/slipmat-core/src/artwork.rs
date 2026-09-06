@@ -53,11 +53,40 @@ pub async fn fetch(art: Artwork, size: u32) -> Result<PathBuf> {
 
 /// `rename` within the same directory is atomic.
 pub fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().context("artwork path has no parent")?;
+    let dir = path.parent().context("path has no parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_atomic_write_keeps_the_destination() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "slipmat-atomic-write-{}-{unique}",
+            std::process::id()
+        ));
+        let path = root.join("snapshot.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&path, "previous complete snapshot").unwrap();
+        std::fs::create_dir(path.with_extension(format!("tmp{}", std::process::id()))).unwrap();
+
+        assert!(write_atomically(&path, b"replacement").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "previous complete snapshot"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
