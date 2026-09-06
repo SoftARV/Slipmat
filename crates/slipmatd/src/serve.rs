@@ -117,10 +117,10 @@ impl Daemon {
         }
     }
 
-    /// Whether the sidecar is worth holding: somebody is listening, or
-    /// something is playing for them to come back to.
+    /// Buffering still needs the sidecar even with no client attached.
     fn wanted(&self) -> bool {
-        self.clients.get() > 0 || self.model.borrow().player.state.is_playing()
+        let model = self.model.borrow();
+        self.clients.get() > 0 || model.player.state.is_playing() || model.player.state.is_busy()
     }
 
     pub fn publish(&self, event: Event) {
@@ -1480,6 +1480,35 @@ mod tests {
     use super::*;
     use slipmat_core::music::types::{Artwork, Track, TrackId};
     use slipmat_core::player::protocol::{Item, Queue, RepeatMode, Tokens};
+
+    #[test]
+    fn idle_shutdown_keeps_buffering_alive_but_releases_unused_players() {
+        let daemon = daemon();
+        daemon.model.borrow_mut().stage = Stage::Ready;
+        for state in [
+            PlaybackState::Loading,
+            PlaybackState::Playing,
+            PlaybackState::Seeking,
+            PlaybackState::Waiting,
+            PlaybackState::Stalled,
+        ] {
+            daemon.model.borrow_mut().player.state = state;
+            assert!(daemon.wanted(), "{state:?}");
+        }
+        daemon.model.borrow_mut().player.state = PlaybackState::Paused;
+        assert!(!daemon.wanted());
+        for stage in [
+            Stage::SignedOut,
+            Stage::Broken {
+                detail: "test".into(),
+            },
+        ] {
+            daemon.model.borrow_mut().stage = stage;
+            assert!(!daemon.wanted());
+        }
+        daemon.clients.set(1);
+        assert!(daemon.wanted());
+    }
 
     fn daemon() -> Rc<Daemon> {
         let (events, _) = broadcast::channel(8);
