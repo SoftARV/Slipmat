@@ -49,3 +49,45 @@ module. This document records results, including rejected experiments.
   worked; PipeWire stream 17427 survived the two-track transition. No listening
   verdict yet. `systemd-inhibit` did not expose Electron's inhibitor on this
   desktop, so the OS sleep effect is not verified here.
+
+### Hidden-page comparisons
+
+Standalone sidecar, same two catalog tracks (`1507991241`, `1376096987`),
+three samples three seconds apart after ten seconds of playback. Each run
+started a fresh process against the existing warm Apple session. CPU values
+are percentages of one core. The values below are medians within each run.
+
+| Variant | Run medians, PSS MB | Run medians, CPU % | Verdict |
+| --- | --- | --- | --- |
+| Baseline | 573.4, 554.8, 567.7 | 6.80, 3.31, 6.48 | Reference |
+| 64 x 64 hidden viewport | 565.0, 562.1 | 3.89, 4.30 | Within baseline variation; not kept |
+| Images disabled | 506.5, 577.9, 577.1 | 4.54, 3.56, 4.30 | Inconsistent; not kept |
+| Initial hidden painting disabled | 560.3, 561.1 | 3.89, 3.31 | Within baseline variation; not kept |
+| Background throttling enabled (initial trial) | 558.2 | 3.56 | No clear saving; not kept |
+
+Every completed run advanced playback at least 17 seconds. These short runs
+measure startup and early playback, not long-session behavior or sign-in.
+No visual experiment has been applied to the production sidecar.
+
+### Idle-release review
+
+The safe prerequisite change keeps a buffering sidecar alive even with no
+clients. It still permits idle cleanup of paused, signed-out and broken
+players. A broader `stage != Ready` guard was rejected in review because it
+would retain unused signed-out and broken renderers indefinitely.
+
+Connected-client hibernation is deferred until wake-up has a tested contract:
+
+- MPRIS commands currently do not wake an absent sidecar; sends are dropped.
+- Gate complete external requests before they mutate the mirror. Replaying
+  low-level commands is too late for seek, move and clear operations.
+- Wait for restoration completion, not merely hook readiness. An ordered write
+  to stdin does not serialize the asynchronous MusicKit handlers.
+- A dormant seek must survive until a current item exists. Rebuilt queues also
+  replace occurrence IDs, so GoTo must resolve its target after restoration.
+- Restore the retained live state rather than relying on a successful disk
+  write; preserve shuffle and repeat as well as queue position.
+
+The existing five-minute timeout and connected-client policy remain unchanged.
+The buffering guard's regression test failed before the fix and passes now;
+`make check` and `cargo build -p slipmatd` pass with the final predicate.
