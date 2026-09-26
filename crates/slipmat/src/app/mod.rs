@@ -565,6 +565,11 @@ pub enum AppMsg {
         page: u64,
         shuffle: bool,
     },
+    /// Add everything on a page to the end of the queue, without disturbing
+    /// what is playing.
+    EnqueuePage {
+        page: u64,
+    },
     /// Push an album or artist page — catalog or library, which the `PageKind`
     /// carries so the fetch knows which endpoint to ask.
     OpenPage(PageKind),
@@ -2262,24 +2267,18 @@ impl AppModel {
             }
             AppMsg::ShowRowMenu(req) => self.show_row_menu(req),
             AppMsg::Enqueue { catalog_id, next } => {
-                let songs = vec![catalog_id];
-                if self.mirror.queue.is_empty() {
-                    // Nothing to insert into: `playNext` on an empty queue is a
-                    // silent no-op in MusicKit. Start the queue instead —
-                    // "add to queue" with no queue plainly means "make one",
-                    // and refusing was a worse answer than doing it.
-                    // The daemon states the mode for a queue it builds, so
-                    // there is nothing to say here beyond which track.
-                    tracing::info!("starting a queue from one track");
-                    self.ask(Request::Play {
-                        ids: songs,
-                        index: 0,
-                        start: PlayMode::Clicked,
-                    });
+                self.enqueue(vec![catalog_id], next);
+            }
+            AppMsg::EnqueuePage { page } => {
+                let Some(target) = self.pages.iter().find(|p| p.id == page) else {
                     return;
-                }
-                tracing::info!(next, "enqueueing one track");
-                self.ask(Request::Enqueue { ids: songs, next });
+                };
+                let ids: Vec<String> = target
+                    .entries
+                    .iter()
+                    .filter_map(|e| e.catalog_id().map(str::to_owned))
+                    .collect();
+                self.enqueue(ids, false);
             }
             AppMsg::SetShuffle(on) => {
                 // Sent and forgotten: the mirror updates when MusicKit echoes

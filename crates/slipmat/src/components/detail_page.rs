@@ -116,6 +116,18 @@ pub struct RowState {
     pub overrides: TrackOverrides,
 }
 
+/// The header's three transport buttons. Grouped so `DetailPage::new` takes
+/// one thing that changes together rather than a callback per button —
+/// `clippy::too_many_arguments` is the enforcement, not the reason.
+pub struct HeaderActions {
+    pub play: Box<dyn Fn()>,
+    pub shuffle: Box<dyn Fn()>,
+    /// Appends every track on the page to the end of whatever is already
+    /// playing — the page-level counterpart to a row's own "Add to Queue"
+    /// (rule 3: grows the loaded queue, never rebuilds it).
+    pub queue: Box<dyn Fn()>,
+}
+
 pub struct DetailPage {
     /// Stable for the page's whole life. Clicks quote it back.
     pub id: u64,
@@ -143,17 +155,21 @@ impl DetailPage {
     /// Build a page showing its spinner. The content arrives later, through
     /// [`DetailPage::show`].
     ///
-    /// `on_activate` is handed the row index that was clicked; `on_play` and
-    /// `on_shuffle` fire for the header's two buttons.
+    /// `on_activate` is handed the row index that was clicked; `header` fires
+    /// for the header's three buttons.
     pub fn new(
         id: u64,
         heading: &str,
         state: RowState,
         on_activate: impl Fn(usize) + 'static,
-        on_play: impl Fn() + 'static,
-        on_shuffle: impl Fn() + 'static,
+        header: HeaderActions,
         on_toggle_sidebar: impl Fn() + 'static,
     ) -> Self {
+        let HeaderActions {
+            play: on_play,
+            shuffle: on_shuffle,
+            queue: on_queue,
+        } = header;
         let list: TypedListView<LibraryItem, gtk::NoSelection> = TypedListView::new();
         let view = list.view.clone();
         view.set_single_click_activate(true);
@@ -202,8 +218,15 @@ impl DetailPage {
             .build();
         shuffle.connect_clicked(move |_| on_shuffle());
 
-        // One box so both appear and disappear together — a Shuffle button
-        // beside nothing is as useless as a Play button beside nothing.
+        let queue = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Add to Queue")
+            .css_classes(["pill"])
+            .build();
+        queue.connect_clicked(move |_| on_queue());
+
+        // One box so all three appear and disappear together — a Shuffle
+        // button beside nothing is as useless as a Play button beside nothing.
         let actions = gtk::Box::builder()
             .spacing(6)
             .halign(gtk::Align::Center)
@@ -211,6 +234,7 @@ impl DetailPage {
             .build();
         actions.append(&play);
         actions.append(&shuffle);
+        actions.append(&queue);
 
         let banner = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
