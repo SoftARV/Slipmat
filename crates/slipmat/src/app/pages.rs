@@ -13,7 +13,7 @@ use relm4::adw::prelude::NavigationPageExt;
 
 use super::AppMsg;
 use super::{ART_SIZE, AppModel, CommandMsg, PageKind, artwork};
-use crate::components::detail_page::{DetailPage, RowState};
+use crate::components::detail_page::{DetailPage, HeaderActions, RowState};
 use slipmat_core::entry::Entry;
 use slipmat_core::ipc::{PageKind as WireKind, Request};
 
@@ -138,6 +138,7 @@ impl AppModel {
         let activate = sender.clone();
         let play = sender.clone();
         let shuffle = sender.clone();
+        let queue = sender.clone();
         let sidebar = sender.clone();
         let page = DetailPage::new(
             id,
@@ -148,17 +149,20 @@ impl AppModel {
                 dead: self.dead_rows.clone(),
             },
             move |row| activate.input(AppMsg::DetailActivated { page: id, row }),
-            move || {
-                play.input(AppMsg::PlayPage {
-                    page: id,
-                    shuffle: false,
-                })
-            },
-            move || {
-                shuffle.input(AppMsg::PlayPage {
-                    page: id,
-                    shuffle: true,
-                })
+            HeaderActions {
+                play: Box::new(move || {
+                    play.input(AppMsg::PlayPage {
+                        page: id,
+                        shuffle: false,
+                    })
+                }),
+                shuffle: Box::new(move || {
+                    shuffle.input(AppMsg::PlayPage {
+                        page: id,
+                        shuffle: true,
+                    })
+                }),
+                queue: Box::new(move || queue.input(AppMsg::EnqueuePage { page: id })),
             },
             move || sidebar.input(AppMsg::ToggleSidebar),
         );
