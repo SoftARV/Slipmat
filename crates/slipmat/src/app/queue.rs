@@ -59,4 +59,29 @@ impl AppModel {
     pub(super) fn queue_index_at(&self, at: usize, id: &str) -> Option<usize> {
         self.mirror.index_at(at, id)
     }
+
+    /// Grow the queue with these ids, without disturbing what is already
+    /// playing — one track from a row menu, or a whole album or playlist's
+    /// worth from a page header.
+    pub(super) fn enqueue(&mut self, ids: Vec<String>, next: bool) {
+        if ids.is_empty() {
+            self.toast("Nothing here can be streamed");
+            return;
+        }
+        if self.mirror.queue.is_empty() {
+            // Nothing to insert into: `playNext` on an empty queue is a
+            // silent no-op in MusicKit. Start the queue instead — "add to
+            // queue" with no queue plainly means "make one", and refusing
+            // was a worse answer than doing it.
+            tracing::info!(count = ids.len(), "starting a queue");
+            self.ask(Request::Play {
+                ids,
+                index: 0,
+                start: PlayMode::Clicked,
+            });
+            return;
+        }
+        tracing::info!(count = ids.len(), next, "enqueueing");
+        self.ask(Request::Enqueue { ids, next });
+    }
 }
