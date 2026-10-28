@@ -9,7 +9,7 @@ Two split package bases, both built from this tree:
 
 | Directory | Builds | Builds from |
 | --- | --- | --- |
-| `slipmat/` | `slipmat-daemon`, `slipmat`, `climat` | the `v0.11.0` release tarball |
+| `slipmat/` | `slipmat-daemon`, `slipmat`, `climat` | the `v0.12.0` release tarball |
 | `slipmat-git/` | `slipmat-daemon-git`, `slipmat-git`, `climat-git` | the latest commit on `main` |
 
 The release and `-git` lines conflict with each other, as the two conventions
@@ -126,11 +126,9 @@ find the sidecar installed beside it, and it baked its own build directory in â€
 which is what `makepkg` was reporting as a reference to `$srcdir`. Both were
 fixed in 0.1.1, and that release exists because of this packaging work.
 
-**Foreign-architecture binaries are pruned.** The `-git` package maps Arch's
+**Foreign-architecture binaries are pruned.** Both package recipes map Arch's
 `x86_64` and `aarch64` names to Node's `x64` and `arm64` names, then keeps the
-matching Linux `.node` files. The v0.11.0 release package remains x86_64-only
-because its source archive still pins Electron 43. Enable aarch64 there when
-the recipe advances to the tested v0.12.0 release.
+matching Linux `.node` files. The stable package supports aarch64 starting with v0.12.0.
 
 ## Building one locally
 
